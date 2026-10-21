@@ -33,7 +33,7 @@
     bar: $('#bar'), main: $('#main'), toTop: $('#to-top'),
     gallery: $('#gallery'), summary: $('#summary'), empty: $('#empty'), pager: $('#pager'),
     now: $('#now'), nowImg: $('#now-img'), nowTime: $('#now-time'), nowAgo: $('#now-ago'), nowDate: $('#now-date'), nowFacts: $('#now-facts'), nowDl: $('#now-dl'),
-    nowBadge: $('#now-badge'), nowBack: $('#now-back'), reel: $('#reel'), reelTrack: $('#reel-track'),
+    nowBadge: $('#now-badge'), nowView: $('#now-view'), nowPrev: $('#now-prev'), nowNext: $('#now-next'), nowBack: $('#now-back'), reel: $('#reel'), reelTrack: $('#reel-track'),
     reelTicks: $('#reel-ticks'), reelHead: $('#reel-head'), reelAxis: $('#reel-axis'), reelPlay: $('#reel-play'),
     seg: $('.seg'), sort: $('#sort'), size: $('#size'), group: $('#group'), selectMode: $('#select-mode'),
     theme: $('#theme'), account: $('#account'), foot: $('.foot'),
@@ -420,7 +420,7 @@
 
   // ---------- reel: the last 24 hours as a strip of ticks, oldest on the left ----------
   const overview = { today: null, first: '', days: new Map() }; // days: YYYY-MM-DD -> { count }
-  const reel = { items: [], at: -1, playing: 0, pinned: false, from: 0, to: 0 };
+  const reel = { items: [], at: -1, playing: 0, dragging: false, from: 0, to: 0 };
   async function loadOverview() {
     try {
       let tz = '';
@@ -457,6 +457,8 @@
   function renderReelHead() {
     const i = reel.at >= 0 ? reel.at : reel.items.length - 1;
     const it = reel.items[i];
+    el.nowPrev.disabled = !it || i <= 0;
+    el.nowNext.disabled = !it || i >= reel.items.length - 1;
     if (!it) return;
     el.reelHead.style.left = `${(reelX(it.time) * 100).toFixed(3)}%`;
     el.reelTrack.setAttribute('aria-valuenow', i);
@@ -486,17 +488,24 @@
     if (reel.playing) { reelStop(); return; }
     el.reelPlay.setAttribute('aria-pressed', 'true');
     el.reelPlay.querySelector('use').setAttribute('href', '#i-pause');
-    reel.pinned = true;
     let i = reel.at >= 0 && reel.at < reel.items.length - 1 ? reel.at : 0;
     reel.playing = setInterval(() => {
       reelSeek(i++);
       if (i >= reel.items.length) { reelStop(); reelSeek(reel.items.length - 1); }
     }, 140);
   }
-  el.reelTrack.addEventListener('pointermove', (e) => { if (!reel.playing) reelSeek(reelNearest(e.clientX)); });
-  el.reelTrack.addEventListener('pointerdown', (e) => { reelStop(); reel.pinned = true; reelSeek(reelNearest(e.clientX)); });
-  // Hovering only peeks; a click pins the picture so the card's buttons act on it.
-  el.reelTrack.addEventListener('pointerleave', () => { if (!reel.pinned && !reel.playing) reelSeek(reel.items.length - 1); });
+  // Only a press moves the picture: click a tick, or hold and drag along the strip. Hovering changes nothing.
+  el.reelTrack.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    reelStop();
+    reel.dragging = true;
+    el.reelTrack.setPointerCapture(e.pointerId);
+    reelSeek(reelNearest(e.clientX));
+  });
+  el.reelTrack.addEventListener('pointermove', (e) => { if (reel.dragging) reelSeek(reelNearest(e.clientX)); });
+  const endReelDrag = () => { reel.dragging = false; };
+  el.reelTrack.addEventListener('pointerup', endReelDrag);
+  el.reelTrack.addEventListener('pointercancel', endReelDrag);
   el.reelTrack.addEventListener('keydown', (e) => {
     const cur = reel.at >= 0 ? reel.at : reel.items.length - 1;
     const step = { ArrowLeft: -1, ArrowRight: 1, Home: -cur, End: reel.items.length }[e.key];
@@ -504,11 +513,27 @@
     e.preventDefault();
     e.stopPropagation();
     reelStop();
-    reel.pinned = true;
     reelSeek(cur + step);
   });
   el.reelPlay.addEventListener('click', reelPlay);
-  el.nowBack.addEventListener('click', () => { reelStop(); reel.pinned = false; reelSeek(reel.items.length - 1); });
+  // Side buttons step through the same 24 hours as the reel; the newest picture is the last step.
+  function nowStep(d) {
+    if (reel.items.length < 2) return;
+    reelStop();
+    reelSeek((reel.at >= 0 ? reel.at : reel.items.length - 1) + d);
+  }
+  el.nowPrev.addEventListener('click', () => nowStep(-1));
+  el.nowNext.addEventListener('click', () => nowStep(1));
+  // A mouse near either edge of the picture reveals that side's button; touch screens always show them.
+  el.nowView.addEventListener('pointermove', (e) => {
+    if (e.pointerType !== 'mouse') return;
+    const r = el.nowView.getBoundingClientRect();
+    const zone = Math.min(160, r.width * 0.22);
+    el.nowView.classList.toggle('near-prev', e.clientX - r.left < zone);
+    el.nowView.classList.toggle('near-next', r.right - e.clientX < zone);
+  });
+  el.nowView.addEventListener('pointerleave', () => el.nowView.classList.remove('near-prev', 'near-next'));
+  el.nowBack.addEventListener('click', () => { reelStop(); reelSeek(reel.items.length - 1); });
 
   function renderTask() {
     const t = state.task;

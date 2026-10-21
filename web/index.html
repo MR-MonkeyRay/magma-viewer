@@ -86,9 +86,13 @@
 <main id="main">
   <section class="now" id="now" aria-label="画板最新状态" hidden>
     <div class="now-stage">
-      <button type="button" class="now-frame" id="now-open" aria-label="查看大图">
-        <img id="now-img" alt="画板画面">
-      </button>
+      <div class="now-view" id="now-view">
+        <button type="button" class="now-frame" id="now-open" aria-label="查看大图">
+          <img id="now-img" alt="画板画面">
+        </button>
+        <button type="button" class="now-nav prev" id="now-prev" aria-label="上一张（更早）" title="上一张（更早）"><svg><use href="#i-left"/></svg></button>
+        <button type="button" class="now-nav next" id="now-next" aria-label="下一张（更新）" title="下一张（更新）"><svg><use href="#i-right"/></svg></button>
+      </div>
       <div class="reel" id="reel" hidden>
         <button type="button" class="reel-play" id="reel-play" title="回放最近 24 小时（P）" aria-label="回放最近 24 小时" aria-pressed="false"><svg><use href="#i-play"/></svg></button>
         <div class="reel-track" id="reel-track" role="slider" tabindex="0" aria-label="最近 24 小时的画面" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">

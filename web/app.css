@@ -1,5 +1,5 @@
-/* Colours are the three paints of the brand mark, each with one job: ultramarine (--pigment) for actions,
-   vermilion (--live) for the newest picture, ochre (--mark) for the moment being looked at. The page is a
+/* Each accent has one job: ultramarine (--pigment) for actions, green (--live) for the newest picture,
+   ochre (--mark) for the moment being looked at. The page is a
    cool grey so white canvases stand out from it. Type follows one scale: 12 / 14 / 16 / 20 / 24 / 32. */
 @font-face {
   font-family: "Inter";
@@ -24,8 +24,9 @@
   --pigment: #2f4bdb;
   --pigment-ink: #ffffff;
   --pigment-soft: rgba(47, 75, 219, 0.10);
-  --live: #c23b25;
-  --live-soft: rgba(226, 81, 58, 0.12);
+  --live: #137a3a;
+  --live-soft: rgba(22, 163, 74, 0.12);
+  --live-ink: #ffffff;
   --mark: #c4850a;
   --placeholder: #e4e7eb;
   --shimmer: #f1f3f5;
@@ -76,8 +77,9 @@
     --pigment: #8394ff;
     --pigment-ink: #121418;
     --pigment-soft: rgba(131, 148, 255, 0.16);
-    --live: #ff6a52;
-    --live-soft: rgba(255, 106, 82, 0.14);
+    --live: #4ade80;
+    --live-soft: rgba(74, 222, 128, 0.14);
+    --live-ink: #121418;
     --mark: #f5bf55;
     --placeholder: #23272e;
     --shimmer: #2b3038;
@@ -105,8 +107,9 @@
   --pigment: #8394ff;
   --pigment-ink: #121418;
   --pigment-soft: rgba(131, 148, 255, 0.16);
-  --live: #ff6a52;
-  --live-soft: rgba(255, 106, 82, 0.14);
+  --live: #4ade80;
+  --live-soft: rgba(74, 222, 128, 0.14);
+  --live-ink: #121418;
   --mark: #f5bf55;
   --placeholder: #23272e;
   --shimmer: #2b3038;
@@ -251,6 +254,23 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 .now-stage { min-width: 0; padding: 8px 8px 4px; }
 .now.updated .now-stage { animation: now-glow 2.4s var(--ease); }
 @keyframes now-glow { 30% { box-shadow: 0 0 0 3px var(--live), var(--shadow-hover); } }
+.now-view { position: relative; }
+.now-nav {
+  position: absolute; top: 50%; z-index: 2; display: grid; place-items: center; width: 44px; height: 44px; padding: 0;
+  border: 0; border-radius: 50%; background: rgba(18, 20, 24, 0.5); color: #fff; cursor: pointer;
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  opacity: 0; pointer-events: none; transform: translateY(-50%);
+  transition: opacity .2s, transform .2s var(--ease-out), background-color .15s;
+}
+.now-nav.prev { left: 12px; }
+.now-nav.next { right: 12px; }
+.now-nav svg { width: 22px; height: 22px; }
+.now-view.near-prev .now-nav.prev, .now-view.near-next .now-nav.next, .now-nav:focus-visible { opacity: 1; pointer-events: auto; }
+.now-nav:hover { background: var(--pigment); }
+.now-nav.prev:hover { transform: translate(-2px, -50%); }
+.now-nav.next:hover { transform: translate(2px, -50%); }
+.now-nav:disabled { opacity: 0 !important; pointer-events: none !important; }
+@media (hover: none) { .now-nav { opacity: .85; pointer-events: auto; width: 36px; height: 36px; } }
 .now-frame {
   position: relative; display: grid; place-items: center; width: 100%;
   min-height: 200px; overflow: hidden; border-radius: var(--r-md);
@@ -279,18 +299,25 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 .reel-play:hover { background: var(--pigment-soft); color: var(--pigment); }
 .reel-play[aria-pressed="true"] { background: var(--pigment); color: var(--pigment-ink); }
 .reel-play svg { width: 16px; height: 16px; }
-.reel-track { position: relative; height: 36px; cursor: ew-resize; touch-action: pan-y; border-radius: var(--r-xs); }
+.reel-track { position: relative; height: 36px; cursor: pointer; touch-action: pan-y; border-radius: var(--r-xs); }
 .reel-track::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--line); }
 .reel-ticks i {
   position: absolute; top: 9px; bottom: 9px; width: 2px; margin-left: -1px; border-radius: 1px;
-  background: color-mix(in srgb, var(--graphite) 55%, transparent); transition: background-color .15s, top .15s, bottom .15s;
+  background: color-mix(in srgb, var(--graphite) 30%, transparent); transition: background-color .15s, top .15s, bottom .15s;
 }
-.reel-ticks i.on { top: 4px; bottom: 4px; background: var(--mark); }
+/* Each saved picture also gets a dot on the axis; the ring keeps dots apart where saves bunch up. */
+.reel-ticks i::after {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--pigment); box-shadow: 0 0 0 1.5px var(--raised); transform: translate(-50%, -50%);
+  transition: width .15s, height .15s, background-color .15s;
+}
+.reel-ticks i:hover::after { width: 9px; height: 9px; }
+.reel-ticks i.on { top: 4px; bottom: 4px; background: var(--mark); z-index: 1; }
+.reel-ticks i.on::after { width: 10px; height: 10px; background: var(--mark); }
 .reel-head {
   position: absolute; top: 0; bottom: 0; width: 0; pointer-events: none;
   border-left: 2px solid var(--mark); margin-left: -1px; transition: left .12s var(--ease-out);
 }
-.reel-head::before { content: ""; position: absolute; top: -3px; left: -6px; width: 10px; height: 10px; border-radius: 50%; background: var(--mark); box-shadow: 0 0 0 2px var(--raised); }
 .now:not(.past) .reel-head { opacity: 0; }
 .reel-axis { grid-column: 2; position: relative; height: 18px; font-size: var(--fs-xs); color: var(--faint); }
 .reel-axis span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
@@ -573,7 +600,7 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 @keyframes drop-out { to { opacity: 0; transform: translate(-50%, -16px); } }
 .fresh button {
   display: inline-flex; align-items: center; gap: 6px;
-  border: 0; border-radius: 999px; padding: 6px 14px 6px 10px; background: var(--live); color: #fff;
+  border: 0; border-radius: 999px; padding: 6px 14px 6px 10px; background: var(--live); color: var(--live-ink);
   font-size: var(--fs-sm); font-weight: 600; box-shadow: 0 10px 24px -8px color-mix(in srgb, var(--live) 70%, transparent); cursor: pointer;
   transition: transform .2s var(--spring);
 }
