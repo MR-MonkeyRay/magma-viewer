@@ -110,6 +110,29 @@ go test ./...
 go run . -config ./config.yaml
 ```
 
+## 版本与镜像发布
+
+项目版本由根目录的 [`VERSION`](VERSION) 文件统一维护，当前为 `0.1.0`。发布新版本时修改此文件并推送到 `main`。
+
+[Docker 发布工作流](.github/workflows/docker.yml) 在任意分支推送时运行，也支持在 GitHub Actions 中手动触发；使用仓库自带的 `GITHUB_TOKEN` 登录并推送到 `ghcr.io/<owner>/<repo>`（镜像路径自动转为小写），无需另配 Docker Hub 凭证。
+
+| 分支 | 镜像标签 | 示例 |
+|---|---|---|
+| `main` | `VERSION` 中的版本号，不加 `v` 前缀 | `ghcr.io/mr-monkeyray/magma-viewer:0.1.0` |
+| 其他分支 | `<分支名>-<commit 前 7 位 hash>` | `ghcr.io/mr-monkeyray/magma-viewer:feature-login-abcdef0` |
+
+分支名中的 `/` 等 Docker 标签不支持的字符会替换为 `-`，移除开头的 `.` 和 `-`，并截断以保证标签不超过 128 个字符；处理后为空时使用 `branch`。工作流先检查目标标签，已存在则跳过构建和推送，不覆盖已有镜像。因此 `main` 上后续提交若要发布，必须先递增 `VERSION`；不会额外推送 `latest` 标签。同一分支的发布任务串行执行，避免重复构建同一版本。
+
+标签查询通过 GitHub Packages API 分页检查，包括私有包；首次发布、包不存在（404）时构建。权限不足、限流或网络等查询错误会直接使工作流失败，不会把查询失败误判为标签不存在。
+
+拉取已发布版本：
+
+```bash
+docker pull ghcr.io/mr-monkeyray/magma-viewer:0.1.0
+```
+
+使用预构建镜像时，可将 `deploy/minimal/docker-compose.yml` 中的 `image` 改为上述完整地址，无需先在本地构建。GHCR 首次发布的包默认为私有；若需要匿名拉取，请在 GitHub 包设置中将可见性改为 Public。私有包需先执行 `docker login ghcr.io` 并使用具备 `read:packages` 权限的令牌。仓库的 Actions 也需允许写入 Packages；如组织策略限制该权限，需要先调整策略。
+
 ## 版本管理
 
 本地 `config.yaml` 可能包含真实 cookie 和管理员凭证，不应提交。仓库只保留 `config.example.yaml` 和 `deploy/minimal/config.yaml` 中的占位配置；实际部署时先复制到仓库外再填写。
