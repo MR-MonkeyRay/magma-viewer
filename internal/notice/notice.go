@@ -25,10 +25,11 @@ const (
 
 var ErrNotFound = errors.New("公告不存在")
 
-// InvalidError is a rejected title or body; its text is shown to the admin as is.
-type InvalidError string
+// InvalidError is a rejected title or body. Code is a stable key the page translates;
+// Msg is the Chinese text, shown as is when the page does not know the code.
+type InvalidError struct{ Code, Msg string }
 
-func (e InvalidError) Error() string { return string(e) }
+func (e InvalidError) Error() string { return e.Msg }
 
 type Notice struct {
 	ID        string    `json:"id"`
@@ -112,11 +113,11 @@ func (s *Store) Save(id, title, body string, publish bool) (Notice, error) {
 	body = strings.TrimRight(strings.ReplaceAll(body, "\r\n", "\n"), " \t\n")
 	switch {
 	case title == "":
-		return Notice{}, InvalidError("请填写标题")
+		return Notice{}, InvalidError{"title_required", "请填写标题"}
 	case utf8.RuneCountInString(title) > MaxTitle:
-		return Notice{}, InvalidError(fmt.Sprintf("标题最多 %d 字", MaxTitle))
+		return Notice{}, InvalidError{"title_too_long", fmt.Sprintf("标题最多 %d 字", MaxTitle)}
 	case utf8.RuneCountInString(body) > MaxBody:
-		return Notice{}, InvalidError(fmt.Sprintf("内容最多 %d 字", MaxBody))
+		return Notice{}, InvalidError{"body_too_long", fmt.Sprintf("内容最多 %d 字", MaxBody)}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -126,7 +127,7 @@ func (s *Store) Save(id, title, body string, publish bool) (Notice, error) {
 	i := 0
 	if id == "" {
 		if len(items) >= MaxCount {
-			return Notice{}, InvalidError(fmt.Sprintf("最多保留 %d 条公告，请先删除旧公告", MaxCount))
+			return Notice{}, InvalidError{"too_many_notices", fmt.Sprintf("最多保留 %d 条公告，请先删除旧公告", MaxCount)}
 		}
 		items = slices.Insert(items, 0, Notice{ID: newID(), Created: now})
 	} else if i = slices.IndexFunc(items, func(n Notice) bool { return n.ID == id }); i < 0 {

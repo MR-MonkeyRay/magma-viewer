@@ -1065,3 +1065,6 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* The language button names the other language, so it is text rather than an icon. */
+.lang-btn { font-size: var(--fs-xs); font-weight: 600; letter-spacing: .02em; }

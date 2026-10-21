@@ -120,14 +120,15 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func writeError(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, map[string]string{"error": msg})
+// writeError answers with a Chinese message and a stable code the page translates.
+func writeError(w http.ResponseWriter, status int, code, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg, "code": code})
 }
 
 func (s *Server) adminOnly(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.auth.isAdmin(r) {
-			writeError(w, http.StatusUnauthorized, "需要管理员登录")
+			writeError(w, http.StatusUnauthorized, "auth_required", "需要管理员登录")
 			return
 		}
 		h(w, r)
@@ -184,7 +185,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if !s.auth.allowAttempt(ip) {
-		writeError(w, http.StatusTooManyRequests, "尝试次数过多，请稍后再试")
+		writeError(w, http.StatusTooManyRequests, "too_many_attempts", "尝试次数过多，请稍后再试")
 		return
 	}
 	var body struct {
@@ -192,12 +193,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, "bad_request", "请求格式错误")
 		return
 	}
 	if !s.auth.checkCredentials(body.Username, body.Password) {
 		s.auth.recordFailure(ip)
-		writeError(w, http.StatusUnauthorized, "用户名或密码错误")
+		writeError(w, http.StatusUnauthorized, "bad_credentials", "用户名或密码错误")
 		return
 	}
 	s.auth.clearFailures(ip)
@@ -242,11 +243,11 @@ func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 func readJSON(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
 	// A cross-origin form cannot send JSON without a CORS preflight.
 	if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt != "application/json" {
-		writeError(w, http.StatusUnsupportedMediaType, "请求格式错误")
+		writeError(w, http.StatusUnsupportedMediaType, "bad_request", "请求格式错误")
 		return false
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, limit)).Decode(v); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, "bad_request", "请求格式错误")
 		return false
 	}
 	return true
@@ -260,12 +261,12 @@ func (s *Server) handleSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Paused == nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, "bad_request", "请求格式错误")
 		return
 	}
 	if err := s.fetcher.SetPaused(*body.Paused); err != nil {
 		log.Printf("schedule: %v", err)
-		writeError(w, http.StatusInternalServerError, "保存定时任务状态失败")
+		writeError(w, http.StatusInternalServerError, "schedule_save_failed", "保存定时任务状态失败")
 		return
 	}
 	writeJSON(w, http.StatusOK, s.statusBody())
@@ -310,12 +311,12 @@ func writeNoticeError(w http.ResponseWriter, err error) {
 	var invalid notice.InvalidError
 	switch {
 	case errors.As(err, &invalid):
-		writeError(w, http.StatusBadRequest, invalid.Error())
+		writeError(w, http.StatusBadRequest, invalid.Code, invalid.Msg)
 	case errors.Is(err, notice.ErrNotFound):
-		writeError(w, http.StatusNotFound, err.Error())
+		writeError(w, http.StatusNotFound, "notice_not_found", err.Error())
 	default:
 		log.Printf("notice: %v", err)
-		writeError(w, http.StatusInternalServerError, "保存公告失败")
+		writeError(w, http.StatusInternalServerError, "notice_save_failed", "保存公告失败")
 	}
 }
 
@@ -390,17 +391,17 @@ func (s *Server) handleZipSelected(w http.ResponseWriter, r *http.Request) {
 		seen[name] = true
 		it, ok := s.store.Get(name)
 		if !ok {
-			writeError(w, http.StatusNotFound, "图片不存在: "+name)
+			writeError(w, http.StatusNotFound, "image_not_found", "图片不存在: "+name)
 			return
 		}
 		items = append(items, it)
 	}
 	if len(items) == 0 {
-		writeError(w, http.StatusBadRequest, "未选择图片")
+		writeError(w, http.StatusBadRequest, "no_selection", "未选择图片")
 		return
 	}
 	if len(items) > GuestZipLimit && !s.auth.isAdmin(r) {
-		writeError(w, http.StatusBadRequest, "访客一次最多打包下载 "+strconv.Itoa(GuestZipLimit)+" 张")
+		writeError(w, http.StatusBadRequest, "guest_zip_limit", "访客一次最多打包下载 "+strconv.Itoa(GuestZipLimit)+" 张")
 		return
 	}
 	s.writeZip(w, r, "magma-selected-"+time.Now().Format(store.TimeLayout)+".zip", items)
@@ -409,7 +410,7 @@ func (s *Server) handleZipSelected(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleZipAll(w http.ResponseWriter, r *http.Request) {
 	items := s.store.All()
 	if len(items) == 0 {
-		writeError(w, http.StatusNotFound, "暂无图片")
+		writeError(w, http.StatusNotFound, "no_images", "暂无图片")
 		return
 	}
 	s.writeZip(w, r, "magma-all-"+time.Now().Format(store.TimeLayout)+".zip", items)

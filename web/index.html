@@ -10,6 +10,7 @@
 <link rel="preload" href="fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="app.css">
 <script src="theme.js"></script>
+<script src="i18n.js"></script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -57,21 +58,21 @@
 <div class="progress" id="progress" aria-hidden="true"></div>
 
 <header class="bar" id="bar">
-  <a class="brand" href="#" id="brand" title="回到第一页">
+  <a class="brand" href="#" id="brand" title="回到第一页" data-i18n-title="bar.home">
     <span class="brand-mark" aria-hidden="true"></span>
-    <span class="brand-name">Magma 画板存档</span>
+    <span class="brand-name" data-i18n="app.title">Magma 画板存档</span>
   </a>
   <div class="controls">
-    <div class="seg" role="group" aria-label="展示方式">
-      <button type="button" data-view="grid" title="网格（1）" aria-label="网格"><svg><use href="#i-grid"/></svg></button>
-      <button type="button" data-view="masonry" title="瀑布流（2）" aria-label="瀑布流"><svg><use href="#i-masonry"/></svg></button>
-      <button type="button" data-view="list" title="列表（3）" aria-label="列表"><svg><use href="#i-list"/></svg></button>
+    <div class="seg" role="group" aria-label="展示方式" data-i18n-label="bar.views">
+      <button type="button" data-view="grid" title="网格（1）" aria-label="网格" data-i18n-title="view.gridTip" data-i18n-label="view.grid"><svg><use href="#i-grid"/></svg></button>
+      <button type="button" data-view="masonry" title="瀑布流（2）" aria-label="瀑布流" data-i18n-title="view.masonryTip" data-i18n-label="view.masonry"><svg><use href="#i-masonry"/></svg></button>
+      <button type="button" data-view="list" title="列表（3）" aria-label="列表" data-i18n-title="view.listTip" data-i18n-label="view.list"><svg><use href="#i-list"/></svg></button>
     </div>
-    <div class="tools" role="group" aria-label="显示选项">
+    <div class="tools" role="group" aria-label="显示选项" data-i18n-label="bar.options">
       <button type="button" class="icon-btn" id="sort"><svg><use href="#i-sort-desc"/></svg></button>
-      <button type="button" class="icon-btn" id="group" title="按日分组（G）" aria-label="按日分组" aria-pressed="false"><svg><use href="#i-calendar"/></svg></button>
-      <label class="field" title="每页数量">
-        <span class="sr-only">每页数量</span>
+      <button type="button" class="icon-btn" id="group" title="按日分组（G）" aria-label="按日分组" data-i18n-title="group.tip" data-i18n-label="group.label" aria-pressed="false"><svg><use href="#i-calendar"/></svg></button>
+      <label class="field" title="每页数量" data-i18n-title="size.label">
+        <span class="sr-only" data-i18n="size.label">每页数量</span>
         <select id="size">
           <option value="24">24</option>
           <option value="48">48</option>
@@ -81,37 +82,38 @@
       </label>
     </div>
     <span class="sep" aria-hidden="true"></span>
-    <button type="button" class="icon-btn" id="select-mode" title="多选（S）" aria-label="多选" aria-pressed="false"><svg><use href="#i-select"/></svg></button>
-    <button type="button" class="icon-btn" id="theme" title="切换明暗（T）" aria-label="切换明暗"><svg><use href="#i-moon"/></svg></button>
+    <button type="button" class="icon-btn" id="select-mode" title="多选（S）" aria-label="多选" data-i18n-title="select.tip" data-i18n-label="select.label" aria-pressed="false"><svg><use href="#i-select"/></svg></button>
+    <button type="button" class="icon-btn" id="theme" title="切换明暗（T）" aria-label="切换明暗" data-i18n-title="theme.tip" data-i18n-label="theme.label"><svg><use href="#i-moon"/></svg></button>
+    <button type="button" class="icon-btn lang-btn" id="lang" title="Switch to English (L)" aria-label="Switch to English" data-i18n="lang.switch" data-i18n-title="lang.switchTip" data-i18n-label="lang.switchLabel">EN</button>
     <button type="button" class="icon-btn" id="notice-btn" title="公告（N）" aria-label="公告"><svg><use href="#i-bell"/></svg></button>
     <span class="acct">
       <button type="button" class="icon-btn" id="account" title="管理员登录" aria-label="管理员登录"><svg><use href="#i-user"/></svg></button>
-      <div class="acct-menu" id="acct-menu" role="menu" aria-label="管理" hidden>
-        <div class="acct-head"><strong>管理员</strong><span id="acct-sub"></span></div>
-        <button type="button" role="menuitem" data-open="status-dialog"><svg><use href="#i-info"/></svg><span>运行状态</span><em id="acct-result"></em></button>
-        <button type="button" role="menuitem" data-open="schedule-dialog"><svg><use href="#i-clock"/></svg><span>定时抓取</span><em id="acct-schedule"></em></button>
-        <button type="button" role="menuitem" data-open="notice-admin-dialog"><svg><use href="#i-megaphone"/></svg><span>公告管理</span><em id="acct-notices"></em></button>
-        <a role="menuitem" id="download-all" href="/download/all" download><svg><use href="#i-download"/></svg><span>下载全部</span></a>
+      <div class="acct-menu" id="acct-menu" role="menu" aria-label="管理" data-i18n-label="acct.manage" hidden>
+        <div class="acct-head"><strong data-i18n="acct.admin">管理员</strong><span id="acct-sub"></span></div>
+        <button type="button" role="menuitem" data-open="status-dialog"><svg><use href="#i-info"/></svg><span data-i18n="acct.status">运行状态</span><em id="acct-result"></em></button>
+        <button type="button" role="menuitem" data-open="schedule-dialog"><svg><use href="#i-clock"/></svg><span data-i18n="task.title">定时抓取</span><em id="acct-schedule"></em></button>
+        <button type="button" role="menuitem" data-open="notice-admin-dialog"><svg><use href="#i-megaphone"/></svg><span data-i18n="acct.notices">公告管理</span><em id="acct-notices"></em></button>
+        <a role="menuitem" id="download-all" href="/download/all" download><svg><use href="#i-download"/></svg><span data-i18n="acct.downloadAll">下载全部</span></a>
         <hr>
-        <button type="button" role="menuitem" id="logout"><svg><use href="#i-logout"/></svg><span>退出登录</span></button>
+        <button type="button" role="menuitem" id="logout"><svg><use href="#i-logout"/></svg><span data-i18n="acct.logout">退出登录</span></button>
       </div>
     </span>
   </div>
 </header>
 
 <main id="main">
-  <section class="now" id="now" aria-label="画板最新状态" hidden>
+  <section class="now" id="now" aria-label="画板最新状态" data-i18n-label="now.label" hidden>
     <div class="now-stage">
       <div class="now-view" id="now-view">
-        <button type="button" class="now-frame" id="now-open" aria-label="查看大图">
-          <img id="now-img" alt="画板画面">
+        <button type="button" class="now-frame" id="now-open" aria-label="查看大图" data-i18n-label="now.open">
+          <img id="now-img" alt="画板画面" data-i18n-alt="now.imgAlt">
         </button>
-        <button type="button" class="now-nav prev" id="now-prev" aria-label="上一张（更早）" title="上一张（更早）"><svg><use href="#i-left"/></svg></button>
-        <button type="button" class="now-nav next" id="now-next" aria-label="下一张（更新）" title="下一张（更新）"><svg><use href="#i-right"/></svg></button>
+        <button type="button" class="now-nav prev" id="now-prev" aria-label="上一张（更早）" title="上一张（更早）" data-i18n-label="now.prev" data-i18n-title="now.prev"><svg><use href="#i-left"/></svg></button>
+        <button type="button" class="now-nav next" id="now-next" aria-label="下一张（更新）" title="下一张（更新）" data-i18n-label="now.next" data-i18n-title="now.next"><svg><use href="#i-right"/></svg></button>
       </div>
       <div class="reel" id="reel" hidden>
-        <button type="button" class="reel-play" id="reel-play" title="回放最近 24 小时（P）" aria-label="回放最近 24 小时" aria-pressed="false"><svg><use href="#i-play"/></svg></button>
-        <div class="reel-track" id="reel-track" role="slider" tabindex="0" aria-label="最近 24 小时的画面" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+        <button type="button" class="reel-play" id="reel-play" title="回放最近 24 小时（P）" aria-label="回放最近 24 小时" data-i18n-title="reel.playTip" data-i18n-label="reel.play" aria-pressed="false"><svg><use href="#i-play"/></svg></button>
+        <div class="reel-track" id="reel-track" role="slider" tabindex="0" aria-label="最近 24 小时的画面" data-i18n-label="reel.track" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
           <div class="reel-ticks" id="reel-ticks"></div>
           <span class="reel-head" id="reel-head" aria-hidden="true"></span>
         </div>
@@ -124,10 +126,10 @@
       <time class="now-clock" id="now-time"></time>
       <dl class="now-facts" id="now-facts"></dl>
       <div class="now-actions">
-        <button type="button" class="btn primary" id="now-zoom"><svg><use href="#i-expand"/></svg>查看大图</button>
-        <a class="btn ghost" id="now-dl" href="#" download><svg><use href="#i-download"/></svg>下载</a>
+        <button type="button" class="btn primary" id="now-zoom"><svg><use href="#i-expand"/></svg><span data-i18n="now.zoom">查看大图</span></button>
+        <a class="btn ghost" id="now-dl" href="#" download><svg><use href="#i-download"/></svg><span data-i18n="common.download">下载</span></a>
       </div>
-      <button type="button" class="linkish now-back" id="now-back" hidden><svg><use href="#i-right"/></svg>回到最新</button>
+      <button type="button" class="linkish now-back" id="now-back" hidden><svg><use href="#i-right"/></svg><span data-i18n="now.back">回到最新</span></button>
       <dl class="now-task" id="task" hidden></dl>
     </aside>
   </section>
@@ -143,81 +145,81 @@
       <circle cx="116" cy="36" r="8" class="ea-dot"/>
       <rect x="58" y="104" width="44" height="6" rx="3" class="ea-foot"/>
     </svg>
-    <p class="empty-title">还没有画面</p>
-    <p>画板有变化时会自动保存到这里</p>
+    <p class="empty-title" data-i18n="empty.title">还没有画面</p>
+    <p data-i18n="empty.text">画板有变化时会自动保存到这里</p>
   </div>
-  <nav class="pager" id="pager" aria-label="分页"></nav>
+  <nav class="pager" id="pager" aria-label="分页" data-i18n-label="pager.label"></nav>
 </main>
 
 <footer class="foot">
-  <button type="button" class="linkish" id="show-keys" title="键盘快捷键（?）" aria-label="键盘快捷键"><svg><use href="#i-keyboard"/></svg><kbd>?</kbd></button>
+  <button type="button" class="linkish" id="show-keys" title="键盘快捷键（?）" aria-label="键盘快捷键" data-i18n-title="foot.keysTip" data-i18n-label="foot.keys"><svg><use href="#i-keyboard"/></svg><kbd>?</kbd></button>
 </footer>
 
-<div class="fresh" id="fresh" hidden><button type="button" id="fresh-btn" title="查看最新画面"><svg><use href="#i-up"/></svg>新画面</button></div>
+<div class="fresh" id="fresh" hidden><button type="button" id="fresh-btn" title="查看最新画面" data-i18n-title="fresh.tip"><svg><use href="#i-up"/></svg><span data-i18n="fresh.text">新画面</span></button></div>
 
-<button type="button" class="to-top" id="to-top" aria-label="回到顶部" title="回到顶部"><svg><use href="#i-up"/></svg></button>
+<button type="button" class="to-top" id="to-top" aria-label="回到顶部" title="回到顶部" data-i18n-label="toTop" data-i18n-title="toTop"><svg><use href="#i-up"/></svg></button>
 
 <div class="selbar" id="selbar" hidden>
   <span id="sel-count"></span>
-  <button type="button" class="btn primary" id="sel-zip" title="打包下载"><svg><use href="#i-download"/></svg><span>下载</span></button>
-  <button type="button" class="sel-icon" id="sel-page" title="选中本页" aria-label="选中本页"><svg><use href="#i-select-all"/></svg></button>
-  <button type="button" class="sel-icon" id="sel-clear" title="取消选择（Esc）" aria-label="取消选择"><svg><use href="#i-close"/></svg></button>
+  <button type="button" class="btn primary" id="sel-zip" title="打包下载" data-i18n-title="sel.zipTip"><svg><use href="#i-download"/></svg><span data-i18n="sel.download">下载</span></button>
+  <button type="button" class="sel-icon" id="sel-page" title="选中本页" aria-label="选中本页" data-i18n-title="sel.page" data-i18n-label="sel.page"><svg><use href="#i-select-all"/></svg></button>
+  <button type="button" class="sel-icon" id="sel-clear" title="取消选择（Esc）" aria-label="取消选择" data-i18n-title="sel.clearTip" data-i18n-label="sel.clear"><svg><use href="#i-close"/></svg></button>
 </div>
 
 <div class="toast" id="toast" role="status" hidden><svg><use href="#i-info"/></svg><span></span></div>
 
-<div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="查看大图" hidden>
+<div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="查看大图" data-i18n-label="lb.label" hidden>
   <div class="lb-top">
     <div class="lb-meta"><strong id="lb-time"></strong><span id="lb-sub"></span></div>
     <div class="lb-actions">
-      <button type="button" class="lb-btn" id="lb-select" title="选择（X）" aria-label="选择" aria-pressed="false"><svg><use href="#i-check"/></svg></button>
-      <button type="button" class="lb-btn" id="lb-zoom" title="放大（Z / 单击 / 滚轮）" aria-label="放大" aria-pressed="false"><svg><use href="#i-zoom"/></svg></button>
+      <button type="button" class="lb-btn" id="lb-select" title="选择（X）" aria-label="选择" data-i18n-title="lb.selectTip" data-i18n-label="lb.select" aria-pressed="false"><svg><use href="#i-check"/></svg></button>
+      <button type="button" class="lb-btn" id="lb-zoom" title="放大（Z / 单击 / 滚轮）" aria-label="放大" data-i18n-title="lb.zoomTip" data-i18n-label="lb.zoom" aria-pressed="false"><svg><use href="#i-zoom"/></svg></button>
       <span class="lb-menu-wrap lb-dup">
-        <button type="button" class="lb-btn" id="lb-link" title="复制链接（C）" aria-label="复制链接" aria-haspopup="menu" aria-expanded="false"><svg><use href="#i-link"/></svg></button>
+        <button type="button" class="lb-btn" id="lb-link" title="复制链接（C）" aria-label="复制链接" data-i18n-title="lb.copyTip" data-i18n-label="lb.copy" aria-haspopup="menu" aria-expanded="false"><svg><use href="#i-link"/></svg></button>
         <span class="menu" id="lb-menu" role="menu" hidden>
-          <button type="button" role="menuitem" data-fmt="url">原图链接</button>
+          <button type="button" role="menuitem" data-fmt="url" data-i18n="lb.fmtUrl">原图链接</button>
           <button type="button" role="menuitem" data-fmt="md">Markdown</button>
           <button type="button" role="menuitem" data-fmt="html">HTML</button>
           <button type="button" role="menuitem" data-fmt="bb">BBCode</button>
         </span>
       </span>
-      <a class="lb-btn lb-dup" id="lb-download" href="#" title="下载原图（D）" aria-label="下载原图"><svg><use href="#i-download"/></svg></a>
-      <button type="button" class="lb-btn" id="lb-info" title="详情（I）" aria-label="详情" aria-pressed="false" aria-controls="lb-panel"><svg><use href="#i-panel"/></svg></button>
-      <button type="button" class="lb-btn lb-close" id="lb-close" aria-label="关闭（Esc）" title="关闭（Esc）"><svg><use href="#i-close"/></svg></button>
+      <a class="lb-btn lb-dup" id="lb-download" href="#" title="下载原图（D）" aria-label="下载原图" data-i18n-title="lb.downloadTip" data-i18n-label="lb.download"><svg><use href="#i-download"/></svg></a>
+      <button type="button" class="lb-btn" id="lb-info" title="详情（I）" aria-label="详情" data-i18n-title="lb.infoTip" data-i18n-label="lb.info" aria-pressed="false" aria-controls="lb-panel"><svg><use href="#i-panel"/></svg></button>
+      <button type="button" class="lb-btn lb-close" id="lb-close" aria-label="关闭（Esc）" title="关闭（Esc）" data-i18n-label="lb.close" data-i18n-title="lb.close"><svg><use href="#i-close"/></svg></button>
     </div>
   </div>
-  <button type="button" class="lb-nav prev" id="lb-prev" aria-label="上一张" title="上一张（←）"><svg><use href="#i-left"/></svg></button>
+  <button type="button" class="lb-nav prev" id="lb-prev" aria-label="上一张" title="上一张（←）" data-i18n-label="lb.prev" data-i18n-title="lb.prevTip"><svg><use href="#i-left"/></svg></button>
   <figure class="lb-stage" id="lb-stage">
     <img id="lb-img" alt="" draggable="false">
     <span class="spinner lb-spinner" aria-hidden="true"></span>
   </figure>
-  <button type="button" class="lb-nav next" id="lb-next" aria-label="下一张" title="下一张（→）"><svg><use href="#i-right"/></svg></button>
+  <button type="button" class="lb-nav next" id="lb-next" aria-label="下一张" title="下一张（→）" data-i18n-label="lb.next" data-i18n-title="lb.nextTip"><svg><use href="#i-right"/></svg></button>
   <div class="lb-foot"><span class="lb-count" id="lb-count"></span></div>
-  <aside class="lb-panel" id="lb-panel" aria-label="画面详情">
+  <aside class="lb-panel" id="lb-panel" aria-label="画面详情" data-i18n-label="lb.panel">
     <div class="lbp-head">
       <p class="lbp-date" id="lbp-date"></p>
       <p class="lbp-time" id="lbp-time"></p>
       <p class="lbp-ago" id="lbp-ago"></p>
     </div>
     <div class="lbp-dl">
-      <a class="btn primary" id="lbp-download" href="#"><svg><use href="#i-download"/></svg>下载原图</a>
+      <a class="btn primary" id="lbp-download" href="#"><svg><use href="#i-download"/></svg><span data-i18n="lb.download">下载原图</span></a>
       <span class="lb-menu-wrap">
-        <button type="button" class="btn primary lbp-more" id="lbp-size" title="选择尺寸" aria-label="选择下载尺寸" aria-haspopup="menu" aria-expanded="false"><svg><use href="#i-down"/></svg></button>
+        <button type="button" class="btn primary lbp-more" id="lbp-size" title="选择尺寸" aria-label="选择下载尺寸" data-i18n-title="lbp.sizeTip" data-i18n-label="lbp.sizeLabel" aria-haspopup="menu" aria-expanded="false"><svg><use href="#i-down"/></svg></button>
         <span class="menu" id="lbp-size-menu" role="menu" hidden></span>
       </span>
     </div>
     <dl class="lbp-grid" id="lbp-grid"></dl>
     <div class="lbp-block">
-      <p class="lbp-label">复制链接</p>
+      <p class="lbp-label" data-i18n="lbp.copy">复制链接</p>
       <div class="chips" id="lbp-share">
-        <button type="button" class="chip" data-fmt="url">链接</button>
+        <button type="button" class="chip" data-fmt="url" data-i18n="lbp.link">链接</button>
         <button type="button" class="chip" data-fmt="md">Markdown</button>
         <button type="button" class="chip" data-fmt="html">HTML</button>
         <button type="button" class="chip" data-fmt="bb">BBCode</button>
       </div>
     </div>
     <div class="lbp-block">
-      <p class="lbp-label">文件</p>
+      <p class="lbp-label" data-i18n="lbp.file">文件</p>
       <code class="lbp-name" id="lbp-name"></code>
     </div>
   </aside>
@@ -225,71 +227,71 @@
 
 <dialog class="modal" id="login-dialog">
   <form method="dialog" id="login-form">
-    <h2>管理员登录</h2>
-    <label>用户名<input name="username" autocomplete="username" required></label>
-    <label>密码
+    <h2 data-i18n="login.title">管理员登录</h2>
+    <label data-i18n="login.username">用户名<input name="username" autocomplete="username" required></label>
+    <label data-i18n="login.password">密码
       <span class="pw">
         <input name="password" type="password" autocomplete="current-password" required>
-        <button type="button" class="pw-toggle" id="pw-toggle" aria-label="显示密码" aria-pressed="false"><svg><use href="#i-eye"/></svg></button>
+        <button type="button" class="pw-toggle" id="pw-toggle" aria-label="显示密码" data-i18n-label="login.show" aria-pressed="false"><svg><use href="#i-eye"/></svg></button>
       </span>
     </label>
     <p class="form-error" id="login-error" hidden></p>
     <div class="modal-actions">
-      <button type="button" class="btn ghost" value="cancel" id="login-cancel">取消</button>
-      <button type="submit" class="btn primary" id="login-submit"><span class="spinner" aria-hidden="true"></span>登录</button>
+      <button type="button" class="btn ghost" value="cancel" id="login-cancel" data-i18n="login.cancel">取消</button>
+      <button type="submit" class="btn primary" id="login-submit"><span class="spinner" aria-hidden="true"></span><span data-i18n="login.submit">登录</span></button>
     </div>
   </form>
 </dialog>
 
 <dialog class="modal" id="status-dialog">
   <div class="admin">
-    <h2>运行状态</h2>
+    <h2 data-i18n="status.title">运行状态</h2>
     <dl class="stats" id="admin-stats"></dl>
     <div class="modal-actions">
-      <button type="button" class="btn primary" id="fetch-now"><svg><use href="#i-refresh"/></svg><span>立即抓取</span></button>
+      <button type="button" class="btn primary" id="fetch-now"><svg><use href="#i-refresh"/></svg><span data-i18n="status.fetchNow">立即抓取</span></button>
     </div>
-    <button type="button" class="modal-x" data-close aria-label="关闭" autofocus><svg><use href="#i-close"/></svg></button>
+    <button type="button" class="modal-x" data-close aria-label="关闭" data-i18n-label="dialog.close" autofocus><svg><use href="#i-close"/></svg></button>
   </div>
 </dialog>
 
 <dialog class="modal" id="schedule-dialog">
   <div class="admin">
-    <h2>定时抓取</h2>
+    <h2 data-i18n="schedule.title">定时抓取</h2>
     <div class="switch-row">
       <div class="switch-text">
-        <strong id="schedule-title">按计划自动抓取</strong>
+        <strong id="schedule-title" data-i18n="schedule.auto">按计划自动抓取</strong>
         <span id="schedule-hint">加载中…</span>
       </div>
       <button type="button" class="switch" role="switch" id="toggle-schedule" aria-checked="false" aria-labelledby="schedule-title" disabled></button>
     </div>
     <dl class="stats" id="schedule-stats"></dl>
-    <button type="button" class="modal-x" data-close aria-label="关闭" autofocus><svg><use href="#i-close"/></svg></button>
+    <button type="button" class="modal-x" data-close aria-label="关闭" data-i18n-label="dialog.close" autofocus><svg><use href="#i-close"/></svg></button>
   </div>
 </dialog>
 
 <dialog class="modal" id="notice-dialog">
   <div class="admin">
-    <h2>公告</h2>
+    <h2 data-i18n="notice.title">公告</h2>
     <div class="notice-scroll" id="notice-list"></div>
     <div class="modal-actions" id="notice-actions" hidden>
-      <button type="button" class="btn primary" id="notice-read"><svg><use href="#i-check"/></svg>标为已读</button>
+      <button type="button" class="btn primary" id="notice-read"><svg><use href="#i-check"/></svg><span data-i18n="notice.markRead">标为已读</span></button>
     </div>
-    <button type="button" class="modal-x" data-close aria-label="关闭" autofocus><svg><use href="#i-close"/></svg></button>
+    <button type="button" class="modal-x" data-close aria-label="关闭" data-i18n-label="dialog.close" autofocus><svg><use href="#i-close"/></svg></button>
   </div>
 </dialog>
 
 <dialog class="modal" id="notice-admin-dialog">
   <div class="admin">
-    <h2>公告管理</h2>
+    <h2 data-i18n="na.title">公告管理</h2>
     <div class="na">
       <div class="na-side">
-        <button type="button" class="btn ghost" id="na-new"><svg><use href="#i-plus"/></svg>新建公告</button>
-        <ul class="na-list" id="na-list" aria-label="公告列表"></ul>
+        <button type="button" class="btn ghost" id="na-new"><svg><use href="#i-plus"/></svg><span data-i18n="na.new">新建公告</span></button>
+        <ul class="na-list" id="na-list" aria-label="公告列表" data-i18n-label="na.list"></ul>
       </div>
       <form class="na-edit" id="na-form" novalidate>
         <p class="na-state" id="na-state"></p>
-        <label>标题<input name="title" maxlength="100" autocomplete="off" required></label>
-        <label>内容<textarea name="body" maxlength="5000" rows="9" placeholder="支持换行，网址会自动变成链接"></textarea></label>
+        <label data-i18n="na.fieldTitle">标题<input name="title" maxlength="100" autocomplete="off" required></label>
+        <label data-i18n="na.fieldBody">内容<textarea name="body" maxlength="5000" rows="9" placeholder="支持换行，网址会自动变成链接" data-i18n-placeholder="na.placeholder"></textarea></label>
         <p class="na-count" id="na-count"></p>
         <p class="form-error" id="na-error" hidden></p>
         <div class="modal-actions spread">
@@ -301,39 +303,40 @@
         </div>
       </form>
     </div>
-    <button type="button" class="modal-x" data-close aria-label="关闭"><svg><use href="#i-close"/></svg></button>
+    <button type="button" class="modal-x" data-close aria-label="关闭" data-i18n-label="dialog.close"><svg><use href="#i-close"/></svg></button>
   </div>
 </dialog>
 
 <dialog class="modal" id="keys-dialog">
   <div class="admin">
-    <h2>键盘快捷键</h2>
+    <h2 data-i18n="keys.title">键盘快捷键</h2>
     <div class="keys">
-      <h3>浏览</h3>
+      <h3 data-i18n="keys.browse">浏览</h3>
       <dl>
-        <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>上一页 / 下一页</dd>
-        <dt><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></dt><dd>网格 / 瀑布流 / 列表</dd>
-        <dt><kbd>O</kbd></dt><dd>切换最新 / 最早在前</dd>
-        <dt><kbd>G</kbd></dt><dd>按日分组</dd>
-        <dt><kbd>P</kbd></dt><dd>回放或暂停最近 24 小时</dd>
-        <dt><kbd>S</kbd></dt><dd>进入或退出多选</dd>
-        <dt><kbd>Shift</kbd> + 点击</dt><dd>连续选择一段画面</dd>
-        <dt><kbd>Esc</kbd></dt><dd>清空选择</dd>
-        <dt><kbd>T</kbd></dt><dd>切换明暗</dd>
-        <dt><kbd>N</kbd></dt><dd>查看公告</dd>
+        <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd data-i18n="keys.pages">上一页 / 下一页</dd>
+        <dt><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></dt><dd data-i18n="keys.views">网格 / 瀑布流 / 列表</dd>
+        <dt><kbd>O</kbd></dt><dd data-i18n="keys.sort">切换最新 / 最早在前</dd>
+        <dt><kbd>G</kbd></dt><dd data-i18n="keys.group">按日分组</dd>
+        <dt><kbd>P</kbd></dt><dd data-i18n="keys.play">回放或暂停最近 24 小时</dd>
+        <dt><kbd>S</kbd></dt><dd data-i18n="keys.select">进入或退出多选</dd>
+        <dt data-i18n="keys.click"><kbd>Shift</kbd> + 点击</dt><dd data-i18n="keys.range">连续选择一段画面</dd>
+        <dt><kbd>Esc</kbd></dt><dd data-i18n="keys.clear">清空选择</dd>
+        <dt><kbd>T</kbd></dt><dd data-i18n="keys.theme">切换明暗</dd>
+        <dt><kbd>L</kbd></dt><dd data-i18n="keys.lang">切换语言</dd>
+        <dt><kbd>N</kbd></dt><dd data-i18n="keys.notices">查看公告</dd>
       </dl>
-      <h3>大图</h3>
+      <h3 data-i18n="keys.viewer">大图</h3>
       <dl>
-        <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>上一张 / 下一张（可跨页）</dd>
-        <dt><kbd>Z</kbd> / 单击 / 滚轮</dt><dd>放大或还原，放大后可拖动</dd>
-        <dt><kbd>X</kbd></dt><dd>选择当前画面</dd>
-        <dt><kbd>I</kbd></dt><dd>显示或隐藏详情</dd>
-        <dt><kbd>C</kbd></dt><dd>复制链接</dd>
-        <dt><kbd>D</kbd></dt><dd>下载原图</dd>
-        <dt><kbd>Esc</kbd></dt><dd>关闭</dd>
+        <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd data-i18n="keys.steps">上一张 / 下一张（可跨页）</dd>
+        <dt data-i18n="keys.zoomKeys"><kbd>Z</kbd> / 单击 / 滚轮</dt><dd data-i18n="keys.zoom">放大或还原，放大后可拖动</dd>
+        <dt><kbd>X</kbd></dt><dd data-i18n="keys.selectOne">选择当前画面</dd>
+        <dt><kbd>I</kbd></dt><dd data-i18n="keys.info">显示或隐藏详情</dd>
+        <dt><kbd>C</kbd></dt><dd data-i18n="keys.copy">复制链接</dd>
+        <dt><kbd>D</kbd></dt><dd data-i18n="keys.download">下载原图</dd>
+        <dt><kbd>Esc</kbd></dt><dd data-i18n="keys.close">关闭</dd>
       </dl>
     </div>
-    <button type="button" class="modal-x" data-close aria-label="关闭" autofocus><svg><use href="#i-close"/></svg></button>
+    <button type="button" class="modal-x" data-close aria-label="关闭" data-i18n-label="dialog.close" autofocus><svg><use href="#i-close"/></svg></button>
   </div>
 </dialog>
 

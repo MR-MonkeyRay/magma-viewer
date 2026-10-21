@@ -322,8 +322,8 @@ func TestNotices(t *testing.T) {
 	if _, out := send(http.MethodGet, "/api/notices/all", "", c); string(out["items"]) != "[]" {
 		t.Fatalf("empty list encodes as %s", out["items"])
 	}
-	if r, out := send(http.MethodPost, "/api/notices", `{"title":"  "}`, c); r.StatusCode != http.StatusBadRequest || !strings.Contains(string(out["error"]), "标题") {
-		t.Fatalf("blank title: %s %s", r.Status, out["error"])
+	if r, out := send(http.MethodPost, "/api/notices", `{"title":"  "}`, c); r.StatusCode != http.StatusBadRequest || string(out["code"]) != `"title_required"` {
+		t.Fatalf("blank title: %s %s %s", r.Status, out["code"], out["error"])
 	}
 
 	r, out := send(http.MethodPost, "/api/notices", `{"title":"维护","body":"周六"}`, c)

@@ -2,6 +2,8 @@
   'use strict';
 
   const $ = (sel) => document.querySelector(sel);
+  const { i18n } = window;
+  const { t } = i18n;
   const store = {
     get(k, d) { try { const v = localStorage.getItem('mv.' + k); return v === null ? d : v; } catch (e) { return d; } },
     set(k, v) { try { localStorage.setItem('mv.' + k, v); } catch (e) { /* private mode */ } },
@@ -36,7 +38,7 @@
     nowBadge: $('#now-badge'), nowView: $('#now-view'), nowPrev: $('#now-prev'), nowNext: $('#now-next'), nowBack: $('#now-back'), reel: $('#reel'), reelTrack: $('#reel-track'),
     reelTicks: $('#reel-ticks'), reelHead: $('#reel-head'), reelAxis: $('#reel-axis'), reelPlay: $('#reel-play'),
     seg: $('.seg'), sort: $('#sort'), size: $('#size'), group: $('#group'), selectMode: $('#select-mode'),
-    theme: $('#theme'), account: $('#account'), acctMenu: $('#acct-menu'), noticeBtn: $('#notice-btn'), foot: $('.foot'),
+    theme: $('#theme'), lang: $('#lang'), account: $('#account'), acctMenu: $('#acct-menu'), noticeBtn: $('#notice-btn'), foot: $('.foot'),
     selbar: $('#selbar'), selCount: $('#sel-count'), fresh: $('#fresh'),
     toast: $('#toast'), toastText: $('#toast span'), toastIcon: $('#toast use'),
     lb: $('#lightbox'), lbStage: $('#lb-stage'), lbImg: $('#lb-img'), lbTime: $('#lb-time'), lbSub: $('#lb-sub'),
@@ -60,45 +62,49 @@
   const fmtFull = (d) => `${fmtDate(d)} ${fmtClock(d)}`;
   const fmtShort = (d) => `${fmtDate(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   const fmtHM = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  const WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   const sameDay = (a, b) => fmtDate(a) === fmtDate(b);
   // Tile labels drop the date when it is today; the date header or tooltip has the full time.
   const fmtTile = (d) => (state.group || sameDay(d, new Date()) ? fmtHM(d) : `${d.getMonth() + 1}/${d.getDate()} ${fmtHM(d)}`);
   function fmtDay(d) {
     const today = new Date();
     const yest = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
-    const label = sameDay(d, today) ? '今天' : sameDay(d, yest) ? '昨天' : WEEK[d.getDay()];
-    const year = d.getFullYear() === today.getFullYear() ? '' : `${d.getFullYear()}年`;
-    return `${year}${d.getMonth() + 1}月${d.getDate()}日 ${label}`;
+    const label = sameDay(d, today) ? t('day.today') : sameDay(d, yest) ? t('day.yesterday') : d.toLocaleDateString(i18n.locale, { weekday: 'short' });
+    return t('day.full', { date: fmtMonthDay(d), label });
+  }
+  // The year shows only when it is not this year.
+  function fmtMonthDay(d) {
+    const year = d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric';
+    return d.toLocaleDateString(i18n.locale, { year, month: i18n.lang === 'zh' ? 'long' : 'short', day: 'numeric' });
   }
   function fmtSize(b) {
     if (b < 1024) return b + ' B';
     if (b < 1024 * 1024) return (b / 1024).toFixed(0) + ' KB';
     return (b / 1024 / 1024).toFixed(b < 10 * 1024 * 1024 ? 2 : 1) + ' MB';
   }
-  function fmtAgo(d, verb = '保存') {
+  function fmtAgo(d, saved = true) {
     const s = Math.max(0, (Date.now() - d.getTime()) / 1000);
-    if (s < 60) return '刚刚' + verb;
-    if (s < 3600) return `${Math.floor(s / 60)} 分钟前${verb}`;
-    if (s < 86400) return `${Math.floor(s / 3600)} 小时前${verb}`;
-    return `${Math.floor(s / 86400)} 天前${verb}`;
+    const ago = s < 60 ? t('ago.now')
+      : s < 3600 ? t('ago.minutes', { n: Math.floor(s / 60) })
+        : s < 86400 ? t('ago.hours', { n: Math.floor(s / 3600) })
+          : t('ago.days', { n: Math.floor(s / 86400) });
+    return saved ? t('ago.saved', { ago }) : ago;
   }
   function fmtUntil(d) {
     const s = Math.ceil((d.getTime() - Date.now()) / 1000);
-    if (s <= 0) return '即将开始';
-    if (s < 60) return `${s} 秒后`;
-    if (s < 3600) return `${Math.floor(s / 60)} 分 ${pad(s % 60)} 秒后`;
-    if (s < 86400) return `${Math.floor(s / 3600)} 小时 ${Math.floor((s % 3600) / 60)} 分后`;
+    if (s <= 0) return t('until.soon');
+    if (s < 60) return t('until.seconds', { s });
+    if (s < 3600) return t('until.minutes', { m: Math.floor(s / 60), s: pad(s % 60) });
+    if (s < 86400) return t('until.hours', { h: Math.floor(s / 3600), m: Math.floor((s % 3600) / 60) });
     return fmtShort(d);
   }
-  // Rounds before picking the unit, so 59.6 s reads "1 分钟" rather than "60 秒".
+  // Rounds before picking the unit, so 59.6 s reads "1 min" rather than "60 s".
   function fmtGap(s) {
     s = Math.round(s);
-    if (s < 60) return `${s} 秒`;
+    if (s < 60) return t('gap.seconds', { n: s });
     const m = Math.round(s / 60);
-    if (m < 60) return `${m} 分钟`;
-    if (m < 1440) return `${Math.floor(m / 60)} 小时 ${m % 60} 分`;
-    return `${Math.floor(m / 1440)} 天`;
+    if (m < 60) return t('gap.minutes', { n: m });
+    if (m < 1440) return t('gap.hours', { h: Math.floor(m / 60), m: m % 60 });
+    return t('gap.days', { n: Math.floor(m / 1440) });
   }
   const extOf = (name) => ((/\.([a-z0-9]+)$/i.exec(name) || [])[1] || '').toUpperCase().replace('JPEG', 'JPG');
   function ratioOf(w, h) {
@@ -119,7 +125,7 @@
   // Elements with data-ago / data-until keep their relative time current.
   function tickTimes() {
     const set = (n, v) => { if (n.textContent !== v) n.textContent = v; };
-    document.querySelectorAll('[data-ago]').forEach((n) => set(n, fmtAgo(new Date(n.dataset.ago), n.dataset.verb || '')));
+    document.querySelectorAll('[data-ago]').forEach((n) => set(n, fmtAgo(new Date(n.dataset.ago), n.dataset.saved === '1')));
     document.querySelectorAll('[data-until]').forEach((n) => set(n, fmtUntil(new Date(n.dataset.until))));
   }
 
@@ -205,8 +211,14 @@
   async function api(path, opts) {
     const res = await fetch(path, Object.assign({ credentials: 'same-origin' }, opts));
     const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw Object.assign(new Error(body.error || res.statusText), { status: res.status });
+    if (!res.ok) throw Object.assign(new Error(errorText(body) || res.statusText), { status: res.status });
     return body;
+  }
+
+  // The server's message is Chinese; known codes are shown in the page's language instead.
+  function errorText(body) {
+    const key = 'err.' + body.code;
+    return body.code && t(key) !== key ? t(key) : body.error;
   }
 
   function download(href) {
@@ -327,8 +339,8 @@
   function renderError(e) {
     el.gallery.className = 'gallery';
     el.gallery.innerHTML = `<div class="load-error"><svg><use href="#i-alert"/></svg>
-      <p>加载失败：${esc(e.message)}</p>
-      <button type="button" class="btn primary" data-retry><svg><use href="#i-refresh"/></svg>重试</button></div>`;
+      <p>${esc(t('load.failed', { msg: e.message }))}</p>
+      <button type="button" class="btn primary" data-retry><svg><use href="#i-refresh"/></svg>${t('load.retry')}</button></div>`;
     el.summary.textContent = '';
     el.pager.innerHTML = '';
     // A hero that never got a picture must not keep shimmering above the error.
@@ -341,12 +353,12 @@
     const name = esc(it.name);
     const list = state.view === 'list';
     return `<figure class="tile${sel ? ' selected' : ''}" data-i="${i}" style="--d:${i}">
-      <button type="button" class="tile-check" aria-label="选择" aria-pressed="${sel}"><svg><use href="#i-check"/></svg></button>
-      <button type="button" class="tile-open" aria-label="查看 ${esc(fmtFull(d))}" title="${esc(fmtFull(d))}"><img loading="lazy" decoding="async" src="/thumb/${enc(it.name)}"${it.w ? ` width="${it.w}" height="${it.h}"` : ''} alt=""></button>
+      <button type="button" class="tile-check" aria-label="${t('tile.select')}" aria-pressed="${sel}"><svg><use href="#i-check"/></svg></button>
+      <button type="button" class="tile-open" aria-label="${esc(t('tile.view', { time: fmtFull(d) }))}" title="${esc(fmtFull(d))}"><img loading="lazy" decoding="async" src="/thumb/${enc(it.name)}"${it.w ? ` width="${it.w}" height="${it.h}"` : ''} alt=""></button>
       <figcaption class="tile-cap">
         <time datetime="${esc(it.time)}">${list ? fmtFull(d) : fmtTile(d)}</time>
         ${list ? `<span class="name" title="${name}">${name}</span><span class="size">${it.w ? `<span class="dims">${it.w}×${it.h} · </span>` : ''}${fmtSize(it.size)}</span>` : ''}
-        <a class="tile-dl" href="/download/${enc(it.name)}" download title="下载原图" aria-label="下载原图"><svg><use href="#i-download"/></svg></a>
+        <a class="tile-dl" href="/download/${enc(it.name)}" download title="${t('tile.download')}" aria-label="${t('tile.download')}"><svg><use href="#i-download"/></svg></a>
       </figcaption>
     </figure>`;
   }
@@ -384,21 +396,21 @@
     const live = shown.name === latest.name;
     const d = new Date(shown.time);
     el.now.classList.toggle('past', !live);
-    el.nowBadge.textContent = live ? '最新' : '回看';
+    el.nowBadge.textContent = live ? t('now.latest') : t('now.past');
     el.nowBack.hidden = live;
     el.nowDate.textContent = fmtDay(d);
     el.nowTime.dateTime = shown.time;
     el.nowTime.title = fmtFull(d);
     el.nowTime.textContent = fmtHM(d);
     el.nowAgo.dataset.ago = shown.time;
-    el.nowAgo.textContent = fmtAgo(d, '保存');
+    el.nowAgo.textContent = fmtAgo(d);
     const idx = reel.items.findIndex((it) => it.name === shown.name);
     const prev = idx >= 0 ? reel.items[idx - 1] : null;
     el.nowFacts.innerHTML = `
-      <div><dt>距上一张</dt><dd>${prev ? fmtGap((new Date(shown.time) - new Date(prev.time)) / 1000) : '—'}</dd></div>
-      <div><dt>尺寸</dt><dd>${shown.w ? `${shown.w}×${shown.h}` : '—'}</dd></div>
-      <div><dt>大小</dt><dd>${fmtSize(shown.size)}</dd></div>
-      <div><dt>今天已保存</dt><dd>${overview.today === null ? '—' : `${overview.today} 张`}</dd></div>`;
+      <div><dt>${t('now.gap')}</dt><dd>${prev ? fmtGap((new Date(shown.time) - new Date(prev.time)) / 1000) : '—'}</dd></div>
+      <div><dt>${t('now.dims')}</dt><dd>${shown.w ? `${shown.w}×${shown.h}` : '—'}</dd></div>
+      <div><dt>${t('now.size')}</dt><dd>${fmtSize(shown.size)}</dd></div>
+      <div><dt>${t('now.today')}</dt><dd>${overview.today === null ? '—' : t('now.todayCount', { n: overview.today })}</dd></div>`;
     el.nowDl.href = `/download/${enc(shown.name)}`;
     renderReelHead();
     if (el.now.dataset.name === shown.name) return;
@@ -458,7 +470,7 @@
       const h = new Date(t).getHours();
       if (h % 6 === 0) marks.push(`<span style="left:${(reelX(t) * 100).toFixed(3)}%">${h === 0 ? `${new Date(t).getMonth() + 1}/${new Date(t).getDate()}` : pad(h) + ':00'}</span>`);
     }
-    el.reelAxis.innerHTML = marks.join('') + `<span class="end">${Date.now() - reel.to < 36e5 ? '现在' : fmtHM(new Date(reel.to))}</span>`;
+    el.reelAxis.innerHTML = marks.join('') + `<span class="end">${Date.now() - reel.to < 36e5 ? t('reel.now') : fmtHM(new Date(reel.to))}</span>`;
   }
   function renderReelHead() {
     const i = reel.at >= 0 ? reel.at : reel.items.length - 1;
@@ -542,15 +554,15 @@
   el.nowBack.addEventListener('click', () => { reelStop(); reelSeek(reel.items.length - 1); });
 
   function renderTask() {
-    const t = state.task;
-    el.task.hidden = !t;
-    if (!t) return;
-    const at = validTime(t.last_fetched) ? new Date(t.last_fetched) : null;
-    const next = !t.paused && validTime(t.next_run) ? t.next_run : '';
-    el.task.classList.toggle('paused', t.paused);
-    el.task.innerHTML = `<dt>定时抓取</dt><dd><span class="task-state"><span class="task-dot" aria-hidden="true"></span>${t.paused ? '已暂停' : '运行中'}</span></dd>
-      <dt>最近获取</dt><dd title="${at ? esc(fmtFull(at)) : '暂无'}">${at ? `<span data-ago="${esc(t.last_fetched)}">${fmtAgo(at, '')}</span>` : '暂无'}</dd>
-      ${next ? `<dt>下次抓取</dt><dd title="${esc(fmtFull(new Date(next)))}"><span data-until="${esc(next)}">${fmtUntil(new Date(next))}</span></dd>` : ''}`;
+    const task = state.task;
+    el.task.hidden = !task;
+    if (!task) return;
+    const at = validTime(task.last_fetched) ? new Date(task.last_fetched) : null;
+    const next = !task.paused && validTime(task.next_run) ? task.next_run : '';
+    el.task.classList.toggle('paused', task.paused);
+    el.task.innerHTML = `<dt>${t('task.title')}</dt><dd><span class="task-state"><span class="task-dot" aria-hidden="true"></span>${t(task.paused ? 'task.paused' : 'task.running')}</span></dd>
+      <dt>${t('task.lastFetched')}</dt><dd title="${at ? esc(fmtFull(at)) : t('task.none')}">${at ? `<span data-ago="${esc(task.last_fetched)}">${fmtAgo(at, false)}</span>` : t('task.none')}</dd>
+      ${next ? `<dt>${t('task.next')}</dt><dd title="${esc(fmtFull(new Date(next)))}"><span data-until="${esc(next)}">${fmtUntil(new Date(next))}</span></dd>` : ''}`;
   }
 
   // slide is the direction a new page arrives from; view and grouping changes animate in place.
@@ -564,7 +576,7 @@
     const to = from + state.items.length - 1;
     const since = overview.first ? new Date(overview.first) : null;
     el.summary.innerHTML = state.total
-      ? `<strong>${state.total}</strong> 张${since ? `<span>从 ${fmtDay(since).split(' ')[0]} 开始记录</span>` : ''}${state.pages > 1 ? `<span>本页第 ${from}–${to} 张</span>` : ''}`
+      ? `<strong>${state.total}</strong> ${t('summary.images', { n: state.total })}${since ? `<span>${t('summary.since', { date: fmtMonthDay(since) })}</span>` : ''}${state.pages > 1 ? `<span>${t('summary.range', { from, to })}</span>` : ''}`
       : '';
 
     el.gallery.className = `gallery view-${state.view}${state.selectMode ? ' selecting' : ''}${animate ? ' animate' : ''}`;
@@ -591,8 +603,8 @@
         const t0 = fmtHM(new Date(g.entries[0][0].time));
         const t1 = fmtHM(new Date(g.entries[n - 1][0].time));
         return `<h2 class="group-title" data-from="${first}" data-to="${last}" data-date="${g.key}">
-          <button type="button" class="group-check" aria-label="选择这一天" title="选择这一天"><svg><use href="#i-check"/></svg></button>
-          <span class="gt-day">${fmtDay(g.d)}</span><span class="gt-count">${total > n ? `本页 ${n} / 共 ${total} 张` : `${n} 张`}</span><span class="gt-range">${n > 1 ? `${state.sort === 'desc' ? t1 : t0}–${state.sort === 'desc' ? t0 : t1}` : t0}</span></h2>${tilesHTML(g.entries)}`;
+          <button type="button" class="group-check" aria-label="${t('day.selectAll')}" title="${t('day.selectAll')}"><svg><use href="#i-check"/></svg></button>
+          <span class="gt-day">${fmtDay(g.d)}</span><span class="gt-count">${total > n ? t('day.pageOfTotal', { n, total }) : t('day.count', { n })}</span><span class="gt-range">${n > 1 ? `${state.sort === 'desc' ? t1 : t0}–${state.sort === 'desc' ? t0 : t1}` : t0}</span></h2>${tilesHTML(g.entries)}`;
       }).join('');
     }
     markCached(el.gallery);
@@ -622,25 +634,25 @@
     if (state.pages <= 1) { el.pager.innerHTML = ''; return; }
     const btn = (p, label, extra = '') => `<button type="button" data-page="${p}" ${extra}>${label}</button>`;
     el.pager.innerHTML =
-      btn(state.page - 1, '<svg><use href="#i-left"/></svg>', `class="step" aria-label="上一页" title="上一页（←）"${state.page <= 1 ? ' disabled' : ''}`) +
+      btn(state.page - 1, '<svg><use href="#i-left"/></svg>', `class="step" aria-label="${t('pager.prev')}" title="${t('pager.prevTip')}"${state.page <= 1 ? ' disabled' : ''}`) +
       pageList(state.page, state.pages).map((p) => p === null
         ? '<span class="gap">…</span>'
         : btn(p, p, p === state.page ? 'aria-current="page"' : '')).join('') +
-      btn(state.page + 1, '<svg><use href="#i-right"/></svg>', `class="step" aria-label="下一页" title="下一页（→）"${state.page >= state.pages ? ' disabled' : ''}`) +
-      `<label class="jump" title="跳转页码（回车）"><input type="number" min="1" max="${state.pages}" placeholder="${state.page}" aria-label="跳转页码"><span>/ ${state.pages}</span></label>`;
+      btn(state.page + 1, '<svg><use href="#i-right"/></svg>', `class="step" aria-label="${t('pager.next')}" title="${t('pager.nextTip')}"${state.page >= state.pages ? ' disabled' : ''}`) +
+      `<label class="jump" title="${t('pager.jumpTip')}"><input type="number" min="1" max="${state.pages}" placeholder="${state.page}" aria-label="${t('pager.jump')}"><span>/ ${state.pages}</span></label>`;
   }
 
   function renderControls() {
     document.querySelectorAll('.seg [data-view]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.view === state.view)));
     el.seg.style.setProperty('--seg-i', Math.max(0, VIEWS.indexOf(state.view)));
-    const sortLabel = state.sort === 'desc' ? '最新在前' : '最早在前';
+    const sortLabel = t(state.sort === 'desc' ? 'sort.desc' : 'sort.asc');
     el.sort.querySelector('use').setAttribute('href', state.sort === 'desc' ? '#i-sort-desc' : '#i-sort-asc');
-    el.sort.title = `${sortLabel}（O）`;
-    el.sort.setAttribute('aria-label', `排序：${sortLabel}`);
+    el.sort.title = t('sort.tip', { label: sortLabel });
+    el.sort.setAttribute('aria-label', t('sort.label', { label: sortLabel }));
     el.size.value = String(state.size);
     el.group.setAttribute('aria-pressed', String(state.group));
     el.selectMode.setAttribute('aria-pressed', String(state.selectMode));
-    const account = state.admin ? '管理' : '管理员登录';
+    const account = t(state.admin ? 'acct.manage' : 'acct.login');
     el.account.title = account;
     el.account.setAttribute('aria-label', account);
     if (state.admin) {
@@ -670,7 +682,7 @@
     state.sort = state.sort === 'desc' ? 'asc' : 'desc';
     store.set('sort', state.sort);
     go(1);
-    toast(state.sort === 'desc' ? '最新在前' : '最早在前');
+    toast(t(state.sort === 'desc' ? 'sort.desc' : 'sort.asc'));
   }
 
   function toggleGroup() {
@@ -699,6 +711,25 @@
     }).catch(() => {});
   }
 
+  // Everything on screen is redrawn in place, so open dialogs, the lightbox and the selection stay as they are.
+  function toggleLang() {
+    i18n.set(i18n.lang === 'zh' ? 'en' : 'zh');
+    i18n.apply();
+    renderReel();
+    // A skeleton or an error has nothing to relabel yet; the next load renders in the new language.
+    if (el.gallery.matches('.skeleton') || el.gallery.querySelector('.load-error')) renderControls(); else render();
+    renderBell();
+    renderAcct();
+    tickTimes();
+    if (state.lbIndex >= 0) { updateLightboxMeta(); applyZoom(); renderSelection(); }
+    setPasswordVisible(el.loginForm.elements.password.type === 'text');
+    if (el.noticeDialog.open) renderNotices();
+    if (el.naDialog.open) { resetDelete(); renderNaForm(); renderNaList(); }
+    if (el.statusDialog.open || el.scheduleDialog.open) refreshStatus();
+    const res = $('#acct-result');
+    if (res.textContent) res.textContent = t('status.error');
+  }
+
   // ---------- selection ----------
   const limit = () => (state.admin ? Infinity : state.guestLimit);
 
@@ -707,7 +738,7 @@
       state.selected.delete(name);
     } else {
       if (state.selected.size >= limit()) {
-        toast(`访客一次最多打包下载 ${state.guestLimit} 张`, 'error');
+        toast(t('sel.guestLimit', { n: state.guestLimit }), 'error');
         return false;
       }
       state.selected.add(name);
@@ -728,7 +759,7 @@
     const bar = n > 0 || state.selectMode;
     if (bar) show(el.selbar); else hide(el.selbar);
     document.body.classList.toggle('has-selbar', bar);
-    el.selCount.textContent = state.admin ? `已选 ${n}` : `已选 ${n} / ${state.guestLimit}`;
+    el.selCount.textContent = state.admin ? t('sel.count', { n }) : t('sel.countGuest', { n, max: state.guestLimit });
     if (Number(el.selCount.dataset.n || 0) !== n) replay(el.selCount, 'bump');
     el.selCount.dataset.n = n;
     $('#sel-zip').disabled = n === 0;
@@ -747,7 +778,7 @@
     if (state.items[state.lbIndex]) {
       const on = state.selected.has(state.items[state.lbIndex].name);
       el.lbSelect.setAttribute('aria-pressed', String(on));
-      el.lbSelect.setAttribute('aria-label', on ? '取消选择' : '选择');
+      el.lbSelect.setAttribute('aria-label', t(on ? 'lb.unselect' : 'lb.select'));
     }
   }
 
@@ -810,24 +841,24 @@
     el.lbpDate.textContent = fmtDay(d);
     el.lbpTime.textContent = fmtClock(d);
     el.lbpAgo.dataset.ago = it.time;
-    el.lbpAgo.dataset.verb = '保存';
+    el.lbpAgo.dataset.saved = '1';
     el.lbpAgo.textContent = fmtAgo(d);
     el.lbpDownload.href = `/download/${enc(it.name)}`;
     el.lbpName.textContent = it.name;
     renderGrid(i);
     // Sizes the server already keeps, both JPEG: the 1600px preview, and the 480px thumbnail scaled down from it.
     // GIFs are served as-is for the preview, so only the thumbnail is offered.
-    const dims = it.w ? `${it.w} × ${it.h}` : '未知';
+    const dims = it.w ? `${it.w} × ${it.h}` : t('lbp.unknown');
     const base = it.name.replace(/\.[^.]+$/, '');
-    const sizes = [[`/download/${enc(it.name)}`, '原图', `${extOf(it.name)} · ${dims} · ${fmtSize(it.size)}`, '']];
+    const sizes = [[`/download/${enc(it.name)}`, t('lbp.original'), `${extOf(it.name)} · ${dims} · ${fmtSize(it.size)}`, '']];
     const preview = it.w ? fitEdge(it.w, it.h, 1600) : null;
     if (preview && Math.max(it.w, it.h) > 1600 && extOf(it.name) !== 'GIF') {
       const [w, h] = preview;
-      sizes.push([`/preview/${enc(it.name)}`, '大图', `JPG · ${w} × ${h}`, `${base}-${w}.jpg`]);
+      sizes.push([`/preview/${enc(it.name)}`, t('lbp.large'), `JPG · ${w} × ${h}`, `${base}-${w}.jpg`]);
     }
     if (preview && Math.max(it.w, it.h) > 480) {
       const [w, h] = fitEdge(...preview, 480);
-      sizes.push([`/thumb/${enc(it.name)}`, '缩略图', `JPG · ${w} × ${h}`, `${base}-${w}.jpg`]);
+      sizes.push([`/thumb/${enc(it.name)}`, t('lbp.thumb'), `JPG · ${w} × ${h}`, `${base}-${w}.jpg`]);
     }
     el.lbpSizeMenu.innerHTML = sizes.map(([href, label, sub, file]) =>
       `<a role="menuitem" href="${href}" download="${esc(file)}"><strong>${label}</strong><span>${esc(sub)}</span></a>`).join('');
@@ -838,9 +869,9 @@
     const older = olderTime(i);
     const gap = older ? (new Date(it.time) - new Date(older)) / 1000 : 0;
     el.lbpGrid.innerHTML = [
-      ['尺寸', it.w ? `${it.w} × ${it.h}` : '未知'], ['大小', fmtSize(it.size)], ['格式', extOf(it.name) || '—'],
-      ['比例', it.w ? ratioOf(it.w, it.h) : '—'], ['距上一张', older === undefined ? '…' : gap > 0 ? fmtGap(gap) : '—'],
-      ['位置', el.lbCount.textContent],
+      [t('lbp.dims'), it.w ? `${it.w} × ${it.h}` : t('lbp.unknown')], [t('lbp.size'), fmtSize(it.size)], [t('lbp.format'), extOf(it.name) || '—'],
+      [t('lbp.ratio'), it.w ? ratioOf(it.w, it.h) : '—'], [t('lbp.gap'), older === undefined ? '…' : gap > 0 ? fmtGap(gap) : '—'],
+      [t('lbp.position'), el.lbCount.textContent],
     ].map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('');
   }
 
@@ -1002,7 +1033,7 @@
         state.page = from;
         writeHash();
         render();
-        toast('加载失败，请稍后再试', 'error');
+        toast(t('load.failedLater'), 'error');
       }
     } finally {
       stepping = false;
@@ -1013,7 +1044,7 @@
     el.lbImg.style.transform = zoom.on ? `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})` : '';
     el.lbStage.classList.toggle('zoomed', zoom.on);
     el.lbZoom.setAttribute('aria-pressed', String(zoom.on));
-    el.lbZoom.setAttribute('aria-label', zoom.on ? '还原' : '放大');
+    el.lbZoom.setAttribute('aria-label', t(zoom.on ? 'lb.unzoom' : 'lb.zoom'));
     el.lbZoom.querySelector('use').setAttribute('href', zoom.on ? '#i-zoom-out' : '#i-zoom');
   }
 
@@ -1116,19 +1147,20 @@
     const it = state.items[state.lbIndex];
     if (!it) return false;
     const ok = await copyText(linkText(fmt, it));
-    toast(ok ? `已复制${fmt === 'url' ? '原图链接' : ' ' + label}` : '复制失败，请长按下载按钮复制链接', ok ? 'ok' : 'error');
+    toast(ok ? (fmt === 'url' ? t('copy.url') : t('copy.fmt', { label })) : t('copy.failed'), ok ? 'ok' : 'error');
     return ok;
   }
 
   // ---------- admin ----------
   // The avatar opens a menu of admin sections; each section is its own dialog.
   function renderAcct() {
-    $('#acct-sub').textContent = `存档 ${state.total} 张`;
-    const t = state.task;
+    $('#acct-sub').textContent = t('acct.archived', { n: state.total });
+    const task = state.task;
     const sch = $('#acct-schedule');
-    sch.textContent = t ? (t.paused ? '已暂停' : '运行中') : '';
-    sch.className = t && !t.paused ? 'ok' : '';
-    $('#acct-notices').textContent = na.items.length ? `${na.items.length} 条` : notices.items.length ? `${notices.items.length} 条` : '';
+    sch.textContent = task ? t(task.paused ? 'task.paused' : 'task.running') : '';
+    sch.className = task && !task.paused ? 'ok' : '';
+    const count = na.items.length || notices.items.length;
+    $('#acct-notices').textContent = count ? t('acct.noticeCount', { n: count }) : '';
   }
 
   function openAcctMenu() {
@@ -1145,40 +1177,40 @@
   }
 
   function openStatus() {
-    el.adminStats.innerHTML = '<dt class="loading-row">状态</dt><dd class="loading-row">加载中…</dd>';
+    el.adminStats.innerHTML = `<dt class="loading-row">${t('status.loadingRow')}</dt><dd class="loading-row">${t('dialog.loading')}</dd>`;
     openDialog(el.statusDialog);
     refreshStatus();
   }
 
   function openSchedule() {
-    el.scheduleStats.innerHTML = '<dt class="loading-row">计划</dt><dd class="loading-row">加载中…</dd>';
+    el.scheduleStats.innerHTML = `<dt class="loading-row">${t('schedule.plan')}</dt><dd class="loading-row">${t('dialog.loading')}</dd>`;
     el.toggleSchedule.disabled = true;
-    el.scheduleHint.textContent = '加载中…';
+    el.scheduleHint.textContent = t('dialog.loading');
     openDialog(el.scheduleDialog);
     refreshStatus();
   }
 
   function renderStats(s) {
     const f = s.fetch;
-    const t = (v) => (validTime(v) ? fmtFull(new Date(v)) : '暂无');
-    const result = { saved: '<span class="ok">已保存新画面</span>', unchanged: '画面没有变化，已跳过', error: '<span class="bad">失败</span>' }[f.result] || '尚未运行';
+    const at = (v) => (validTime(v) ? fmtFull(new Date(v)) : t('status.none'));
+    const result = { saved: `<span class="ok">${t('status.saved')}</span>`, unchanged: t('status.unchanged'), error: `<span class="bad">${t('status.error')}</span>` }[f.result] || t('status.never');
     el.adminStats.innerHTML = `
-      <dt>存档总数</dt><dd>${s.count} 张</dd>
-      <dt>上次抓取</dt><dd>${t(f.last_run)}</dd>
-      <dt>最近获取</dt><dd>${t(f.last_fetched)}</dd>
-      <dt>结果</dt><dd>${result}${f.message ? `<br><span class="bad">${esc(f.message)}</span>` : ''}</dd>
-      <dt>最近保存</dt><dd>${t(f.last_saved)}</dd>
-      <dt>本次启动</dt><dd>抓取 ${f.runs} 次，保存 ${f.saved} 张</dd>${tokenRow(s.token)}`;
+      <dt>${t('status.count')}</dt><dd>${t('status.countValue', { n: s.count })}</dd>
+      <dt>${t('status.lastRun')}</dt><dd>${at(f.last_run)}</dd>
+      <dt>${t('status.lastFetched')}</dt><dd>${at(f.last_fetched)}</dd>
+      <dt>${t('status.result')}</dt><dd>${result}${f.message ? `<br><span class="bad">${esc(f.message)}</span>` : ''}</dd>
+      <dt>${t('status.lastSaved')}</dt><dd>${at(f.last_saved)}</dd>
+      <dt>${t('status.session')}</dt><dd>${t('status.sessionValue', { runs: f.runs, saved: f.saved })}</dd>${tokenRow(s.token)}`;
     const next = !f.paused && validTime(s.next_run) ? s.next_run : '';
     el.scheduleStats.innerHTML = `
-      <dt>计划</dt><dd><code>${esc(s.schedule)}</code></dd>
-      <dt>下次抓取</dt><dd>${next ? `<span data-until="${esc(next)}">${fmtUntil(new Date(next))}</span>` : f.paused ? '已暂停' : '—'}</dd>
-      <dt>最近获取</dt><dd>${t(f.last_fetched)}</dd>`;
+      <dt>${t('schedule.plan')}</dt><dd><code>${esc(s.schedule)}</code></dd>
+      <dt>${t('schedule.next')}</dt><dd>${next ? `<span data-until="${esc(next)}">${fmtUntil(new Date(next))}</span>` : f.paused ? t('schedule.paused') : '—'}</dd>
+      <dt>${t('schedule.lastFetched')}</dt><dd>${at(f.last_fetched)}</dd>`;
     el.toggleSchedule.disabled = false;
     el.toggleSchedule.setAttribute('aria-checked', String(!f.paused));
-    el.scheduleHint.textContent = f.paused ? '已暂停，仍可在「运行状态」中立即抓取' : '画板有变化时自动保存';
+    el.scheduleHint.textContent = t(f.paused ? 'schedule.pausedHint' : 'schedule.activeHint');
     const res = $('#acct-result');
-    res.textContent = f.result === 'error' ? '失败' : '';
+    res.textContent = f.result === 'error' ? t('status.error') : '';
     res.className = f.result === 'error' ? 'bad' : '';
     state.task = { paused: f.paused, last_fetched: f.last_fetched, next_run: s.next_run };
     renderTask();
@@ -1190,9 +1222,9 @@
     if (!tok) return '';
     const exp = new Date(tok.expires);
     const days = Math.floor((exp - Date.now()) / 86400000);
-    const left = days < 0 ? '<span class="bad">已过期，请更新 magma.cookie</span>'
-      : days < 7 ? `<span class="bad">剩 ${days} 天</span>` : `<span class="ok">剩 ${days} 天</span>`;
-    return `<dt>登录凭证</dt><dd>${esc(tok.cookie)} 有效至 ${fmtShort(exp)}，${left}</dd>`;
+    const left = days < 0 ? `<span class="bad">${t('token.expired')}</span>`
+      : `<span class="${days < 7 ? 'bad' : 'ok'}">${t('token.daysLeft', { n: days })}</span>`;
+    return `<dt>${t('token.label')}</dt><dd>${t('token.value', { cookie: esc(tok.cookie), time: fmtShort(exp), left })}</dd>`;
   }
 
   function handleAuthError(e) {
@@ -1201,7 +1233,7 @@
       closeMenu();
       [el.statusDialog, el.scheduleDialog, el.naDialog].forEach((d) => closeDialog(d, true));
       renderControls();
-      toast('登录已过期，请重新登录', 'error');
+      toast(t('login.expired'), 'error');
     } else {
       toast(e.message, 'error');
     }
@@ -1231,9 +1263,9 @@
 
   function renderBell() {
     const n = notices.items.filter(isUnread).length;
-    const label = n ? `公告 · ${n} 条未读` : '公告';
+    const label = n ? t('bell.unread', { n }) : t('bell.label');
     el.noticeBtn.classList.toggle('unread', n > 0);
-    el.noticeBtn.title = `${label}（N）`;
+    el.noticeBtn.title = t('bell.tip', { label });
     el.noticeBtn.setAttribute('aria-label', label);
   }
 
@@ -1254,7 +1286,7 @@
     const unread = isUnread(n);
     const edited = new Date(n.updated) - d > 60000;
     return `<article class="notice${lead ? ' lead' : ''}${unread ? ' unread' : ''}">
-      <p class="notice-meta">${unread ? '<span class="notice-new">新</span>' : ''}<time datetime="${esc(n.published)}" title="${esc(fmtFull(d))}">${fmtDay(d)} ${fmtHM(d)}</time>${edited ? `<span title="${esc(fmtFull(new Date(n.updated)))}">已编辑</span>` : ''}</p>
+      <p class="notice-meta">${unread ? `<span class="notice-new">${t('notice.new')}</span>` : ''}<time datetime="${esc(n.published)}" title="${esc(fmtFull(d))}">${fmtDay(d)} ${fmtHM(d)}</time>${edited ? `<span title="${esc(fmtFull(new Date(n.updated)))}">${t('notice.edited')}</span>` : ''}</p>
       <h3>${esc(n.title)}</h3>
       ${n.body ? `<div class="notice-text">${linkify(n.body)}</div>` : ''}
     </article>`;
@@ -1265,12 +1297,12 @@
     const [lead, ...older] = notices.items;
     el.noticeActions.hidden = !notices.items.some(isUnread);
     if (!lead) {
-      el.noticeList.innerHTML = '<p class="notice-empty"><svg><use href="#i-bell"/></svg>暂无公告</p>';
+      el.noticeList.innerHTML = `<p class="notice-empty"><svg><use href="#i-bell"/></svg>${t('notice.empty')}</p>`;
       return;
     }
     const wasOpen = el.noticeList.querySelector('.notice-history')?.open;
     el.noticeList.innerHTML = noticeHTML(lead, true) + (older.length
-      ? `<details class="notice-history"${wasOpen || older.some(isUnread) ? ' open' : ''}><summary><svg><use href="#i-right"/></svg>历史公告（${older.length}）</summary>${older.map((n) => noticeHTML(n)).join('')}</details>`
+      ? `<details class="notice-history"${wasOpen || older.some(isUnread) ? ' open' : ''}><summary><svg><use href="#i-right"/></svg>${t('notice.history', { n: older.length })}</summary>${older.map((n) => noticeHTML(n)).join('')}</details>`
       : '');
   }
 
@@ -1293,7 +1325,7 @@
   const naFields = () => el.naForm.elements;
   const naCurrent = () => na.items.find((n) => n.id === na.id) || null;
   const naDirty = () => naFields().title.value !== na.base.title || naFields().body.value !== na.base.body;
-  const naDiscard = () => !naDirty() || confirm('放弃未保存的修改？');
+  const naDiscard = () => !naDirty() || confirm(t('na.discard'));
   el.naDialog.beforeClose = naDiscard;
 
   async function openNoticeAdmin() {
@@ -1324,19 +1356,19 @@
       const pub = validTime(n.published);
       return `<li><button type="button" class="na-item" data-id="${esc(n.id)}"${n.id === na.id ? ' aria-current="true"' : ''}>
         <strong>${esc(n.title)}</strong>
-        <span><span class="na-tag${pub ? ' on' : ''}">${pub ? '已发布' : '草稿'}</span>${fmtShort(new Date(pub ? n.published : n.updated))}</span></button></li>`;
-    }).join('') : '<li class="na-empty">还没有公告</li>';
+        <span><span class="na-tag${pub ? ' on' : ''}">${t(pub ? 'na.tagPublished' : 'na.tagDraft')}</span>${fmtShort(new Date(pub ? n.published : n.updated))}</span></button></li>`;
+    }).join('') : `<li class="na-empty">${t('na.empty')}</li>`;
   }
 
   function renderNaForm() {
     const n = naCurrent();
     const pub = n && validTime(n.published);
-    el.naState.innerHTML = !n ? '新公告'
-      : pub ? `<span class="na-tag on">已发布</span>${fmtShort(new Date(n.published))} 发布，修改后访客不会再次收到提醒`
-        : `<span class="na-tag">草稿</span>访客看不到，编辑于 ${fmtShort(new Date(n.updated))}`;
+    el.naState.innerHTML = !n ? t('na.stateNew')
+      : pub ? `<span class="na-tag on">${t('na.tagPublished')}</span>${t('na.statePublished', { time: fmtShort(new Date(n.published)) })}`
+        : `<span class="na-tag">${t('na.tagDraft')}</span>${t('na.stateDraft', { time: fmtShort(new Date(n.updated)) })}`;
     el.naDelete.hidden = !n;
-    el.naDraft.textContent = pub ? '撤回为草稿' : '存为草稿';
-    el.naPublish.lastElementChild.textContent = pub ? '保存更新' : '发布';
+    el.naDraft.textContent = t(pub ? 'na.unpublish' : 'na.saveDraft');
+    el.naPublish.lastElementChild.textContent = t(pub ? 'na.update' : 'na.publish');
     renderNaCount();
   }
 
@@ -1354,13 +1386,13 @@
   function resetDelete() {
     clearTimeout(na.delTimer);
     el.naDelete.classList.remove('confirm');
-    el.naDelete.textContent = '删除';
+    el.naDelete.textContent = t('na.delete');
   }
 
   async function saveNotice(publish) {
     const f = naFields();
     if (!f.title.value.trim()) {
-      showNaError('请填写标题');
+      showNaError(t('na.titleRequired'));
       f.title.focus();
       return;
     }
@@ -1378,7 +1410,7 @@
       na.items = d.items;
       editNotice(d.notice.id);
       renderAcct();
-      toast(publish ? (wasPub ? '公告已更新' : '公告已发布') : (wasPub ? '已撤回为草稿' : '草稿已保存'), 'ok');
+      toast(t(publish ? (wasPub ? 'na.updated' : 'na.published') : (wasPub ? 'na.unpublished' : 'na.draftSaved')), 'ok');
       // The author has read what they just published; their own bell stays calm.
       if (publish && !wasPub) setNoticesSeen(noticeTime(d.notice));
       loadNotices();
@@ -1396,7 +1428,7 @@
     if (!n) return;
     if (!el.naDelete.classList.contains('confirm')) {
       el.naDelete.classList.add('confirm');
-      el.naDelete.textContent = '再点一次删除';
+      el.naDelete.textContent = t('na.confirmDelete');
       na.delTimer = setTimeout(resetDelete, 3000);
       return;
     }
@@ -1405,7 +1437,7 @@
       na.items = (await api(`/api/notices/${enc(n.id)}`, { method: 'DELETE' })).items;
       editNotice(na.items.length ? na.items[0].id : null);
       renderAcct();
-      toast('公告已删除', 'ok');
+      toast(t('na.deleted'), 'ok');
       loadNotices();
     } catch (e) {
       if (e.status === 401) handleAuthError(e); else showNaError(e.message);
@@ -1419,11 +1451,12 @@
   el.group.addEventListener('click', toggleGroup);
   el.selectMode.addEventListener('click', () => setSelectMode(!state.selectMode));
   el.theme.addEventListener('click', toggleTheme);
+  el.lang.addEventListener('click', toggleLang);
   el.noticeBtn.addEventListener('click', openNotices);
   $('#notice-read').addEventListener('click', () => {
     if (!notices.items.length) return;
     setNoticesSeen(noticeTime(notices.items[0]));
-    toast('公告已标为已读', 'ok');
+    toast(t('notice.markedRead'), 'ok');
   });
   // Another tab marked the notices read.
   window.addEventListener('storage', (e) => {
@@ -1505,7 +1538,7 @@
     if (!names.length) return;
     if (names.length === 1) download(`/download/${enc(names[0])}`);
     else download('/download/zip?' + names.map((n) => 'f=' + enc(n)).join('&'));
-    toast(`开始下载 ${names.length} 张`, 'ok');
+    toast(t('sel.started', { n: names.length }), 'ok');
   });
 
   // ---------- events: lightbox ----------
@@ -1702,6 +1735,7 @@
     else if (k === '1' || k === '2' || k === '3') setView(VIEWS[k - 1]);
     else if (k === 's') setSelectMode(!state.selectMode);
     else if (k === 't') toggleTheme();
+    else if (k === 'l') toggleLang();
     else if (k === 'o') toggleSort();
     else if (k === 'g') toggleGroup();
     else if (k === 'p' && !el.reel.hidden && !el.now.hidden) reelPlay();
@@ -1736,7 +1770,7 @@
   function setPasswordVisible(on) {
     el.loginForm.elements.password.type = on ? 'text' : 'password';
     pwToggle.setAttribute('aria-pressed', String(on));
-    pwToggle.setAttribute('aria-label', on ? '隐藏密码' : '显示密码');
+    pwToggle.setAttribute('aria-label', t(on ? 'login.hide' : 'login.show'));
     pwToggle.querySelector('use').setAttribute('href', on ? '#i-eye-off' : '#i-eye');
   }
   pwToggle.addEventListener('click', () => setPasswordVisible(el.loginForm.elements.password.type === 'password'));
@@ -1754,7 +1788,7 @@
         body: JSON.stringify({ username: fd.get('username'), password: fd.get('password') }),
       });
       closeDialog(el.loginDialog);
-      toast('已登录为管理员', 'ok');
+      toast(t('login.ok'), 'ok');
       await load();
     } catch (err) {
       el.loginError.innerHTML = `<svg><use href="#i-alert"/></svg>${esc(err.message)}`;
@@ -1798,26 +1832,26 @@
     await api('/api/logout', { method: 'POST' }).catch(() => {});
     // Guests are capped, so trim an oversized selection.
     if (state.selected.size > state.guestLimit) state.selected = new Set([...state.selected].slice(0, state.guestLimit));
-    toast('已退出登录', 'ok');
+    toast(t('logout.ok'), 'ok');
     await load();
   });
   el.fetchNow.addEventListener('click', async () => {
     const label = el.fetchNow.querySelector('span');
     el.fetchNow.disabled = true;
     el.fetchNow.classList.add('loading');
-    label.textContent = '抓取中…';
+    label.textContent = t('status.fetching');
     try {
       const s = await api('/api/fetch', { method: 'POST' });
       renderStats(s);
-      if (s.fetch.result === 'saved') { toast('已保存新画面', 'ok'); state.page = 1; await load(); }
-      else if (s.fetch.result === 'unchanged') toast('画面没有变化');
-      else toast('抓取失败：' + s.fetch.message, 'error');
+      if (s.fetch.result === 'saved') { toast(t('fetch.saved'), 'ok'); state.page = 1; await load(); }
+      else if (s.fetch.result === 'unchanged') toast(t('fetch.unchanged'));
+      else toast(t('fetch.failed', { msg: s.fetch.message }), 'error');
     } catch (e) {
       handleAuthError(e);
     } finally {
       el.fetchNow.disabled = false;
       el.fetchNow.classList.remove('loading');
-      label.textContent = '立即抓取';
+      label.textContent = t('status.fetchNow');
     }
   });
 
@@ -1833,7 +1867,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ paused }),
       }));
-      toast(paused ? '已暂停定时抓取' : '已恢复定时抓取', 'ok');
+      toast(t(paused ? 'schedule.pausedToast' : 'schedule.resumedToast'), 'ok');
     } catch (e) {
       sw.setAttribute('aria-checked', String(paused));
       handleAuthError(e);
@@ -1908,8 +1942,8 @@
     tickTimes();
     if (Date.now() - lastPoll > 15000) poll(); else schedulePoll();
   });
-  window.addEventListener('offline', () => toast('网络已断开，恢复后会自动刷新', 'error'));
-  window.addEventListener('online', () => { toast('网络已恢复', 'ok'); poll(); });
+  window.addEventListener('offline', () => toast(t('net.offline'), 'error'));
+  window.addEventListener('online', () => { toast(t('net.online'), 'ok'); poll(); });
   setInterval(() => { if (!document.hidden) tickTimes(); }, 1000);
   loadOverview();
 
@@ -1952,6 +1986,7 @@
   });
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', renderControls);
 
+  i18n.apply();
   readHash();
   renderControls();
   onScroll();
