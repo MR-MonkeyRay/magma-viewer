@@ -75,6 +75,7 @@
       'task.next': '下次抓取',
 
       // ---- gallery ----
+      'history.title': '历史快照',
       'summary.images': '张',
       'summary.since': '从 {date} 开始记录',
       'summary.range': '本页第 {from}–{to} 张',
@@ -367,6 +368,7 @@
       'task.next': 'Next fetch',
 
       // ---- gallery ----
+      'history.title': 'History',
       'summary.images': 'image|images',
       'summary.since': 'Recording since {date}',
       'summary.range': 'Showing {from}–{to}',

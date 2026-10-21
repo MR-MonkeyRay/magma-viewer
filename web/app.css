@@ -55,6 +55,8 @@
   --pad: clamp(16px, 3vw, 40px);
   --maxw: 1680px;
   --bar-h: 57px;
+  --hist-h: 52px;
+  --hist-shift: 0px;
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-out: cubic-bezier(0, 0, 0.2, 1);
   --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -183,7 +185,7 @@ code { font-size: var(--fs-xs); padding: 1px 6px; border-radius: 4px; background
   transition: border-color .25s, box-shadow .25s;
 }
 .bar.scrolled { border-bottom-color: var(--ring); box-shadow: var(--shadow-sm); }
-.brand { display: flex; flex: none; align-items: center; gap: 10px; text-decoration: none; border-radius: var(--r-sm); }
+.brand { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 10px; text-decoration: none; border-radius: var(--r-sm); }
 .brand-mark {
   width: 22px; height: 22px; flex: none; border-radius: 50%;
   background: conic-gradient(from 200deg, var(--pigment), #e2513a, #f2b33d, var(--pigment));
@@ -192,6 +194,7 @@ code { font-size: var(--fs-xs); padding: 1px 6px; border-radius: 4px; background
 .brand:hover .brand-mark { transform: rotate(180deg) scale(1.08); }
 .busy .brand-mark { animation: spin 1.2s linear infinite; }
 .brand-name { font-weight: 600; font-size: var(--fs-md); letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar-actions { display: flex; flex: none; align-items: center; gap: 4px; }
 .controls { display: flex; align-items: center; gap: 4px; }
 .tools { display: flex; align-items: center; gap: 2px; }
 .sep { width: 1px; height: 20px; margin: 0 6px; background: var(--line); }
@@ -292,7 +295,7 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 /* ---------- latest canvas ---------- */
 /* The picture takes the wide column; a caption card beside it says when it was saved. */
 .now {
-  display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 12px; margin-bottom: 32px;
+  display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 12px; margin-bottom: 28px;
   animation: fade-up .5s var(--ease) backwards;
 }
 @media (min-width: 1800px) { .now { grid-template-columns: minmax(0, 1fr) 360px; } }
@@ -404,10 +407,27 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 .now-task.paused .task-dot::after { animation: none; opacity: 0; }
 @keyframes ping { 0% { transform: scale(1); opacity: .6; } 80%, 100% { transform: scale(3); opacity: 0; } }
 
-.strip { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 6px 16px; margin: 0 0 8px; min-height: 24px; }
-.summary { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 16px; color: var(--graphite); font-size: var(--fs-sm); }
-.summary strong { color: var(--ink); font-size: var(--fs-lg); font-weight: 600; margin-right: -12px; }
+/* ---------- history ---------- */
+/* A rule sets the archive apart from the live picture above it. The archive's toolbar sticks under the header;
+   when the heading wraps above the controls, --hist-shift slides the heading under the header so only the controls stay. */
+.now:not([hidden]) + .history { padding-top: 12px; border-top: 1px solid var(--line); }
+.history-bar {
+  position: sticky; top: calc(var(--bar-h) - var(--hist-shift)); z-index: 6;
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 24px;
+  margin-bottom: 8px; padding: 8px 0;
+  background: color-mix(in srgb, var(--board) 88%, transparent);
+  backdrop-filter: saturate(1.8) blur(12px); -webkit-backdrop-filter: saturate(1.8) blur(12px);
+  border-bottom: 1px solid transparent;
+  transition: border-color .25s;
+}
+.history-bar.stuck { border-bottom-color: var(--ring); }
+.history-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 16px; min-width: 0; }
+.history-title { margin: 0; font-size: var(--fs-lg); font-weight: 600; line-height: 36px; letter-spacing: -0.01em; white-space: nowrap; }
+.history-bar .controls { margin-left: auto; }
+.summary { display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 12px; color: var(--graphite); font-size: var(--fs-sm); }
+.summary strong { color: var(--ink); font-weight: 600; margin-right: -8px; }
 .summary span { color: var(--faint); font-size: var(--fs-xs); }
+.summary span::before { content: "·"; margin-right: 12px; color: var(--faint); opacity: .6; }
 
 .load-error {
   display: flex; flex-direction: column; align-items: center; gap: 12px;
@@ -422,7 +442,7 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 .gallery { transition: opacity .25s; }
 .gallery.stale { opacity: .45; pointer-events: none; }
 .group-title {
-  position: sticky; top: var(--bar-h); z-index: 5;
+  position: sticky; top: calc(var(--bar-h) + var(--hist-h) - var(--hist-shift)); z-index: 5;
   display: flex; align-items: center; gap: 8px;
   margin: 24px 0 4px; padding: 10px 0 8px;
   font-size: var(--fs-md); font-weight: 600;
@@ -640,7 +660,7 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 .sel-icon:hover { background: var(--hover); }
 .sel-icon:active { transform: scale(0.92); }
 
-.fresh { position: fixed; top: calc(var(--bar-h) + 12px); left: 50%; transform: translateX(-50%); z-index: 25; animation: drop-in .45s var(--spring); }
+.fresh { position: fixed; top: calc(var(--bar-h) + var(--hist-h) - var(--hist-shift) + 12px); left: 50%; transform: translateX(-50%); z-index: 25; animation: drop-in .45s var(--spring); }
 .fresh.leaving { animation: drop-out .2s var(--ease) forwards; }
 @keyframes drop-in { from { opacity: 0; transform: translate(-50%, -16px); } }
 @keyframes drop-out { to { opacity: 0; transform: translate(-50%, -16px); } }
@@ -985,7 +1005,6 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
   .now-actions { justify-self: end; }
 }
 @media (max-width: 760px) {
-  .brand-name { display: none; }
   .sep { display: none; }
 }
 /* Below 900px a 360px side panel would squeeze the picture, so it becomes a bottom sheet over it. */
@@ -1004,7 +1023,8 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 @media (max-width: 640px) {
   :root { --pad: 12px; }
   .bar { padding: 8px 12px; gap: 8px; }
-  .controls { gap: 0; }
+  .controls, .bar-actions { gap: 0; }
+  .history-title { font-size: var(--fs-md); line-height: 28px; }
   .seg { margin-right: 2px; }
   .seg::before { width: 30px; }
   .seg button { width: 30px; }
@@ -1045,10 +1065,8 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
   .lb-meta strong { font-size: var(--fs-sm); }
   .lb-btn { width: 36px; height: 36px; }
 }
-/* With the bell the header needs about 410px at phone sizes: tighten it and drop the page size. */
 @media (max-width: 400px) {
   .bar { padding: 8px 10px; gap: 6px; }
-  .tools .field { display: none; }
   .seg button { width: 28px; }
   .seg::before { width: 28px; transform: translateX(calc(var(--seg-i) * 28px)); }
   .icon-btn { width: 32px; height: 32px; }

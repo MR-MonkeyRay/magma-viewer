@@ -33,7 +33,7 @@
 
   const el = {
     bar: $('#bar'), main: $('#main'), toTop: $('#to-top'),
-    gallery: $('#gallery'), summary: $('#summary'), empty: $('#empty'), pager: $('#pager'),
+    historyBar: $('#history-bar'), gallery: $('#gallery'), summary: $('#summary'), empty: $('#empty'), pager: $('#pager'),
     now: $('#now'), nowImg: $('#now-img'), nowTime: $('#now-time'), nowAgo: $('#now-ago'), nowDate: $('#now-date'), nowFacts: $('#now-facts'), nowDl: $('#now-dl'),
     nowBadge: $('#now-badge'), nowView: $('#now-view'), nowPrev: $('#now-prev'), nowNext: $('#now-next'), nowBack: $('#now-back'), reel: $('#reel'), reelTrack: $('#reel-track'),
     reelTicks: $('#reel-ticks'), reelHead: $('#reel-head'), reelAxis: $('#reel-axis'), reelPlay: $('#reel-play'),
@@ -1951,10 +1951,14 @@
 
   // ---------- layout ----------
   let scrollQueued = false;
+  let histShift = 0; // px of the history toolbar hidden under the header while stuck
   function onScroll() {
     scrollQueued = false;
     const y = window.scrollY;
-    el.bar.classList.toggle('scrolled', y > 4);
+    // Once the history toolbar is stuck it draws the header's bottom edge, so the two read as one band.
+    const stuck = el.historyBar.getBoundingClientRect().top <= el.bar.offsetHeight - histShift + 1 && y > 4;
+    el.historyBar.classList.toggle('stuck', stuck);
+    el.bar.classList.toggle('scrolled', y > 4 && !stuck);
     el.toTop.classList.toggle('show', y > 800);
   }
   window.addEventListener('scroll', () => {
@@ -1964,9 +1968,22 @@
   }, { passive: true });
   el.toTop.addEventListener('click', scrollToTop);
 
-  // Sticky day headers and the "new images" pill sit just below the header, whose height wraps.
+  // Sticky day headers and the "new images" pill sit just below the header and the history toolbar, whose heights wrap.
+  // When the toolbar's heading wraps onto its own row, that row slides under the header and only the controls stay.
+  function measureBars() {
+    const root = document.documentElement.style;
+    root.setProperty('--bar-h', el.bar.offsetHeight + 'px');
+    const head = el.historyBar.firstElementChild;
+    const controls = el.historyBar.lastElementChild;
+    histShift = controls.offsetTop >= head.offsetTop + head.offsetHeight ? controls.offsetTop - 4 : 0;
+    root.setProperty('--hist-h', el.historyBar.offsetHeight + 'px');
+    root.setProperty('--hist-shift', histShift + 'px');
+    onScroll();
+  }
   if ('ResizeObserver' in window) {
-    new ResizeObserver(() => document.documentElement.style.setProperty('--bar-h', el.bar.offsetHeight + 'px')).observe(el.bar);
+    const ro = new ResizeObserver(measureBars);
+    ro.observe(el.bar);
+    ro.observe(el.historyBar);
   }
 
   let resizeTimer;

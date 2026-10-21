@@ -62,27 +62,7 @@
     <span class="brand-mark" aria-hidden="true"></span>
     <span class="brand-name" data-i18n="app.title">Magma 画板存档</span>
   </a>
-  <div class="controls">
-    <div class="seg" role="group" aria-label="展示方式" data-i18n-label="bar.views">
-      <button type="button" data-view="grid" title="网格（1）" aria-label="网格" data-i18n-title="view.gridTip" data-i18n-label="view.grid"><svg><use href="#i-grid"/></svg></button>
-      <button type="button" data-view="masonry" title="瀑布流（2）" aria-label="瀑布流" data-i18n-title="view.masonryTip" data-i18n-label="view.masonry"><svg><use href="#i-masonry"/></svg></button>
-      <button type="button" data-view="list" title="列表（3）" aria-label="列表" data-i18n-title="view.listTip" data-i18n-label="view.list"><svg><use href="#i-list"/></svg></button>
-    </div>
-    <div class="tools" role="group" aria-label="显示选项" data-i18n-label="bar.options">
-      <button type="button" class="icon-btn" id="sort"><svg><use href="#i-sort-desc"/></svg></button>
-      <button type="button" class="icon-btn" id="group" title="按日分组（G）" aria-label="按日分组" data-i18n-title="group.tip" data-i18n-label="group.label" aria-pressed="false"><svg><use href="#i-calendar"/></svg></button>
-      <label class="field" title="每页数量" data-i18n-title="size.label">
-        <span class="sr-only" data-i18n="size.label">每页数量</span>
-        <select id="size">
-          <option value="24">24</option>
-          <option value="48">48</option>
-          <option value="96">96</option>
-          <option value="200">200</option>
-        </select>
-      </label>
-    </div>
-    <span class="sep" aria-hidden="true"></span>
-    <button type="button" class="icon-btn" id="select-mode" title="多选（S）" aria-label="多选" data-i18n-title="select.tip" data-i18n-label="select.label" aria-pressed="false"><svg><use href="#i-select"/></svg></button>
+  <div class="bar-actions">
     <button type="button" class="icon-btn" id="theme" title="切换明暗（T）" aria-label="切换明暗" data-i18n-title="theme.tip" data-i18n-label="theme.label"><svg><use href="#i-moon"/></svg></button>
     <button type="button" class="icon-btn lang-btn" id="lang" title="Switch to English (L)" aria-label="Switch to English" data-i18n="lang.switch" data-i18n-title="lang.switchTip" data-i18n-label="lang.switchLabel">EN</button>
     <button type="button" class="icon-btn" id="notice-btn" title="公告（N）" aria-label="公告"><svg><use href="#i-bell"/></svg></button>
@@ -134,21 +114,48 @@
     </aside>
   </section>
 
-  <div class="strip">
-    <div class="summary" id="summary"></div>
-  </div>
-  <div class="gallery" id="gallery" aria-live="polite"></div>
-  <div class="empty" id="empty" hidden>
-    <svg class="empty-art" viewBox="0 0 160 120" aria-hidden="true">
-      <rect x="18" y="14" width="124" height="84" rx="10" class="ea-frame"/>
-      <path d="M34 80c12-24 22-36 32-36s10 18 20 18 14-10 22-22" class="ea-line"/>
-      <circle cx="116" cy="36" r="8" class="ea-dot"/>
-      <rect x="58" y="104" width="44" height="6" rx="3" class="ea-foot"/>
-    </svg>
-    <p class="empty-title" data-i18n="empty.title">还没有画面</p>
-    <p data-i18n="empty.text">画板有变化时会自动保存到这里</p>
-  </div>
-  <nav class="pager" id="pager" aria-label="分页" data-i18n-label="pager.label"></nav>
+  <section class="history" id="history" aria-labelledby="history-title">
+    <div class="history-bar" id="history-bar">
+      <div class="history-head">
+        <h2 class="history-title" id="history-title" data-i18n="history.title">历史快照</h2>
+        <div class="summary" id="summary"></div>
+      </div>
+      <div class="controls">
+        <div class="seg" role="group" aria-label="展示方式" data-i18n-label="bar.views">
+          <button type="button" data-view="grid" title="网格（1）" aria-label="网格" data-i18n-title="view.gridTip" data-i18n-label="view.grid"><svg><use href="#i-grid"/></svg></button>
+          <button type="button" data-view="masonry" title="瀑布流（2）" aria-label="瀑布流" data-i18n-title="view.masonryTip" data-i18n-label="view.masonry"><svg><use href="#i-masonry"/></svg></button>
+          <button type="button" data-view="list" title="列表（3）" aria-label="列表" data-i18n-title="view.listTip" data-i18n-label="view.list"><svg><use href="#i-list"/></svg></button>
+        </div>
+        <div class="tools" role="group" aria-label="显示选项" data-i18n-label="bar.options">
+          <button type="button" class="icon-btn" id="sort"><svg><use href="#i-sort-desc"/></svg></button>
+          <button type="button" class="icon-btn" id="group" title="按日分组（G）" aria-label="按日分组" data-i18n-title="group.tip" data-i18n-label="group.label" aria-pressed="false"><svg><use href="#i-calendar"/></svg></button>
+          <label class="field" title="每页数量" data-i18n-title="size.label">
+            <span class="sr-only" data-i18n="size.label">每页数量</span>
+            <select id="size">
+              <option value="24">24</option>
+              <option value="48">48</option>
+              <option value="96">96</option>
+              <option value="200">200</option>
+            </select>
+          </label>
+        </div>
+        <span class="sep" aria-hidden="true"></span>
+        <button type="button" class="icon-btn" id="select-mode" title="多选（S）" aria-label="多选" data-i18n-title="select.tip" data-i18n-label="select.label" aria-pressed="false"><svg><use href="#i-select"/></svg></button>
+      </div>
+    </div>
+    <div class="gallery" id="gallery" aria-live="polite"></div>
+    <div class="empty" id="empty" hidden>
+      <svg class="empty-art" viewBox="0 0 160 120" aria-hidden="true">
+        <rect x="18" y="14" width="124" height="84" rx="10" class="ea-frame"/>
+        <path d="M34 80c12-24 22-36 32-36s10 18 20 18 14-10 22-22" class="ea-line"/>
+        <circle cx="116" cy="36" r="8" class="ea-dot"/>
+        <rect x="58" y="104" width="44" height="6" rx="3" class="ea-foot"/>
+      </svg>
+      <p class="empty-title" data-i18n="empty.title">还没有画面</p>
+      <p data-i18n="empty.text">画板有变化时会自动保存到这里</p>
+    </div>
+    <nav class="pager" id="pager" aria-label="分页" data-i18n-label="pager.label"></nav>
+  </section>
 </main>
 
 <footer class="foot">
