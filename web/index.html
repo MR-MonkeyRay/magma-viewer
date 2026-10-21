@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Magma 画板存档</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233346d3'/%3E%3Cpath d='M8 22c3-8 6-12 8-12s2 6 4 6 3-3 4-5' stroke='white' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="app.css">
+<script>
+  try { var t = localStorage.getItem('mv.theme'); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-grid" viewBox="0 0 24 24"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/></symbol>
+  <symbol id="i-masonry" viewBox="0 0 24 24"><path d="M4 4h7v10H4zM13 4h7v6h-7zM4 16h7v4H4zM13 12h7v8h-7z"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M4 5h5v5H4zM11 6.5h9v2h-9zM4 14h5v5H4zM11 15.5h9v2h-9z"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M11 4h2v9.2l3.3-3.3 1.4 1.4L12 17l-5.7-5.7 1.4-1.4 3.3 3.3zM5 18h14v2H5z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M9.5 16.2 5.3 12l-1.4 1.4 5.6 5.6L20.1 8.4 18.7 7z"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6.4 5 12 10.6 17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6 10.6 12 5 6.4z"/></symbol>
+  <symbol id="i-left" viewBox="0 0 24 24"><path d="M15.4 5.4 14 4l-8 8 8 8 1.4-1.4L8.8 12z"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="M8.6 5.4 10 4l8 8-8 8-1.4-1.4 6.6-6.6z"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><path d="M12 7a5 5 0 1 1 0 10 5 5 0 0 1 0-10zm-1-5h2v3h-2zm0 17h2v3h-2zM2 11h3v2H2zm17 0h3v2h-3zM4.2 5.6l1.4-1.4 2.1 2.1-1.4 1.4zm12.1 12.1 1.4-1.4 2.1 2.1-1.4 1.4zM4.2 18.4l2.1-2.1 1.4 1.4-2.1 2.1zM16.3 6.3l2.1-2.1 1.4 1.4-2.1 2.1z"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M14.5 3a8.5 8.5 0 1 0 6.5 13.9A7 7 0 0 1 14.5 3z"/></symbol>
+  <symbol id="i-select" viewBox="0 0 24 24"><path d="M4 4h16v16H4zm2 2v12h12V6zm3.7 6.3 1.8 1.8 3.8-3.8 1.4 1.4-5.2 5.2-3.2-3.2z"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><path d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm0 2c-4.4 0-8 2.2-8 5v2h16v-2c0-2.8-3.6-5-8-5z"/></symbol>
+</svg>
+
+<header class="bar">
+  <a class="brand" href="#" id="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-name">Magma 画板存档</span>
+  </a>
+  <div class="controls">
+    <div class="seg" role="group" aria-label="展示方式">
+      <button type="button" data-view="grid" title="网格" aria-label="网格"><svg><use href="#i-grid"/></svg></button>
+      <button type="button" data-view="masonry" title="瀑布流" aria-label="瀑布流"><svg><use href="#i-masonry"/></svg></button>
+      <button type="button" data-view="list" title="列表" aria-label="列表"><svg><use href="#i-list"/></svg></button>
+    </div>
+    <label class="field">
+      <span class="sr-only">排序</span>
+      <select id="sort">
+        <option value="desc">最新在前</option>
+        <option value="asc">最早在前</option>
+      </select>
+    </label>
+    <label class="field">
+      <span class="sr-only">每页数量</span>
+      <select id="size">
+        <option value="24">每页 24</option>
+        <option value="48">每页 48</option>
+        <option value="96">每页 96</option>
+        <option value="200">每页 200</option>
+      </select>
+    </label>
+    <label class="toggle" title="按日期分组">
+      <input type="checkbox" id="group"><span>按日分组</span>
+    </label>
+    <button type="button" class="icon-btn" id="select-mode" title="多选" aria-pressed="false"><svg><use href="#i-select"/></svg><span>多选</span></button>
+    <button type="button" class="icon-btn" id="theme" title="切换明暗" aria-label="切换明暗"><svg><use href="#i-moon"/></svg></button>
+    <button type="button" class="icon-btn" id="account"><svg><use href="#i-user"/></svg><span id="account-label">管理员登录</span></button>
+  </div>
+</header>
+
+<main>
+  <section class="now" id="now" hidden></section>
+
+  <div class="summary" id="summary"></div>
+  <div class="gallery" id="gallery" aria-live="polite"></div>
+  <div class="empty" id="empty" hidden>
+    <p class="empty-title">还没有保存任何画面</p>
+    <p>后台会按计划从 Magma 抓取画板，画面有变化时自动保存到这里。管理员可以在右上角菜单中立即抓取一次，检查 cookie 是否有效。</p>
+  </div>
+  <nav class="pager" id="pager" aria-label="分页"></nav>
+</main>
+
+<div class="fresh" id="fresh" hidden><button type="button" id="fresh-btn">有新的画面，点击刷新</button></div>
+
+<div class="selbar" id="selbar" hidden>
+  <span id="sel-count"></span>
+  <button type="button" class="btn primary" id="sel-zip"><svg><use href="#i-download"/></svg>打包下载</button>
+  <button type="button" class="btn ghost" id="sel-page">选中本页</button>
+  <button type="button" class="btn ghost" id="sel-clear">清空</button>
+</div>
+
+<div class="toast" id="toast" role="status" hidden></div>
+
+<div class="lightbox" id="lightbox" hidden>
+  <button type="button" class="lb-close" id="lb-close" aria-label="关闭"><svg><use href="#i-close"/></svg></button>
+  <button type="button" class="lb-nav prev" id="lb-prev" aria-label="上一张"><svg><use href="#i-left"/></svg></button>
+  <figure class="lb-stage">
+    <img id="lb-img" alt="">
+  </figure>
+  <button type="button" class="lb-nav next" id="lb-next" aria-label="下一张"><svg><use href="#i-right"/></svg></button>
+  <div class="lb-info">
+    <div class="lb-meta"><strong id="lb-time"></strong><span id="lb-sub"></span></div>
+    <div class="lb-actions">
+      <button type="button" class="btn ghost-dark" id="lb-select"><svg><use href="#i-check"/></svg><span>选择</span></button>
+      <a class="btn primary" id="lb-download" href="#"><svg><use href="#i-download"/></svg>下载原图</a>
+    </div>
+  </div>
+</div>
+
+<dialog class="modal" id="login-dialog">
+  <form method="dialog" id="login-form">
+    <h2>管理员登录</h2>
+    <p class="muted">登录后可以一键下载全部画面，并查看抓取状态。</p>
+    <label>用户名<input name="username" autocomplete="username" required></label>
+    <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
+    <p class="form-error" id="login-error" hidden></p>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" value="cancel" id="login-cancel">取消</button>
+      <button type="submit" class="btn primary" id="login-submit">登录</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog class="modal" id="admin-dialog">
+  <div class="admin">
+    <h2>管理</h2>
+    <dl class="stats" id="admin-stats"></dl>
+    <div class="modal-actions spread">
+      <button type="button" class="btn ghost" id="logout">退出登录</button>
+      <div class="row">
+        <button type="button" class="btn ghost" id="fetch-now">立即抓取</button>
+        <a class="btn primary" id="download-all" href="/download/all"><svg><use href="#i-download"/></svg>下载全部</a>
+      </div>
+    </div>
+    <button type="button" class="modal-x" id="admin-close" aria-label="关闭" autofocus><svg><use href="#i-close"/></svg></button>
+  </div>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

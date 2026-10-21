@@ -1,0 +1,9 @@
+admin:
+  username: admin
+  password: "change-me"
+magma:
+  url: "https://magma.com/api/render/<画板ID>/jpg"
+  cookie: "AUTH_TOKEN=<你的 token>"
+schedule: "* * * * *"
+storage:
+  dir: /data/images

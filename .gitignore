@@ -1,0 +1,33 @@
+# 本地配置与凭证；配置模板继续纳入版本管理
+/config.yaml
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# 抓取图片、缩略图与下载临时文件
+/data/
+/images/
+/deploy/minimal/images/
+.thumbs/
+*.download
+*.log
+
+# Go 构建、测试与性能分析产物
+/magma-viewer
+/magma-viewer.exe
+/bin/
+/dist/
+*.test
+coverage.out
+coverage.html
+*.prof
+
+# 编辑器与操作系统临时文件
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

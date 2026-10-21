@@ -1,0 +1,16 @@
+services:
+  magma-viewer:
+    build:
+      context: .
+      # args:
+      #   GOPROXY: https://goproxy.cn,direct   # 国内网络构建时打开
+    image: magma-viewer:latest
+    container_name: magma-viewer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      TZ: Asia/Shanghai          # 影响 crontab 计划和文件名中的时间
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+      - ./data/images:/data/images
