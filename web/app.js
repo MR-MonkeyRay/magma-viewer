@@ -25,20 +25,21 @@
     selected: new Set(),
     selectMode: false,
     lastIndex: null, // anchor for shift-click range selection
-    knownTotal: null,
+    latest: undefined, // newest saved image; undefined until known, null when the archive is empty
     lbIndex: -1,
   };
 
   const el = {
     bar: $('#bar'), main: $('#main'), toTop: $('#to-top'),
-    gallery: $('#gallery'), now: $('#now'), summary: $('#summary'), empty: $('#empty'), pager: $('#pager'),
+    gallery: $('#gallery'), summary: $('#summary'), empty: $('#empty'), pager: $('#pager'),
+    now: $('#now'), nowImg: $('#now-img'), nowTime: $('#now-time'), nowAgo: $('#now-ago'), nowMeta: $('#now-meta'), nowDl: $('#now-dl'),
     seg: $('.seg'), sort: $('#sort'), size: $('#size'), group: $('#group'), selectMode: $('#select-mode'),
-    theme: $('#theme'), account: $('#account'), accountLabel: $('#account-label'),
+    theme: $('#theme'), account: $('#account'), foot: $('.foot'),
     selbar: $('#selbar'), selCount: $('#sel-count'), fresh: $('#fresh'),
     toast: $('#toast'), toastText: $('#toast span'), toastIcon: $('#toast use'),
     lb: $('#lightbox'), lbStage: $('#lb-stage'), lbImg: $('#lb-img'), lbTime: $('#lb-time'), lbSub: $('#lb-sub'),
     lbCount: $('#lb-count'), lbPrev: $('#lb-prev'), lbNext: $('#lb-next'), lbDownload: $('#lb-download'),
-    lbSelect: $('#lb-select'), lbZoom: $('#lb-zoom'), lbLink: $('#lb-link'),
+    lbSelect: $('#lb-select'), lbZoom: $('#lb-zoom'), lbLink: $('#lb-link'), lbMenu: $('#lb-menu'),
     loginDialog: $('#login-dialog'), loginForm: $('#login-form'), loginError: $('#login-error'), loginSubmit: $('#login-submit'),
     adminDialog: $('#admin-dialog'), adminStats: $('#admin-stats'), fetchNow: $('#fetch-now'),
     toggleSchedule: $('#toggle-schedule'), scheduleHint: $('#schedule-hint'),
@@ -51,8 +52,18 @@
   const fmtClock = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
   const fmtFull = (d) => `${fmtDate(d)} ${fmtClock(d)}`;
   const fmtShort = (d) => `${fmtDate(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  const WEEK = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
-  const fmtDay = (d) => `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${WEEK[d.getDay()]}`;
+  const fmtHM = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const WEEK = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+  const sameDay = (a, b) => fmtDate(a) === fmtDate(b);
+  // Tile labels drop the date when it is today; the date header or tooltip has the full time.
+  const fmtTile = (d) => (state.group || sameDay(d, new Date()) ? fmtHM(d) : `${d.getMonth() + 1}/${d.getDate()} ${fmtHM(d)}`);
+  function fmtDay(d) {
+    const today = new Date();
+    const yest = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+    const label = sameDay(d, today) ? '今天' : sameDay(d, yest) ? '昨天' : WEEK[d.getDay()];
+    const year = d.getFullYear() === today.getFullYear() ? '' : `${d.getFullYear()}年`;
+    return `${year}${d.getMonth() + 1}月${d.getDate()}日 ${label}`;
+  }
   function fmtSize(b) {
     if (b < 1024) return b + ' B';
     if (b < 1024 * 1024) return (b / 1024).toFixed(0) + ' KB';
@@ -219,6 +230,8 @@
     if (location.hash !== h) history.replaceState(null, '', h || location.pathname);
   }
 
+  const onFirstPage = () => state.sort === 'desc' && state.page === 1;
+
   let loadSeq = 0;
   // silent reloads come from polling: no skeleton, no progress bar, new tiles are highlighted.
   async function load({ scroll = false, silent = false } = {}) {
@@ -229,13 +242,20 @@
       busy(true);
     }
     const before = silent ? new Set(state.items.map((it) => it.name)) : null;
+    const viewing = state.lbIndex >= 0 && state.items[state.lbIndex] ? state.items[state.lbIndex].name : null;
     try {
       const d = await api(`/api/images?page=${state.page}&size=${state.size}&sort=${state.sort}`);
       if (seq !== loadSeq) return;
       Object.assign(state, { items: d.items, total: d.total, page: d.page, pages: d.pages, admin: d.admin, guestLimit: d.guest_limit, task: d.task });
-      if (state.sort === 'desc' && state.page === 1) { state.knownTotal = d.total; hide(el.fresh); }
-      else if (state.knownTotal === null) state.knownTotal = d.total;
+      if (onFirstPage()) { state.latest = d.items[0] || null; hide(el.fresh); }
       writeHash();
+      // Keep an open lightbox on the same picture even though indexes shifted.
+      if (viewing && state.lbIndex >= 0) {
+        const i = state.items.findIndex((it) => it.name === viewing);
+        // Not on this page: step() opens the right picture once the load returns.
+        if (i >= 0) { state.lbIndex = i; updateLightboxMeta(); }
+        else state.lbIndex = Math.max(0, Math.min(state.lbIndex, state.items.length - 1));
+      }
       render({ animate: !silent });
       if (before && before.size) markNew(before);
       if (scroll) scrollToTop();
@@ -258,7 +278,7 @@
   function renderSkeleton() {
     el.gallery.className = `gallery view-${state.view} skeleton`;
     const n = Math.min(state.size, 12);
-    el.gallery.innerHTML = `<div class="tiles">${'<figure class="tile"><div class="tile-open"></div><figcaption class="tile-cap">&nbsp;</figcaption></figure>'.repeat(n)}</div>`;
+    el.gallery.innerHTML = `<div class="tiles">${'<figure class="tile"><div class="tile-open"></div></figure>'.repeat(n)}</div>`;
   }
 
   function renderError(e) {
@@ -274,14 +294,14 @@
     const d = new Date(it.time);
     const sel = state.selected.has(it.name);
     const name = esc(it.name);
+    const list = state.view === 'list';
     return `<figure class="tile${sel ? ' selected' : ''}" data-i="${i}" style="--d:${i}">
       <button type="button" class="tile-check" aria-label="选择" aria-pressed="${sel}"><svg><use href="#i-check"/></svg></button>
-      <button type="button" class="tile-open" aria-label="查看 ${esc(fmtFull(d))}"><img loading="lazy" decoding="async" src="/thumb/${enc(it.name)}"${it.w ? ` width="${it.w}" height="${it.h}"` : ''} alt=""></button>
+      <button type="button" class="tile-open" aria-label="查看 ${esc(fmtFull(d))}" title="${esc(fmtFull(d))}"><img loading="lazy" decoding="async" src="/thumb/${enc(it.name)}"${it.w ? ` width="${it.w}" height="${it.h}"` : ''} alt=""></button>
       <figcaption class="tile-cap">
-        <time datetime="${esc(it.time)}" title="${esc(fmtFull(d))}">${state.group ? fmtClock(d) : fmtShort(d)}</time>
-        <span class="name" title="${name}">${name}</span>
-        <span class="size">${fmtSize(it.size)}</span>
-        <a class="tile-dl" href="/download/${enc(it.name)}" download title="下载" aria-label="下载"><svg><use href="#i-download"/></svg></a>
+        <time datetime="${esc(it.time)}">${list ? fmtFull(d) : fmtTile(d)}</time>
+        ${list ? `<span class="name" title="${name}">${name}</span><span class="size">${it.w ? `${it.w}×${it.h} · ` : ''}${fmtSize(it.size)}</span>` : ''}
+        <a class="tile-dl" href="/download/${enc(it.name)}" download title="下载原图" aria-label="下载原图"><svg><use href="#i-download"/></svg></a>
       </figcaption>
     </figure>`;
   }
@@ -300,38 +320,44 @@
     const cols = Array.from({ length: n }, () => ({ h: 0, html: [] }));
     for (const [it, i] of entries) {
       const col = cols.reduce((a, b) => (b.h < a.h ? b : a));
-      col.h += (it.w ? it.h / it.w : 1) + 0.2; // 0.2 ≈ caption height relative to width
+      col.h += (it.w ? it.h / it.w : 1) + 0.05; // gap relative to column width
       col.html.push(tileHTML(it, i));
     }
     return `<div class="tiles" data-cols="${n}">${cols.map((c) => `<div class="mcol">${c.html.join('')}</div>`).join('')}</div>`;
   }
 
+  // The hero follows state.latest, which polling keeps current even when the gallery below is not reloaded.
   function renderNow() {
-    const latest = state.sort === 'desc' && state.page === 1 ? state.items[0] : null;
+    const latest = onFirstPage() ? state.latest : null;
     el.now.hidden = !latest;
     if (!latest) return;
-    const meta = `${fmtSize(latest.size)}，共存档 ${state.total} 个画面`;
-    // Keep the loaded preview when only the count changed.
-    if (el.now.dataset.name === latest.name) {
-      el.now.querySelector('.now-meta').textContent = meta;
-      return;
-    }
-    el.now.dataset.name = latest.name;
     const d = new Date(latest.time);
-    el.now.innerHTML = `
-      <button type="button" class="now-frame" data-i="0" aria-label="查看最新画面">
-        <img src="/preview/${enc(latest.name)}" alt="最新画面">
-        <span class="now-zoom"><svg><use href="#i-zoom"/></svg>查看大图</span>
-      </button>
-      <div class="now-side">
-        <p class="now-label">画板最新状态</p>
-        <p class="now-date">${fmtDay(d)}</p>
-        <p class="now-time">${fmtClock(d)}</p>
-        <p class="now-ago" data-ago="${esc(latest.time)}" data-verb="保存">${fmtAgo(d)}</p>
-        <p class="now-meta">${meta}</p>
-        <a class="btn primary" href="/download/${enc(latest.name)}" download><svg><use href="#i-download"/></svg>下载这张</a>
-      </div>`;
-    markCached(el.now);
+    el.nowTime.dateTime = latest.time;
+    el.nowTime.title = fmtFull(d);
+    el.nowTime.textContent = `${sameDay(d, new Date()) ? '今天' : fmtDate(d)} ${fmtClock(d)}`;
+    el.nowAgo.dataset.ago = latest.time;
+    el.nowAgo.textContent = fmtAgo(d, '');
+    el.nowMeta.textContent = `${latest.w ? `${latest.w}×${latest.h} · ` : ''}${fmtSize(latest.size)}`;
+    el.nowDl.href = `/download/${enc(latest.name)}`;
+    if (el.now.dataset.name === latest.name) return;
+    const first = !el.now.dataset.name;
+    el.now.dataset.name = latest.name;
+    const src = `/preview/${enc(latest.name)}`;
+    const swap = () => {
+      if (el.now.dataset.name !== latest.name) return;
+      if (latest.w) { el.nowImg.width = latest.w; el.nowImg.height = latest.h; }
+      el.nowImg.src = src;
+      if (first) { markCached(el.now); return; }
+      replay(el.now, 'updated');
+      if (!reduced()) {
+        el.nowImg.animate([{ opacity: 0.3, filter: 'blur(8px)' }, { opacity: 1, filter: 'blur(0)' }], { duration: 700, easing: 'ease-out' });
+      }
+    };
+    if (first) return swap();
+    // Decode the new picture before swapping so the old one stays until the new one can fade in whole.
+    const pre = new Image();
+    pre.src = src;
+    pre.decode().then(swap, swap);
   }
 
   function renderTask() {
@@ -341,12 +367,10 @@
     const at = validTime(t.last_fetched) ? new Date(t.last_fetched) : null;
     const next = !t.paused && validTime(t.next_run) ? t.next_run : '';
     el.task.classList.toggle('paused', t.paused);
-    el.task.innerHTML = `<span class="task-dot" aria-hidden="true"></span>
-      <span>定时抓取<strong>${t.paused ? '已暂停' : '运行中'}</strong></span>
-      <span class="task-time">最近获取图片：${at
-        ? `<time datetime="${esc(t.last_fetched)}">${fmtFull(at)}</time>（<span data-ago="${esc(t.last_fetched)}">${fmtAgo(at, '')}</span>）`
-        : '暂无'}</span>
-      ${next ? `<span class="task-next">下次抓取：<span data-until="${esc(next)}">${fmtUntil(new Date(next))}</span></span>` : ''}`;
+    el.task.innerHTML = `<span class="task-state" title="定时抓取${t.paused ? '已暂停' : '运行中'}"><span class="task-dot" aria-hidden="true"></span>${t.paused ? '已暂停' : '运行中'}</span>
+      <span class="task-item" title="最近获取图片${at ? '：' + fmtFull(at) : '：暂无'}"><svg aria-hidden="true"><use href="#i-refresh"/></svg><span class="sr-only">最近获取</span>${at
+        ? `<span data-ago="${esc(t.last_fetched)}">${fmtAgo(at, '')}</span>` : '暂无'}</span>
+      ${next ? `<span class="task-item" title="下次抓取：${esc(fmtFull(new Date(next)))}"><svg aria-hidden="true"><use href="#i-clock"/></svg><span class="sr-only">下次抓取</span><span data-until="${esc(next)}">${fmtUntil(new Date(next))}</span></span>` : ''}`;
   }
 
   function render({ animate = false } = {}) {
@@ -357,7 +381,7 @@
     const from = (state.page - 1) * state.size + 1;
     const to = from + state.items.length - 1;
     el.summary.innerHTML = state.total
-      ? `<strong>共 ${state.total} 张</strong><span>第 ${from}–${to} 张，${state.sort === 'desc' ? '最新在前' : '最早在前'}</span>`
+      ? `<strong>${state.total}</strong> 张${state.pages > 1 ? `<span>${from}–${to}</span>` : ''}`
       : '';
 
     el.gallery.className = `gallery view-${state.view}${state.selectMode ? ' selecting' : ''}${animate ? ' animate' : ''}`;
@@ -375,8 +399,13 @@
         if (!g || g.key !== key) groups.push(g = { key, d: new Date(it.time), entries: [] });
         g.entries.push([it, i]);
       });
-      el.gallery.innerHTML = groups.map((g) =>
-        `<h2 class="group-title">${fmtDay(g.d)}<span>本页 ${g.entries.length} 张</span></h2>${tilesHTML(g.entries)}`).join('');
+      el.gallery.innerHTML = groups.map((g) => {
+        const first = g.entries[0][1];
+        const last = g.entries[g.entries.length - 1][1];
+        return `<h2 class="group-title" data-from="${first}" data-to="${last}">
+          <button type="button" class="group-check" aria-label="选择这一天" title="选择这一天"><svg><use href="#i-check"/></svg></button>
+          ${fmtDay(g.d)}<span>${g.entries.length}</span></h2>${tilesHTML(g.entries)}`;
+      }).join('');
     }
     markCached(el.gallery);
     renderPager();
@@ -405,22 +434,28 @@
     if (state.pages <= 1) { el.pager.innerHTML = ''; return; }
     const btn = (p, label, extra = '') => `<button type="button" data-page="${p}" ${extra}>${label}</button>`;
     el.pager.innerHTML =
-      btn(state.page - 1, '上一页', state.page <= 1 ? 'disabled' : 'title="上一页（←）"') +
+      btn(state.page - 1, '<svg><use href="#i-left"/></svg>', `class="step" aria-label="上一页" title="上一页（←）"${state.page <= 1 ? ' disabled' : ''}`) +
       pageList(state.page, state.pages).map((p) => p === null
         ? '<span class="gap">…</span>'
         : btn(p, p, p === state.page ? 'aria-current="page"' : '')).join('') +
-      btn(state.page + 1, '下一页', state.page >= state.pages ? 'disabled' : 'title="下一页（→）"') +
-      `<label class="jump">跳至<input type="number" min="1" max="${state.pages}" placeholder="${state.page}" aria-label="跳转页码">/ ${state.pages} 页</label>`;
+      btn(state.page + 1, '<svg><use href="#i-right"/></svg>', `class="step" aria-label="下一页" title="下一页（→）"${state.page >= state.pages ? ' disabled' : ''}`) +
+      `<label class="jump" title="跳转页码（回车）"><input type="number" min="1" max="${state.pages}" placeholder="${state.page}" aria-label="跳转页码"><span>/ ${state.pages}</span></label>`;
   }
 
   function renderControls() {
     document.querySelectorAll('.seg [data-view]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.view === state.view)));
     el.seg.style.setProperty('--seg-i', Math.max(0, VIEWS.indexOf(state.view)));
-    el.sort.value = state.sort;
+    const sortLabel = state.sort === 'desc' ? '最新在前' : '最早在前';
+    el.sort.querySelector('use').setAttribute('href', state.sort === 'desc' ? '#i-sort-desc' : '#i-sort-asc');
+    el.sort.title = `${sortLabel}（O）`;
+    el.sort.setAttribute('aria-label', `排序：${sortLabel}`);
     el.size.value = String(state.size);
-    el.group.checked = state.group;
+    el.group.setAttribute('aria-pressed', String(state.group));
     el.selectMode.setAttribute('aria-pressed', String(state.selectMode));
-    el.accountLabel.textContent = state.admin ? '管理' : '管理员登录';
+    const account = state.admin ? '管理' : '管理员登录';
+    el.account.title = account;
+    el.account.setAttribute('aria-label', account);
+    el.account.querySelector('use').setAttribute('href', state.admin ? '#i-shield' : '#i-user');
     el.account.classList.toggle('is-admin', state.admin);
     const root = getComputedStyle(document.documentElement);
     el.theme.querySelector('use').setAttribute('href', root.colorScheme === 'dark' ? '#i-sun' : '#i-moon');
@@ -432,6 +467,19 @@
     if (state.view === v) return;
     state.view = v;
     store.set('view', v);
+    render({ animate: true });
+  }
+
+  function toggleSort() {
+    state.sort = state.sort === 'desc' ? 'asc' : 'desc';
+    store.set('sort', state.sort);
+    go(1);
+    toast(state.sort === 'desc' ? '最新在前' : '最早在前');
+  }
+
+  function toggleGroup() {
+    state.group = !state.group;
+    store.set('group', state.group ? '1' : '0');
     render({ animate: true });
   }
 
@@ -484,7 +532,7 @@
     const bar = n > 0 || state.selectMode;
     if (bar) show(el.selbar); else hide(el.selbar);
     document.body.classList.toggle('has-selbar', bar);
-    el.selCount.textContent = state.admin ? `已选 ${n} 张` : `已选 ${n} / ${state.guestLimit}`;
+    el.selCount.textContent = state.admin ? `已选 ${n}` : `已选 ${n} / ${state.guestLimit}`;
     if (Number(el.selCount.dataset.n || 0) !== n) replay(el.selCount, 'bump');
     el.selCount.dataset.n = n;
     $('#sel-zip').disabled = n === 0;
@@ -494,10 +542,16 @@
       t.classList.toggle('selected', on);
       t.querySelector('.tile-check').setAttribute('aria-pressed', String(on));
     });
-    if (state.lbIndex >= 0) {
+    el.gallery.querySelectorAll('.group-title').forEach((h) => {
+      let all = true;
+      for (let i = Number(h.dataset.from); i <= Number(h.dataset.to) && all; i++) all = state.selected.has(state.items[i].name);
+      h.classList.toggle('selected', all);
+      h.querySelector('.group-check').setAttribute('aria-pressed', String(all));
+    });
+    if (state.items[state.lbIndex]) {
       const on = state.selected.has(state.items[state.lbIndex].name);
       el.lbSelect.setAttribute('aria-pressed', String(on));
-      el.lbSelect.querySelector('span').textContent = on ? '已选择' : '选择';
+      el.lbSelect.setAttribute('aria-label', on ? '取消选择' : '选择');
     }
   }
 
@@ -517,77 +571,144 @@
   // ---------- lightbox ----------
   let lbSeq = 0;
   let lbReturn = null;
+  let lbFrom = null; // page image the lightbox opened from, for the zoom-out on close
+  let lbHistory = false; // an entry was pushed so the Back button closes the lightbox
+  let expectPop = false;
   const zoom = { on: false, s: 1, x: 0, y: 0 };
+  const MAX_ZOOM = 5;
 
   function setInert(on) {
-    [el.bar, el.main, el.selbar, el.fresh, el.toTop].forEach((n) => { n.inert = on; });
+    [el.bar, el.main, el.foot, el.selbar, el.fresh, el.toTop].forEach((n) => { n.inert = on; });
   }
 
-  function openLightbox(i, dir = 0) {
+  // Sizing the box from the stored dimensions lets a cached thumbnail stand in at full size while the sharp image loads.
+  function fitImage() {
+    const it = state.items[state.lbIndex];
+    const img = el.lbImg;
+    if (!it || !it.w) { img.style.width = img.style.height = ''; return; }
+    const cs = getComputedStyle(el.lbStage);
+    const aw = el.lbStage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const ah = el.lbStage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    const s = Math.min(aw / it.w, ah / it.h, 1);
+    img.style.width = Math.round(it.w * s) + 'px';
+    img.style.height = Math.round(it.h * s) + 'px';
+  }
+
+  // The 1600px preview covers most screens; HiDPI displays and deep zoom get the original.
+  function fullSrc(it, scale = 1) {
+    const need = el.lbImg.offsetWidth * scale * (window.devicePixelRatio || 1);
+    return it.w > 1600 && need > 1600 ? `/img/${enc(it.name)}` : `/preview/${enc(it.name)}`;
+  }
+
+  function updateLightboxMeta() {
+    const i = state.lbIndex;
+    const it = state.items[i];
+    el.lbTime.textContent = fmtFull(new Date(it.time));
+    el.lbSub.textContent = `${it.w ? `${it.w}×${it.h} · ` : ''}${fmtSize(it.size)}`;
+    el.lbCount.textContent = `${(state.page - 1) * state.size + i + 1} / ${state.total}`;
+    el.lbDownload.href = `/download/${enc(it.name)}`;
+    el.lbPrev.disabled = i === 0 && state.page === 1;
+    el.lbNext.disabled = i === state.items.length - 1 && state.page === state.pages;
+  }
+
+  function imgFor(i) {
+    const it = state.items[i];
+    if (it && lbFrom === el.nowImg && !el.now.hidden && el.now.dataset.name === it.name) return el.nowImg;
+    return el.gallery.querySelector(`.tile[data-i="${i}"] .tile-open img`);
+  }
+
+  function visibleRect(node) {
+    if (!node || !node.isConnected) return null;
+    const r = node.getBoundingClientRect();
+    return r.width && r.bottom > 0 && r.top < innerHeight ? r : null;
+  }
+
+  // Moves the lightbox image between its place on the page and the stage.
+  function flip(rect, back) {
+    const to = el.lbImg.getBoundingClientRect();
+    if (!rect || !to.width || reduced()) return null;
+    const s = rect.width / to.width;
+    const dx = rect.left + rect.width / 2 - (to.left + to.width / 2);
+    const dy = rect.top + rect.height / 2 - (to.top + to.height / 2);
+    const frames = [{ transform: `translate(${dx}px, ${dy}px) scale(${s})` }, { transform: 'none' }];
+    if (back) frames.reverse();
+    return el.lbImg.animate(frames, { duration: back ? 260 : 340, easing: 'cubic-bezier(.4, 0, .22, 1)', fill: back ? 'forwards' : 'none' });
+  }
+
+  function openLightbox(i, dir = 0, from = null) {
     const it = state.items[i];
     if (!it) return;
     const opening = state.lbIndex < 0;
     state.lbIndex = i;
     resetZoom();
-    const d = new Date(it.time);
-    el.lbTime.textContent = fmtFull(d);
-    el.lbSub.textContent = `${fmtSize(it.size)}${it.w ? `，${it.w} × ${it.h}` : ''}`;
-    el.lbCount.textContent = `${(state.page - 1) * state.size + i + 1} / ${state.total}`;
-    el.lbDownload.href = `/download/${enc(it.name)}`;
-    el.lbPrev.disabled = i === 0 && state.page === 1;
-    el.lbNext.disabled = i === state.items.length - 1 && state.page === state.pages;
-
-    // 1600px preview for most screens; the browser picks the original on large/HiDPI displays.
-    const src = `/preview/${enc(it.name)}`;
-    const srcset = it.w > 1600 ? `${src} 1600w, /img/${enc(it.name)} ${it.w}w` : '';
+    closeMenu();
+    updateLightboxMeta();
+    const img = el.lbImg;
     const seq = ++lbSeq;
-    const swap = () => {
-      if (seq !== lbSeq) return;
-      el.lbImg.srcset = srcset;
-      el.lbImg.sizes = '100vw';
-      el.lbImg.src = src;
-      el.lbImg.alt = fmtFull(d);
-    };
     if (opening) {
-      el.lbStage.classList.add('loading');
-      swap();
+      lbFrom = from;
       lbReturn = document.activeElement;
+      el.lb.classList.remove('chrome-off');
       show(el.lb);
       setInert(true);
       document.body.style.overflow = 'hidden';
+      document.documentElement.classList.add('lb-open');
+      if (!lbHistory) { history.pushState({ lightbox: true }, ''); lbHistory = true; }
       $('#lb-close').focus({ preventScroll: true });
-    } else {
-      // Decode the next image before swapping so it slides in whole instead of painting progressively.
-      const spin = setTimeout(() => { if (seq === lbSeq) el.lbStage.classList.add('loading'); }, 150);
-      const pre = new Image();
-      pre.sizes = '100vw';
-      pre.srcset = srcset;
-      pre.src = src;
-      const done = () => {
-        clearTimeout(spin);
-        if (seq !== lbSeq) return;
-        swap();
-        if (dir && !reduced()) {
-          el.lbImg.animate([{ opacity: 0, transform: `translateX(${dir * 56}px)` }, { opacity: 1, transform: 'none' }],
-            { duration: 320, easing: 'cubic-bezier(.2, .8, .2, 1)' });
-        }
-      };
-      pre.decode().then(done, done);
     }
+    // Show the image already on the page at once, then swap in the sharp one when it is decoded.
+    img.src = from && from.currentSrc ? from.currentSrc : `/thumb/${enc(it.name)}`;
+    img.alt = fmtFull(new Date(it.time));
+    fitImage();
+    if (opening) {
+      if (!flip(visibleRect(from)) && !reduced()) {
+        img.animate([{ opacity: 0, transform: 'scale(0.94)' }, { opacity: 1, transform: 'none' }], { duration: 300, easing: 'cubic-bezier(.2, .8, .2, 1)' });
+      }
+    } else if (dir && !reduced()) {
+      img.animate([{ opacity: 0, transform: `translateX(${dir * 56}px)` }, { opacity: 1, transform: 'none' }],
+        { duration: 300, easing: 'cubic-bezier(.2, .8, .2, 1)' });
+    }
+    const src = fullSrc(it);
+    const spin = setTimeout(() => { if (seq === lbSeq) el.lbStage.classList.add('loading'); }, 250);
+    const pre = new Image();
+    pre.src = src;
+    const done = () => {
+      clearTimeout(spin);
+      if (seq !== lbSeq) return;
+      el.lbStage.classList.remove('loading');
+      if (!(zoom.on && img.currentSrc.includes('/img/'))) img.src = src;
+    };
+    pre.decode().then(done, done);
     for (const n of [state.items[i + 1], state.items[i - 1]]) if (n) new Image().src = `/preview/${enc(n.name)}`;
     renderSelection();
   }
 
-  function closeLightbox() {
+  function closeLightbox(fromHistory = false) {
     if (state.lbIndex < 0) return;
+    const rect = zoom.on ? null : visibleRect(imgFor(state.lbIndex));
     ++lbSeq;
     state.lbIndex = -1;
+    closeMenu();
     resetZoom();
     setInert(false);
     document.body.style.overflow = '';
-    hide(el.lb, () => { el.lbImg.removeAttribute('srcset'); el.lbImg.removeAttribute('src'); });
+    el.lbStage.classList.remove('loading');
+    const anim = flip(rect, true);
+    el.lb.classList.toggle('flipping', !!anim);
+    hide(el.lb, () => {
+      if (anim) anim.cancel();
+      el.lb.classList.remove('flipping');
+      if (state.lbIndex < 0) document.documentElement.classList.remove('lb-open');
+      el.lbImg.removeAttribute('src');
+      el.lbImg.style.width = el.lbImg.style.height = '';
+    });
     if (lbReturn && lbReturn.isConnected) lbReturn.focus({ preventScroll: true });
     lbReturn = null;
+    lbFrom = null;
+    if (lbHistory) {
+      lbHistory = false;
+      if (!fromHistory) { expectPop = true; history.back(); }
+    }
   }
 
   let stepping = false;
@@ -610,8 +731,8 @@
     el.lbImg.style.transform = zoom.on ? `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})` : '';
     el.lbStage.classList.toggle('zoomed', zoom.on);
     el.lbZoom.setAttribute('aria-pressed', String(zoom.on));
+    el.lbZoom.setAttribute('aria-label', zoom.on ? '还原' : '放大');
     el.lbZoom.querySelector('use').setAttribute('href', zoom.on ? '#i-zoom-out' : '#i-zoom');
-    el.lbZoom.querySelector('span').textContent = zoom.on ? '还原' : '放大';
   }
 
   function clampPan() {
@@ -626,26 +747,34 @@
     applyZoom();
   }
 
-  // Zooms towards (cx, cy) so the clicked spot stays under the pointer.
+  // Scales to s while keeping the point (cx, cy) under the pointer.
+  function zoomTo(s, cx, cy) {
+    const img = el.lbImg;
+    if (state.lbIndex < 0 || !img.offsetWidth) return;
+    s = Math.min(MAX_ZOOM, Math.max(1, s));
+    if (s < 1.02) return resetZoom();
+    const r = img.getBoundingClientRect();
+    const mx = r.left + r.width / 2 - zoom.x;
+    const my = r.top + r.height / 2 - zoom.y;
+    const px = (cx ?? mx) - mx;
+    const py = (cy ?? my) - my;
+    zoom.x = px - (px - zoom.x) * (s / zoom.s);
+    zoom.y = py - (py - zoom.y) * (s / zoom.s);
+    zoom.s = s;
+    zoom.on = true;
+    clampPan();
+    const want = fullSrc(state.items[state.lbIndex], s);
+    if (want.startsWith('/img/') && !img.currentSrc.includes('/img/')) img.src = want;
+    applyZoom();
+  }
+
   function toggleZoom(cx, cy) {
     if (state.lbIndex < 0) return;
     if (zoom.on) return resetZoom();
     const it = state.items[state.lbIndex];
     const img = el.lbImg;
     if (!img.offsetWidth) return;
-    const r = img.getBoundingClientRect();
-    const mx = r.left + r.width / 2;
-    const my = r.top + r.height / 2;
-    zoom.s = Math.min(4, Math.max(2, (it.w || img.naturalWidth) / img.offsetWidth));
-    zoom.x = ((cx ?? mx) - mx) * (1 - zoom.s);
-    zoom.y = ((cy ?? my) - my) * (1 - zoom.s);
-    zoom.on = true;
-    clampPan();
-    if (it.w > 1600 && !img.currentSrc.includes('/img/')) {
-      img.srcset = '';
-      img.src = `/img/${enc(it.name)}`;
-    }
-    applyZoom();
+    zoomTo(Math.min(4, Math.max(2, (it.w || img.naturalWidth) / img.offsetWidth)), cx, cy);
   }
 
   function panBy(dx, dy) {
@@ -660,6 +789,37 @@
     toggleSelect(state.items[state.lbIndex].name);
     state.lastIndex = state.lbIndex;
     renderSelection();
+  }
+
+  // ---------- link menu ----------
+  function linkText(fmt, it) {
+    const url = new URL(`/img/${enc(it.name)}`, location.href).href;
+    const alt = fmtFull(new Date(it.time));
+    return { url, md: `![${alt}](${url})`, html: `<img src="${url}" alt="${alt}">`, bb: `[img]${url}[/img]` }[fmt];
+  }
+
+  function openMenu() {
+    el.lbMenu.hidden = false;
+    el.lbLink.setAttribute('aria-expanded', 'true');
+    el.lbMenu.querySelector('button').focus();
+  }
+
+  function closeMenu(refocus) {
+    if (el.lbMenu.hidden) return;
+    el.lbMenu.hidden = true;
+    el.lbLink.setAttribute('aria-expanded', 'false');
+    if (refocus) el.lbLink.focus();
+  }
+
+  function menuKey(e) {
+    const items = [...el.lbMenu.querySelectorAll('button')];
+    const at = items.indexOf(document.activeElement);
+    if (e.key === 'Escape' || e.key === 'Tab') closeMenu(e.key === 'Escape');
+    else if (e.key === 'ArrowDown') items[(at + 1) % items.length].focus();
+    else if (e.key === 'ArrowUp') items[(at - 1 + items.length) % items.length].focus();
+    else return e.key === 'Enter' || e.key === ' ';
+    if (e.key !== 'Tab') e.preventDefault();
+    return true;
   }
 
   // ---------- admin ----------
@@ -718,15 +878,33 @@
 
   // ---------- events: header & gallery ----------
   document.querySelectorAll('.seg [data-view]').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
-  el.sort.addEventListener('change', () => { state.sort = el.sort.value; store.set('sort', state.sort); go(1); });
+  el.sort.addEventListener('click', toggleSort);
   el.size.addEventListener('change', () => { state.size = Number(el.size.value); store.set('size', state.size); go(1); });
-  el.group.addEventListener('change', () => { state.group = el.group.checked; store.set('group', state.group ? '1' : '0'); render({ animate: true }); });
+  el.group.addEventListener('click', toggleGroup);
   el.selectMode.addEventListener('click', () => setSelectMode(!state.selectMode));
   el.theme.addEventListener('click', toggleTheme);
-  $('#brand').addEventListener('click', (e) => { e.preventDefault(); go(1); });
+  $('#brand').addEventListener('click', (e) => {
+    e.preventDefault();
+    if (state.sort !== 'desc') { state.sort = 'desc'; store.set('sort', 'desc'); }
+    go(1);
+  });
 
   el.gallery.addEventListener('click', (e) => {
     if (e.target.closest('[data-retry]')) { load(); return; }
+    const head = e.target.closest('.group-check');
+    if (head) {
+      const h = head.closest('.group-title');
+      const from = Number(h.dataset.from);
+      const to = Number(h.dataset.to);
+      if (h.classList.contains('selected')) {
+        for (let i = from; i <= to; i++) state.selected.delete(state.items[i].name);
+      } else {
+        selectRange(from, to);
+      }
+      state.lastIndex = to;
+      renderSelection();
+      return;
+    }
     const tile = e.target.closest('.tile[data-i]');
     if (!tile) return;
     const i = Number(tile.dataset.i);
@@ -738,10 +916,22 @@
       state.lastIndex = i;
       renderSelection();
     } else if (e.target.closest('.tile-open')) {
-      openLightbox(i);
+      openLightbox(i, 0, tile.querySelector('.tile-open img'));
     }
   });
-  el.now.addEventListener('click', (e) => { if (e.target.closest('.now-frame')) openLightbox(0); });
+
+  // The hero may already show a newer picture than the gallery holds; catch the gallery up first.
+  async function openLatest() {
+    const name = el.now.dataset.name;
+    let i = state.items.findIndex((it) => it.name === name);
+    if (i < 0) {
+      await load({ silent: true });
+      i = state.items.findIndex((it) => it.name === name);
+    }
+    if (i >= 0) openLightbox(i, 0, el.nowImg);
+  }
+  $('#now-open').addEventListener('click', openLatest);
+  $('#now-zoom').addEventListener('click', openLatest);
 
   el.pager.addEventListener('click', (e) => {
     const b = e.target.closest('button[data-page]');
@@ -769,40 +959,59 @@
   });
 
   // ---------- events: lightbox ----------
-  $('#lb-close').addEventListener('click', closeLightbox);
+  $('#lb-close').addEventListener('click', () => closeLightbox());
   el.lbPrev.addEventListener('click', () => step(-1));
   el.lbNext.addEventListener('click', () => step(1));
   el.lbSelect.addEventListener('click', lbToggleSelect);
   el.lbZoom.addEventListener('click', () => toggleZoom());
-  el.lbLink.addEventListener('click', async () => {
+  el.lbLink.addEventListener('click', () => (el.lbMenu.hidden ? openMenu() : closeMenu(true)));
+  el.lbMenu.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-fmt]');
     const it = state.items[state.lbIndex];
-    if (!it) return;
-    const ok = await copyText(new URL(`/img/${enc(it.name)}`, location.href).href);
-    toast(ok ? '已复制原图链接' : '复制失败，请长按“下载原图”复制链接', ok ? 'ok' : 'error');
+    if (!b || !it) return;
+    closeMenu(true);
+    const ok = await copyText(linkText(b.dataset.fmt, it));
+    toast(ok ? `已复制${b.dataset.fmt === 'url' ? '原图链接' : ' ' + b.textContent}` : '复制失败，请长按下载按钮复制链接', ok ? 'ok' : 'error');
+  });
+  document.addEventListener('pointerdown', (e) => {
+    if (!el.lbMenu.hidden && !e.target.closest('.lb-menu-wrap')) closeMenu();
   });
   el.lb.addEventListener('click', (e) => {
-    if (!zoom.on && (e.target === el.lb || e.target === el.lbStage || e.target.classList.contains('lb-top'))) closeLightbox();
+    if (!zoom.on && (e.target === el.lb || e.target === el.lbStage || e.target.classList.contains('lb-foot'))) closeLightbox();
   });
-  const lbLoaded = () => el.lbStage.classList.remove('loading');
-  el.lbImg.addEventListener('load', lbLoaded);
-  el.lbImg.addEventListener('error', lbLoaded);
 
-  // Mouse: double-click zooms, drag pans while zoomed.
+  // Mouse: click zooms towards the pointer, the wheel zooms smoothly, drag pans while zoomed.
   let drag = null;
-  let tapZoomAt = 0;
-  el.lbImg.addEventListener('dblclick', (e) => {
-    if (Date.now() - tapZoomAt < 600) return; // already handled as a double tap
+  let dragMoved = false;
+  let lastTouch = 0; // clicks synthesized from taps are handled by the touch code
+  el.lbImg.addEventListener('click', (e) => {
+    if (Date.now() - lastTouch < 700) return;
+    if (dragMoved) { dragMoved = false; return; }
     toggleZoom(e.clientX, e.clientY);
   });
+  let wheelTimer;
+  el.lbStage.addEventListener('wheel', (e) => {
+    if (state.lbIndex < 0) return;
+    e.preventDefault();
+    const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+    // Trackpad pinches arrive as ctrl+wheel with small deltas.
+    const k = e.ctrlKey ? 0.01 : 0.002;
+    el.lbStage.classList.add('wheeling');
+    clearTimeout(wheelTimer);
+    wheelTimer = setTimeout(() => el.lbStage.classList.remove('wheeling'), 160);
+    zoomTo(zoom.s * Math.exp(-dy * k), e.clientX, e.clientY);
+  }, { passive: false });
   el.lbImg.addEventListener('pointerdown', (e) => {
+    dragMoved = false;
     if (!zoom.on || e.button !== 0) return;
     e.preventDefault();
-    drag = { id: e.pointerId, x: e.clientX - zoom.x, y: e.clientY - zoom.y };
+    drag = { id: e.pointerId, x: e.clientX - zoom.x, y: e.clientY - zoom.y, sx: e.clientX, sy: e.clientY };
     el.lbImg.setPointerCapture(e.pointerId);
     el.lbStage.classList.add('dragging');
   });
   el.lbImg.addEventListener('pointermove', (e) => {
     if (!drag || e.pointerId !== drag.id) return;
+    if (Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) > 4) dragMoved = true;
     zoom.x = e.clientX - drag.x;
     zoom.y = e.clientY - drag.y;
     clampPan();
@@ -816,15 +1025,31 @@
   el.lbImg.addEventListener('pointerup', endDrag);
   el.lbImg.addEventListener('pointercancel', endDrag);
 
-  // Touch: the image follows a horizontal swipe to change pictures, swipe down closes, double tap zooms.
+  // Touch: swipe sideways to change pictures, swipe down to close, pinch or double tap to zoom,
+  // a single tap on the picture hides or shows the controls.
   let touch = null;
+  let pinch = null;
   let lastTap = 0;
+  let tapTimer = 0;
+  const span = (ts) => Math.hypot(ts[0].clientX - ts[1].clientX, ts[0].clientY - ts[1].clientY);
   el.lbStage.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 2) {
+      touch = null;
+      drag = null;
+      pinch = { d: span(e.touches), s: zoom.s };
+      el.lbStage.classList.add('dragging');
+      return;
+    }
     if (e.touches.length !== 1) { touch = null; return; }
     const t = e.touches[0];
-    touch = { x: t.clientX, y: t.clientY, dx: 0, dy: 0, axis: null, swipe: !zoom.on };
+    touch = { x: t.clientX, y: t.clientY, dx: 0, dy: 0, axis: null, swipe: !zoom.on, onImg: e.target === el.lbImg };
   }, { passive: true });
   el.lbStage.addEventListener('touchmove', (e) => {
+    if (pinch && e.touches.length === 2) {
+      const [a, b] = e.touches;
+      zoomTo(pinch.s * span(e.touches) / pinch.d, (a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2);
+      return;
+    }
     if (!touch) return;
     const t = e.touches[0];
     touch.dx = t.clientX - touch.x;
@@ -836,24 +1061,26 @@
       el.lbImg.style.transform = `translateX(${touch.dx}px)`;
     } else if (touch.dy > 0) {
       el.lbImg.style.transform = `translateY(${touch.dy}px) scale(${1 - Math.min(touch.dy / 1500, 0.15)})`;
-      el.lb.style.opacity = String(1 - Math.min(touch.dy / 600, 0.5));
+      el.lb.style.setProperty('--lb-fade', String(1 - Math.min(touch.dy / 600, 0.5)));
     }
   }, { passive: true });
   const endTouch = (x, y) => {
+    lastTouch = Date.now();
     if (!touch) return;
-    const { dx, dy, axis, swipe } = touch;
+    const { dx, dy, axis, swipe, onImg } = touch;
     touch = null;
     el.lbStage.classList.remove('dragging');
-    el.lb.style.opacity = '';
+    el.lb.style.removeProperty('--lb-fade');
     if (swipe) el.lbImg.style.transform = '';
     if (!axis) {
       const now = Date.now();
+      clearTimeout(tapTimer);
       if (x !== undefined && now - lastTap < 300) {
         lastTap = 0;
-        tapZoomAt = now;
         toggleZoom(x, y);
       } else {
         lastTap = now;
+        if (onImg) tapTimer = setTimeout(() => el.lb.classList.toggle('chrome-off'), 300);
       }
       return;
     }
@@ -862,21 +1089,47 @@
     else if (axis === 'y' && dy > 100) closeLightbox();
   };
   el.lbStage.addEventListener('touchend', (e) => {
+    if (pinch) {
+      if (e.touches.length < 2) { pinch = null; el.lbStage.classList.remove('dragging'); }
+      lastTouch = Date.now();
+      return;
+    }
     const t = e.changedTouches[0];
     endTouch(t && t.clientX, t && t.clientY);
   });
-  el.lbStage.addEventListener('touchcancel', () => { lastTap = 0; endTouch(); });
+  el.lbStage.addEventListener('touchcancel', () => {
+    pinch = null;
+    lastTap = 0;
+    el.lbStage.classList.remove('dragging');
+    endTouch();
+  });
+
+  window.addEventListener('popstate', () => {
+    if (expectPop) {
+      expectPop = false;
+    } else if (lbHistory) {
+      lbHistory = false;
+      closeLightbox(true);
+    } else {
+      return;
+    }
+    // Stepping across pages in the lightbox moved the page; keep it rather than the older entry's hash.
+    writeHash();
+  });
 
   // ---------- keyboard ----------
   function lightboxKey(e) {
+    if (!el.lbMenu.hidden && menuKey(e)) return;
     const pan = { ArrowLeft: [80, 0], ArrowRight: [-80, 0], ArrowUp: [0, 80], ArrowDown: [0, -80] }[e.key];
+    const k = e.key.toLowerCase();
     if (pan && zoom.on) panBy(...pan);
     else if (e.key === 'Escape') { if (zoom.on) resetZoom(); else closeLightbox(); }
     else if (e.key === 'ArrowLeft') step(-1);
     else if (e.key === 'ArrowRight') step(1);
-    else if (e.key === 'z' || e.key === 'Z') toggleZoom();
-    else if (e.key === 'x' || e.key === 'X') lbToggleSelect();
-    else if (e.key === 'd' || e.key === 'D') el.lbDownload.click();
+    else if (k === 'z') toggleZoom();
+    else if (k === 'x') lbToggleSelect();
+    else if (k === 'c') openMenu();
+    else if (k === 'd') el.lbDownload.click();
     else return;
     e.preventDefault();
   }
@@ -885,12 +1138,14 @@
     if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
     if (state.lbIndex >= 0) { lightboxKey(e); return; }
     if (document.querySelector('dialog[open]') || (e.target instanceof Element && e.target.closest('input, select, textarea, [contenteditable]'))) return;
-    const k = e.key;
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     if (k === 'ArrowLeft' && state.page > 1) go(state.page - 1);
     else if (k === 'ArrowRight' && state.page < state.pages) go(state.page + 1);
     else if (k === '1' || k === '2' || k === '3') setView(VIEWS[k - 1]);
-    else if (k === 's' || k === 'S') setSelectMode(!state.selectMode);
-    else if (k === 't' || k === 'T') toggleTheme();
+    else if (k === 's') setSelectMode(!state.selectMode);
+    else if (k === 't') toggleTheme();
+    else if (k === 'o') toggleSort();
+    else if (k === 'g') toggleGroup();
     else if (k === '?') openDialog(el.keysDialog);
     else if (k === 'Escape' && (state.selectMode || state.selected.size)) clearSelection();
     else return;
@@ -1003,16 +1258,24 @@
   });
 
   // ---------- polling ----------
-  // Checks shortly after each scheduled fetch should have finished, at least once a minute.
-  // New images reload silently only when that cannot disrupt the viewer.
+  // Checks shortly after each scheduled fetch, and again every few seconds while that fetch is still
+  // running, at least once a minute. A new picture always refreshes the hero; the gallery reloads
+  // silently when that cannot disrupt the viewer, otherwise a pill offers it.
   let pollTimer = 0;
   let lastPoll = 0;
-  function schedulePoll() {
+  let awaitRun = ''; // the scheduled run the next poll looks for
+  let awaitUntil = 0;
+  function schedulePoll(delay) {
     clearTimeout(pollTimer);
-    let delay = 60000;
-    const t = state.task;
-    if (t && !t.paused && validTime(t.next_run)) {
-      delay = Math.min(Math.max(new Date(t.next_run) - Date.now() + 8000, 10000), 60000);
+    if (delay === undefined) {
+      delay = 60000;
+      awaitRun = '';
+      awaitUntil = 0;
+      const t = state.task;
+      if (t && !t.paused && validTime(t.next_run)) {
+        const wait = new Date(t.next_run) - Date.now() + 5000;
+        if (wait < 60000) { delay = Math.max(wait, 5000); awaitRun = t.next_run; }
+      }
     }
     pollTimer = setTimeout(poll, delay);
   }
@@ -1021,18 +1284,33 @@
     clearTimeout(pollTimer);
     if (document.hidden) return; // resumed by visibilitychange
     lastPoll = Date.now();
+    let again = false;
     try {
       const d = await api('/api/images?page=1&size=12&sort=desc');
-      state.task = d.task;
+      const t = d.task;
+      state.task = t;
       renderTask();
-      if (state.knownTotal !== null && d.total > state.knownTotal) {
-        const idle = state.page === 1 && state.sort === 'desc' && state.lbIndex < 0 && !state.selected.size
-          && window.scrollY < 200 && !document.querySelector('dialog[open]');
-        if (idle) { await load({ silent: true }); return; } // load reschedules
+      // last_fetched is the start time of the last successful download, so an older value means
+      // the expected run has not finished (or failed); give it up to 45 s.
+      const finished = validTime(t.last_fetched) && new Date(t.last_fetched) >= new Date(awaitRun) - 1000;
+      if (awaitRun && !t.paused && !finished) {
+        if (!awaitUntil) awaitUntil = Date.now() + 45000;
+        again = Date.now() < awaitUntil;
+      }
+      const top = d.items[0] || null;
+      if (state.latest === undefined) {
+        state.latest = top;
+      } else if ((top && top.name) !== (state.latest && state.latest.name)) {
+        state.latest = top;
+        if (onFirstPage()) {
+          renderNow();
+          const idle = state.lbIndex < 0 && window.scrollY < 400 && !document.querySelector('dialog[open]');
+          if (idle) { await load({ silent: true }); return; } // load reschedules
+        }
         show(el.fresh);
       }
     } catch (e) { /* offline: try again next tick */ }
-    schedulePoll();
+    schedulePoll(again ? 4000 : undefined);
   }
 
   document.addEventListener('visibilitychange', () => {
@@ -1072,10 +1350,15 @@
     resizeTimer = setTimeout(() => {
       const t = el.gallery.querySelector('.tiles[data-cols]');
       if (t && Number(t.dataset.cols) !== masonryCols()) render();
+      if (state.lbIndex >= 0) fitImage();
       if (zoom.on) { clampPan(); applyZoom(); }
     }, 150);
   });
-  window.addEventListener('hashchange', () => { readHash(); load({ scroll: true }); });
+  window.addEventListener('hashchange', () => {
+    const before = state.page;
+    readHash();
+    if (state.page !== before) load({ scroll: true });
+  });
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', renderControls);
 
   readHash();
