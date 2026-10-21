@@ -212,3 +212,37 @@ func TestListReportsNextRun(t *testing.T) {
 		t.Fatalf("next_run = %v, want %v", body.Task.NextRun, next)
 	}
 }
+
+func TestAPIResponsesAreNotCached(t *testing.T) {
+	srv, q := newTestServer(t, 2)
+	for _, path := range []string{"/api/images", "/api/status", "/download/zip?" + q} {
+		r := get(t, srv.URL+path, nil)
+		r.Body.Close()
+		if cc := r.Header.Get("Cache-Control"); cc != "no-store" {
+			t.Errorf("%s: Cache-Control = %q", path, cc)
+		}
+	}
+}
+
+func TestClientIP(t *testing.T) {
+	cases := []struct {
+		remote, header, want string
+	}{
+		{"203.0.113.9:4000", "198.51.100.7", "203.0.113.9"}, // public peer cannot claim another IP
+		{"127.0.0.1:4000", "198.51.100.7", "198.51.100.7"},
+		{"172.18.0.1:4000", " 2001:db8::1 ", "2001:db8::1"}, // docker bridge gateway
+		{"[::1]:4000", "198.51.100.7", "198.51.100.7"},
+		{"127.0.0.1:4000", "not-an-ip", "127.0.0.1"},
+		{"127.0.0.1:4000", "", "127.0.0.1"},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest(http.MethodPost, "/api/login", nil)
+		r.RemoteAddr = c.remote
+		if c.header != "" {
+			r.Header.Set("X-Real-IP", c.header)
+		}
+		if got := clientIP(r); got != c.want {
+			t.Errorf("clientIP(%s, %q) = %s, want %s", c.remote, c.header, got, c.want)
+		}
+	}
+}

@@ -89,10 +89,17 @@ func (a *auth) checkCredentials(user, pass string) bool {
 	return u&p == 1
 }
 
+// clientIP is the TCP peer, or X-Real-IP when the peer is a reverse proxy on
+// this host or a private network (nginx overwrites any value the client sent).
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
+	}
+	if peer := net.ParseIP(host); peer != nil && (peer.IsLoopback() || peer.IsPrivate()) {
+		if real := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); real != nil {
+			return real.String()
+		}
 	}
 	return host
 }

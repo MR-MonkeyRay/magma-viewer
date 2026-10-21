@@ -38,6 +38,10 @@ docker compose up -d
 
 在 `deploy/compose` 下执行，配置为同目录的 `config.yaml`，图片保存在同目录的 `data/images`。镜像默认 `ghcr.io/mr-monkeyray/magma-viewer:latest`；需要固定版本时设置 `MAGMA_VIEWER_TAG=<版本>`（或写入同目录 `.env`，将 `<版本>` 替换为所需的已发布版本）。访问 `http://<服务器>:8080`。私有包需先 `docker login ghcr.io`。
 
+### nginx 反向代理与 Cloudflare
+
+公网部署建议经 nginx 反代并接入 Cloudflare：配置、IP 列表更新脚本和面板设置见 [`deploy/nginx`](deploy/nginx/README.md)。此时应用只监听本机（compose 端口改为 `127.0.0.1:8080:8080`）。
+
 ### Linux systemd（从 GitHub Release 一键安装）
 
 适用于使用 systemd 的 Linux x86_64 / aarch64 主机，无需 Docker 或 Go。需安装 `bash`、`curl`、CA 证书、`tar`、coreutils 与提供 `useradd` 的账户管理工具；安装操作需要 root。
@@ -192,4 +196,4 @@ GHCR 包默认私有，匿名拉取需在包设置中改为 Public；私有包�
 
 ## 安全
 
-`config.yaml` 可能包含真实 cookie 和管理员密码，不要提交。仓库只保留 `config.example.yaml` 占位配置；`.gitignore` 已排除本地配置、`.env`、运行数据、缩略图、构建与测试产物。安装包的 SHA-256 校验用于发现下载损坏，不替代对 GitHub 仓库和 Release 发布者的信任。
+`config.yaml` 可能包含真实 cookie 和管理员密码，不要提交。接口响应带 `Cache-Control: no-store`，不会被浏览器或 CDN 缓存；反向代理下的登录防护、跨站请求防护与源站保护见 [`deploy/nginx`](deploy/nginx/README.md)。仓库只保留 `config.example.yaml` 占位配置；`.gitignore` 已排除本地配置、`.env`、运行数据、缩略图、构建与测试产物。安装包的 SHA-256 校验用于发现下载损坏，不替代对 GitHub 仓库和 Release 发布者的信任。

@@ -90,8 +90,10 @@ func logRequests(h http.Handler) http.Handler {
 	})
 }
 
+// API responses depend on the session cookie, so no cache (browser or CDN) may keep them.
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
 }
@@ -320,6 +322,7 @@ func (s *Server) handleZipAll(w http.ResponseWriter, r *http.Request) {
 // compressed, so deflate would only waste CPU.
 func (s *Server) writeZip(w http.ResponseWriter, r *http.Request, filename string, items []store.Item) {
 	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Cache-Control", "no-store")
 	attachment(w, filename)
 	zw := zip.NewWriter(w)
 	for _, it := range items {
