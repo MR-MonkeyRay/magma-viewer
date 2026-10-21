@@ -252,8 +252,7 @@ func TestOverviewHonoursTimeZone(t *testing.T) {
 	day := func(tz string) string {
 		var body struct {
 			Days []struct {
-				Date  string  `json:"date"`
-				Hours [24]int `json:"hours"`
+				Date string `json:"date"`
 			} `json:"days"`
 		}
 		r := get(t, srv.URL+"/api/overview?tz="+url.QueryEscape(tz), nil)
@@ -261,18 +260,20 @@ func TestOverviewHonoursTimeZone(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Days) != 1 {
 			t.Fatalf("tz %q: %v %v", tz, err, body)
 		}
-		for h, n := range body.Days[0].Hours {
-			if n == 1 {
-				return fmt.Sprintf("%s %02d", body.Days[0].Date, h)
-			}
-		}
-		return ""
+		return body.Days[0].Date
 	}
+	// 12:00 server time falls on the previous or next day somewhere 13 hours away.
 	local := time.Date(2026, 10, 20, 12, 0, 0, 0, time.Local)
-	if got, want := day("UTC"), local.UTC().Format("2006-01-02 15"); got != want {
-		t.Errorf("UTC: %s, want %s", got, want)
+	_, off := local.Zone()
+	far := off/3600 - 13
+	if far < -12 {
+		far += 26
 	}
-	if got, want := day("No/Such_Zone"), local.Format("2006-01-02 15"); got != want {
+	tz := fmt.Sprintf("Etc/GMT%+d", -far) // Etc/GMT signs are inverted
+	if got, want := day(tz), local.In(time.FixedZone("", far*3600)).Format("2006-01-02"); got != want || got == "2026-10-20" {
+		t.Errorf("%s: %s, want %s", tz, got, want)
+	}
+	if got, want := day("No/Such_Zone"), local.Format("2006-01-02"); got != want {
 		t.Errorf("unknown zone: %s, want server time %s", got, want)
 	}
 }

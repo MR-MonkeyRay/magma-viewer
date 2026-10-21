@@ -512,14 +512,13 @@ func writeJPEG(dst string, img image.Image, quality int) error {
 	return os.Rename(tmp.Name(), dst)
 }
 
-// DayCount is the number of items saved on one local calendar day, in total and per hour.
+// DayCount is the number of items saved on one calendar day.
 type DayCount struct {
-	Date  string  `json:"date"` // YYYY-MM-DD
-	Count int     `json:"count"`
-	Hours [24]int `json:"hours"`
+	Date  string `json:"date"` // YYYY-MM-DD
+	Count int    `json:"count"`
 }
 
-// Overview summarises the archive: per-day and per-hour counts in loc (newest first),
+// Overview summarises the archive: per-day counts in loc (newest first),
 // total bytes, the time span, and the items saved within window of the newest one.
 type Overview struct {
 	Count  int        `json:"count"`
@@ -541,14 +540,12 @@ func (s *Store) Overview(window time.Duration, maxRecent int, loc *time.Location
 	since := o.Last.Add(-window)
 	for _, it := range s.items {
 		o.Bytes += it.Size
-		t := it.Time.In(loc)
-		day := t.Format("2006-01-02")
-		if n := len(o.Days); n == 0 || o.Days[n-1].Date != day {
-			o.Days = append(o.Days, DayCount{Date: day})
+		day := it.Time.In(loc).Format("2006-01-02")
+		if n := len(o.Days); n > 0 && o.Days[n-1].Date == day {
+			o.Days[n-1].Count++
+		} else {
+			o.Days = append(o.Days, DayCount{Date: day, Count: 1})
 		}
-		d := &o.Days[len(o.Days)-1]
-		d.Count++
-		d.Hours[t.Hour()]++
 		if len(o.Recent) < maxRecent && !it.Time.Before(since) {
 			o.Recent = append(o.Recent, it)
 		}

@@ -497,60 +497,6 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 .ea-foot { fill: var(--line); }
 @keyframes draw { from { stroke-dashoffset: 140; } to { stroke-dashoffset: 0; } }
 
-/* ---------- timeline ---------- */
-/* Wide screens get a timeline beside the gallery: each day is a column of 24 hour nodes whose length is the
-   number of pictures saved in that hour. The ochre handle marks the hour in view and can be dragged. */
-.browse { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; }
-.browse-main { min-width: 0; }
-.rail { display: none; }
-@media (min-width: 1280px) {
-  .browse:has(.rail:not([hidden])) { grid-template-columns: minmax(0, 1fr) 76px; }
-  .rail:not([hidden]) {
-    display: block; position: sticky; top: calc(var(--bar-h) + 8px); align-self: start;
-    cursor: ns-resize; touch-action: none; user-select: none;
-  }
-  .rail-scroll {
-    position: relative; max-height: calc(100vh - var(--bar-h) - 24px);
-    overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none;
-  }
-  .rail-scroll::-webkit-scrollbar { display: none; }
-}
-.tl { position: relative; list-style: none; margin: 0; padding: 0 0 8px; }
-.tl-day { display: flex; flex-direction: column; }
-.tl-label {
-  position: sticky; top: 0; z-index: 1; padding: 6px 0 4px; background: var(--board);
-  font-size: var(--fs-xs); font-weight: 600; color: var(--graphite); white-space: nowrap;
-}
-.tl-hours { display: flex; flex-direction: column; padding-left: 10px; border-left: 1px solid var(--line); margin-left: 4px; }
-.tl-hours i { position: relative; display: block; height: 6px; }
-.tl-hours i::before {
-  content: ""; position: absolute; left: 0; top: 2px; height: 2px; border-radius: 1px;
-  width: calc(6px + var(--v, 0) * 46px); background: color-mix(in srgb, var(--pigment) calc(35% + var(--v, 0) * 65%), transparent);
-  transition: background-color .15s;
-}
-.tl-hours i.none::before { width: 2px; background: var(--line); }
-/* Every sixth hour gets a longer tick on the axis so the day reads in quarters. */
-.tl-hours i:nth-child(6n + 1)::after { content: ""; position: absolute; left: -14px; top: 2.5px; width: 7px; height: 1px; background: var(--faint); }
-.rail:hover .tl-hours i:hover::before { background: var(--pigment); }
-.tl-hours i.at::before { background: var(--mark); }
-.tl-handle {
-  position: absolute; left: 0; right: 0; top: 0; height: 0; z-index: 2; pointer-events: none; outline: none;
-  transition: top .12s var(--ease-out);
-}
-.rail.dragging .tl-handle { transition: none; }
-.tl-handle::before {
-  content: ""; position: absolute; left: -1px; top: -6px; width: 12px; height: 12px; border-radius: 50%;
-  background: var(--mark); box-shadow: 0 0 0 2px var(--board);
-}
-.tl-handle::after { content: ""; position: absolute; left: 10px; right: 0; top: -1px; height: 2px; background: var(--mark); opacity: .5; }
-.tl-tip {
-  position: absolute; right: calc(100% + 8px); top: 0; margin-top: -13px; pointer-events: none; padding: 2px 8px; border-radius: var(--r-xs);
-  background: var(--ink); color: var(--board); font-size: var(--fs-xs); line-height: 22px; white-space: nowrap;
-  opacity: 0; transform: translateX(4px); transition: opacity .15s, transform .15s;
-}
-.rail.dragging .tl-tip, .rail:hover .tl-tip, .tl-handle:focus-visible .tl-tip { opacity: 1; transform: none; }
-.tl-handle:focus-visible::before { box-shadow: 0 0 0 2px var(--board), 0 0 0 4px var(--pigment); }
-
 /* ---------- pager ---------- */
 .pager { display: flex; justify-content: center; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 32px; }
 .pager button, .pager .gap {
