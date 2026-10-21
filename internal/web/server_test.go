@@ -185,3 +185,30 @@ func TestSchedulePause(t *testing.T) {
 		t.Fatal("guest list does not report paused task")
 	}
 }
+
+func TestListReportsNextRun(t *testing.T) {
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Magma: config.Magma{URL: "http://127.0.0.1:1", Timeout: time.Second}, Schedule: "* * * * *"}
+	s := New(cfg, st, fetcher.New(cfg.Magma, t.TempDir(), st), fstest.MapFS{})
+	next := time.Date(2026, 10, 21, 12, 1, 0, 0, time.UTC)
+	s.NextRun = func() time.Time { return next }
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	var body struct {
+		Task struct {
+			NextRun time.Time `json:"next_run"`
+		} `json:"task"`
+	}
+	r := get(t, srv.URL+"/api/images", nil)
+	defer r.Body.Close()
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.Task.NextRun.Equal(next) {
+		t.Fatalf("next_run = %v, want %v", body.Task.NextRun, next)
+	}
+}

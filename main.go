@@ -62,7 +62,8 @@ func run(configPath string) error {
 
 	f := fetcher.New(cfg.Magma, cfg.Storage.TempDir, st)
 	c := cron.New(cron.WithChain(cron.SkipIfStillRunning(cron.DefaultLogger)))
-	if _, err := c.AddFunc(cfg.Schedule, func() { f.RunScheduled(ctx) }); err != nil {
+	entry, err := c.AddFunc(cfg.Schedule, func() { f.RunScheduled(ctx) })
+	if err != nil {
 		return err
 	}
 	c.Start()
@@ -77,9 +78,11 @@ func run(configPath string) error {
 	if err != nil {
 		return err
 	}
+	ws := web.New(cfg, st, f, static)
+	ws.NextRun = func() time.Time { return c.Entry(entry).Next }
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           web.New(cfg, st, f, static).Handler(),
+		Handler:           ws.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {

@@ -36,6 +36,9 @@ type Server struct {
 	fetcher *fetcher.Fetcher
 	auth    *auth
 	static  fs.FS
+
+	// NextRun reports when the scheduler fires next; nil leaves next_run unset.
+	NextRun func() time.Time
 }
 
 func New(cfg *config.Config, st *store.Store, f *fetcher.Fetcher, static fs.FS) *Server {
@@ -135,7 +138,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		"admin":       s.auth.isAdmin(r),
 		"guest_limit": GuestZipLimit,
 		// Public subset of the fetch status; errors stay admin-only.
-		"task": map[string]any{"paused": task.Paused, "last_fetched": task.LastFetched},
+		"task": map[string]any{"paused": task.Paused, "last_fetched": task.LastFetched, "next_run": s.nextRun()},
 	})
 }
 
@@ -168,11 +171,19 @@ func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"admin": false})
 }
 
+func (s *Server) nextRun() time.Time {
+	if s.NextRun == nil {
+		return time.Time{}
+	}
+	return s.NextRun()
+}
+
 func (s *Server) statusBody() map[string]any {
 	return map[string]any{
 		"fetch":    s.fetcher.Status(),
 		"token":    s.fetcher.Token(),
 		"schedule": s.cfg.Schedule,
+		"next_run": s.nextRun(),
 		"count":    s.store.Count(),
 	}
 }
