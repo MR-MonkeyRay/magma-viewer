@@ -1,7 +1,10 @@
+name: magma-viewer
+
 services:
   magma-viewer:
     build:
-      context: .
+      context: ../..
+      dockerfile: build/docker/Dockerfile
       # args:
       #   GOPROXY: https://goproxy.cn,direct   # 国内网络构建时打开
     image: magma-viewer:latest
@@ -12,5 +15,5 @@ services:
     environment:
       TZ: Asia/Shanghai          # 影响 crontab 计划和文件名中的时间
     volumes:
-      - ./config.yaml:/config/config.yaml:ro
-      - ./data/images:/data/images
+      - ../../config.yaml:/config/config.yaml:ro
+      - ../../data/images:/data/images

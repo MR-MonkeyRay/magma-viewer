@@ -8,32 +8,50 @@
 - 每张图生成 480px 缩略图和 1600px 预览图（缓存在 `<存储目录>/.thumbs/`），列表和大图预览不必加载 4K 原图；下载始终是原图
 - 常驻内存约 50 MB（处理 4K 图片时短暂升高）
 
+## 部署与构建目录
+
+```text
+build/docker/
+  Dockerfile                    # 多阶段镜像构建
+  Dockerfile.dockerignore        # 对应 Dockerfile 的构建上下文忽略规则
+deploy/
+  compose/
+    docker-compose.yml          # 从源码构建并部署，构建上下文为项目根目录
+    config.example.yaml         # 完整配置样例
+  minimal/
+    docker-compose.yml          # 使用已有镜像，可复制到服务器独立部署
+    config.example.yaml         # 最小配置样例
+```
+
+GitHub Actions 工作流按平台要求保留在 `.github/workflows/`。本地运行配置 `config.yaml` 和图片数据 `data/` 不属于样例，继续保留在项目根目录并由 Git 忽略；源码部署的挂载路径相对 Compose 文件指向这两个位置。
+
 ## 快速部署（docker compose）
 
 ```bash
-cp config.example.yaml config.yaml   # 修改管理员密码、magma 地址和 cookie
-docker compose up -d --build
+cp deploy/compose/config.example.yaml config.yaml   # 已有本地配置时跳过；修改密码、magma 地址和 cookie
+docker compose -f deploy/compose/docker-compose.yml up -d --build
 # 打开 http://<服务器>:8080
 ```
 
-国内网络构建可在 `docker-compose.yml` 中打开 `GOPROXY: https://goproxy.cn,direct` 构建参数。
+以上命令在项目根目录执行。后续 `logs`、`restart`、`down` 等操作同样指定 `-f deploy/compose/docker-compose.yml`；国内网络构建可在该文件中打开 `GOPROXY: https://goproxy.cn,direct` 构建参数。
 
 ### 最小化部署样例
 
-`deploy/minimal/` 下是只包含必填项的 `config.yaml` 和直接使用镜像的 `docker-compose.yml`：
+`deploy/minimal/` 下包含最小配置样例和直接使用镜像的 `docker-compose.yml`：
 
 ```bash
-docker build -t magma-viewer:latest .        # 在项目根目录构建一次镜像
+docker build -f build/docker/Dockerfile -t magma-viewer:latest .   # 在项目根目录构建一次镜像
 cp -r deploy/minimal /opt/magma-viewer && cd /opt/magma-viewer
-vi config.yaml                               # 填写 url、cookie、密码
+cp config.example.yaml config.yaml
+vi config.yaml                                                 # 填写 url、cookie、密码
 docker compose up -d
 ```
 
-图片保存在宿主机的 `./images` 目录（根目录 compose 为 `./data/images`）。
+最小部署的图片保存在宿主机的 `./images` 目录；源码部署保存在项目根目录的 `data/images`，移动 Compose 文件不改变已有配置和数据位置。
 
 ## 配置
 
-完整说明见 [`config.example.yaml`](config.example.yaml)。
+完整说明见 [`deploy/compose/config.example.yaml`](deploy/compose/config.example.yaml)。
 
 | 配置项 | 说明 | 默认值 |
 |---|---|---|
@@ -63,8 +81,10 @@ docker compose up -d
   不带 cookie 时接口返回 `403 Access denied`。`AUTH_TOKEN` 是 JWT，有效期约 90 天；程序启动时会解析过期时间并写入日志，剩余不足 7 天时告警，管理面板中也会显示剩余天数。过期后更新配置并重启：
 
   ```bash
-  docker compose restart
+  docker compose -f deploy/compose/docker-compose.yml restart
   ```
+
+  最小部署在复制后的目录内执行 `docker compose restart` 即可。
 
 ## 抓取与去重
 
@@ -106,35 +126,36 @@ docker compose up -d
 ## 本地开发
 
 ```bash
+cp deploy/compose/config.example.yaml config.yaml   # 已有本地配置时跳过
 go test ./...
 go run . -config ./config.yaml
 ```
 
 ## 版本与镜像发布
 
-项目版本由根目录的 [`VERSION`](VERSION) 文件统一维护，当前为 `0.1.0`。发布新版本时修改此文件并推送到 `main`。
+项目版本由根目录的 [`VERSION`](VERSION) 文件统一维护，当前为 `0.1.1`。发布新版本时修改此文件并推送到 `main`。
 
 [Docker 发布工作流](.github/workflows/docker.yml) 在任意分支推送时运行，也支持在 GitHub Actions 中手动触发；使用仓库自带的 `GITHUB_TOKEN` 登录并推送到 `ghcr.io/<owner>/<repo>`（镜像路径自动转为小写），无需另配 Docker Hub 凭证。
 
 | 分支 | 镜像标签 | 示例 |
 |---|---|---|
-| `main` | `VERSION` 中的版本号，不加 `v` 前缀 | `ghcr.io/mr-monkeyray/magma-viewer:0.1.0` |
+| `main` | `VERSION` 中的版本号，不加 `v` 前缀 | `ghcr.io/mr-monkeyray/magma-viewer:0.1.1` |
 | 其他分支 | `<分支名>-<commit 前 7 位 hash>` | `ghcr.io/mr-monkeyray/magma-viewer:feature-login-abcdef0` |
 
 分支名中的 `/` 等 Docker 标签不支持的字符会替换为 `-`，移除开头的 `.` 和 `-`，并截断以保证标签不超过 128 个字符；处理后为空时使用 `branch`。工作流先检查目标标签，已存在则跳过构建和推送，不覆盖已有镜像。因此 `main` 上后续提交若要发布，必须先递增 `VERSION`；不会额外推送 `latest` 标签。同一分支的发布任务串行执行，避免重复构建同一版本。
 
 标签查询通过 GitHub Packages API 分页检查，包括私有包；首次发布、包不存在（404）时构建。权限不足、限流或网络等查询错误会直接使工作流失败，不会把查询失败误判为标签不存在。
 
-拉取已发布版本：
+工作流发布完成后，按当前版本拉取镜像：
 
 ```bash
-docker pull ghcr.io/mr-monkeyray/magma-viewer:0.1.0
+docker pull ghcr.io/mr-monkeyray/magma-viewer:0.1.1
 ```
 
 使用预构建镜像时，可将 `deploy/minimal/docker-compose.yml` 中的 `image` 改为上述完整地址，无需先在本地构建。GHCR 首次发布的包默认为私有；若需要匿名拉取，请在 GitHub 包设置中将可见性改为 Public。私有包需先执行 `docker login ghcr.io` 并使用具备 `read:packages` 权限的令牌。仓库的 Actions 也需允许写入 Packages；如组织策略限制该权限，需要先调整策略。
 
 ## 版本管理
 
-本地 `config.yaml` 可能包含真实 cookie 和管理员凭证，不应提交。仓库只保留 `config.example.yaml` 和 `deploy/minimal/config.yaml` 中的占位配置；实际部署时先复制到仓库外再填写。
+本地 `config.yaml` 可能包含真实 cookie 和管理员凭证，不应提交。仓库只保留 `deploy/compose/config.example.yaml` 和 `deploy/minimal/config.example.yaml` 中的占位配置；独立部署时先复制到仓库外再填写。项目根目录和 `deploy/` 下的实际 `config.yaml` 均已忽略。
 
 `.gitignore` 已排除本地配置、`.env` 环境文件、运行数据与缩略图、Go 构建和测试产物，以及常见编辑器和系统临时文件。提交前仍应检查待提交内容，避免将真实凭证写入示例配置或源码。

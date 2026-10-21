@@ -1,6 +1,10 @@
 .git
 data
+.github
+build
 deploy
 *.md
 config.yaml
 docker-compose.yml
+.env
+.env.*
