@@ -18,6 +18,7 @@ import (
 
 	"magma-viewer/internal/config"
 	"magma-viewer/internal/fetcher"
+	"magma-viewer/internal/notice"
 	"magma-viewer/internal/store"
 )
 
@@ -34,6 +35,7 @@ type Server struct {
 	cfg     *config.Config
 	store   *store.Store
 	fetcher *fetcher.Fetcher
+	notices *notice.Store
 	auth    *auth
 	static  fs.FS
 
@@ -44,11 +46,12 @@ type Server struct {
 // Go's built-in table lacks woff2, and slim images ship no /etc/mime.types.
 func init() { _ = mime.AddExtensionType(".woff2", "font/woff2") }
 
-func New(cfg *config.Config, st *store.Store, f *fetcher.Fetcher, static fs.FS) *Server {
+func New(cfg *config.Config, st *store.Store, f *fetcher.Fetcher, ns *notice.Store, static fs.FS) *Server {
 	return &Server{
 		cfg:     cfg,
 		store:   st,
 		fetcher: f,
+		notices: ns,
 		auth:    newAuth(cfg.Admin.Username, cfg.Admin.Password, cfg.Admin.SessionSecret, cfg.Admin.SessionTTL),
 		static:  static,
 	}
@@ -68,6 +71,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/status", s.adminOnly(s.handleStatus))
 	mux.HandleFunc("POST /api/fetch", s.adminOnly(s.handleFetch))
 	mux.HandleFunc("POST /api/schedule", s.adminOnly(s.handleSchedule))
+	mux.HandleFunc("GET /api/notices", s.handleNotices)
+	mux.HandleFunc("GET /api/notices/all", s.adminOnly(s.handleAllNotices))
+	mux.HandleFunc("POST /api/notices", s.adminOnly(s.handleSaveNotice))
+	mux.HandleFunc("PUT /api/notices/{id}", s.adminOnly(s.handleSaveNotice))
+	mux.HandleFunc("DELETE /api/notices/{id}", s.adminOnly(s.handleDeleteNotice))
 
 	mux.HandleFunc("GET /img/{name}", s.handleImage)
 	mux.HandleFunc("GET /thumb/{name}", s.handleThumb(store.Small))
@@ -155,6 +163,8 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		"guest_limit": GuestZipLimit,
 		// Public subset of the fetch status; errors stay admin-only.
 		"task": map[string]any{"paused": task.Paused, "last_fetched": task.LastFetched, "next_run": s.nextRun()},
+		// Lets polling notice a new announcement without fetching the list.
+		"notice": s.notices.Latest(),
 	})
 }
 
@@ -228,16 +238,28 @@ func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.statusBody())
 }
 
-func (s *Server) handleSchedule(w http.ResponseWriter, r *http.Request) {
+// readJSON decodes a JSON request body of at most limit bytes into v, answering the error itself.
+func readJSON(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
 	// A cross-origin form cannot send JSON without a CORS preflight.
 	if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt != "application/json" {
 		writeError(w, http.StatusUnsupportedMediaType, "请求格式错误")
-		return
+		return false
 	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, limit)).Decode(v); err != nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return false
+	}
+	return true
+}
+
+func (s *Server) handleSchedule(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Paused *bool `json:"paused"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil || body.Paused == nil {
+	if !readJSON(w, r, 4096, &body) {
+		return
+	}
+	if body.Paused == nil {
 		writeError(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
@@ -247,6 +269,54 @@ func (s *Server) handleSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.statusBody())
+}
+
+func (s *Server) handleNotices(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.notices.Published()})
+}
+
+func (s *Server) handleAllNotices(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.notices.All()})
+}
+
+// handleSaveNotice creates (POST) or updates (PUT) a notice and answers with it and the full list.
+func (s *Server) handleSaveNotice(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Title   string `json:"title"`
+		Body    string `json:"body"`
+		Publish bool   `json:"publish"`
+	}
+	// The body limit is in characters; JSON escapes can take six bytes for one.
+	if !readJSON(w, r, 6*(notice.MaxTitle+notice.MaxBody)+4096, &body) {
+		return
+	}
+	n, err := s.notices.Save(r.PathValue("id"), body.Title, body.Body, body.Publish)
+	if err != nil {
+		writeNoticeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"notice": n, "items": s.notices.All()})
+}
+
+func (s *Server) handleDeleteNotice(w http.ResponseWriter, r *http.Request) {
+	if err := s.notices.Delete(r.PathValue("id")); err != nil {
+		writeNoticeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.notices.All()})
+}
+
+func writeNoticeError(w http.ResponseWriter, err error) {
+	var invalid notice.InvalidError
+	switch {
+	case errors.As(err, &invalid):
+		writeError(w, http.StatusBadRequest, invalid.Error())
+	case errors.Is(err, notice.ErrNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
+	default:
+		log.Printf("notice: %v", err)
+		writeError(w, http.StatusInternalServerError, "保存公告失败")
+	}
 }
 
 func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, path, contentType string) {

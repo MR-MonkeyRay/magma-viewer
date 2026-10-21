@@ -47,6 +47,10 @@
   <symbol id="i-panel" viewBox="0 0 24 24"><path d="M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm1 2v12h9V6zm11 0v12h3V6z"/></symbol>
   <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12.5-7.5z"/></symbol>
   <symbol id="i-pause" viewBox="0 0 24 24"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M12 2a1.5 1.5 0 0 1 1.5 1.5v.7A6.5 6.5 0 0 1 18.5 10.5V15l2 2.5V19h-17v-1.5l2-2.5v-4.5a6.5 6.5 0 0 1 5-6.3v-.7A1.5 1.5 0 0 1 12 2zm0 4a4.5 4.5 0 0 0-4.5 4.5v5.2L6.6 17h10.8l-1-1.3v-5.2A4.5 4.5 0 0 0 12 6zm-2 14h4a2 2 0 0 1-4 0z"/></symbol>
+  <symbol id="i-megaphone" viewBox="0 0 24 24"><path d="M19 3h2v18h-2v-1.4L9.7 16H8.4l1.2 4.5-1.9.5L6.3 16H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h4.7L19 4.4zm0 3.6L10.2 10H5v4h5.2l8.8 3.4z"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M5 3h8v2H5v14h8v2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm11.6 4.6L21 12l-4.4 4.4-1.4-1.4 2-2H9v-2h8.2l-2-2z"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><path d="M8 3h11a2 2 0 0 1 2 2v11h-2V5H8zM5 7h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2zm0 2v10h10V9z"/></symbol>
 </svg>
 
@@ -79,7 +83,19 @@
     <span class="sep" aria-hidden="true"></span>
     <button type="button" class="icon-btn" id="select-mode" title="多选（S）" aria-label="多选" aria-pressed="false"><svg><use href="#i-select"/></svg></button>
     <button type="button" class="icon-btn" id="theme" title="切换明暗（T）" aria-label="切换明暗"><svg><use href="#i-moon"/></svg></button>
-    <button type="button" class="icon-btn" id="account" title="管理员登录" aria-label="管理员登录"><svg><use href="#i-user"/></svg></button>
+    <button type="button" class="icon-btn" id="notice-btn" title="公告（N）" aria-label="公告"><svg><use href="#i-bell"/></svg></button>
+    <span class="acct">
+      <button type="button" class="icon-btn" id="account" title="管理员登录" aria-label="管理员登录"><svg><use href="#i-user"/></svg></button>
+      <div class="acct-menu" id="acct-menu" role="menu" aria-label="管理" hidden>
+        <div class="acct-head"><strong>管理员</strong><span id="acct-sub"></span></div>
+        <button type="button" role="menuitem" data-open="status-dialog"><svg><use href="#i-info"/></svg><span>运行状态</span><em id="acct-result"></em></button>
+        <button type="button" role="menuitem" data-open="schedule-dialog"><svg><use href="#i-clock"/></svg><span>定时抓取</span><em id="acct-schedule"></em></button>
+        <button type="button" role="menuitem" data-open="notice-admin-dialog"><svg><use href="#i-megaphone"/></svg><span>公告管理</span><em id="acct-notices"></em></button>
+        <a role="menuitem" id="download-all" href="/download/all" download><svg><use href="#i-download"/></svg><span>下载全部</span></a>
+        <hr>
+        <button type="button" role="menuitem" id="logout"><svg><use href="#i-logout"/></svg><span>退出登录</span></button>
+      </div>
+    </span>
   </div>
 </header>
 
@@ -225,25 +241,67 @@
   </form>
 </dialog>
 
-<dialog class="modal" id="admin-dialog">
+<dialog class="modal" id="status-dialog">
   <div class="admin">
-    <h2>管理</h2>
+    <h2>运行状态</h2>
+    <dl class="stats" id="admin-stats"></dl>
+    <div class="modal-actions">
+      <button type="button" class="btn primary" id="fetch-now"><svg><use href="#i-refresh"/></svg><span>立即抓取</span></button>
+    </div>
+    <button type="button" class="modal-x" data-close aria-label="关闭" autofocus><svg><use href="#i-close"/></svg></button>
+  </div>
+</dialog>
+
+<dialog class="modal" id="schedule-dialog">
+  <div class="admin">
+    <h2>定时抓取</h2>
     <div class="switch-row">
       <div class="switch-text">
-        <strong id="schedule-title">定时抓取</strong>
+        <strong id="schedule-title">按计划自动抓取</strong>
         <span id="schedule-hint">加载中…</span>
       </div>
       <button type="button" class="switch" role="switch" id="toggle-schedule" aria-checked="false" aria-labelledby="schedule-title" disabled></button>
     </div>
-    <dl class="stats" id="admin-stats"></dl>
-    <div class="modal-actions spread">
-      <button type="button" class="btn ghost" id="logout">退出登录</button>
-      <div class="row">
-        <button type="button" class="btn ghost" id="fetch-now"><svg><use href="#i-refresh"/></svg><span>立即抓取</span></button>
-        <a class="btn primary" id="download-all" href="/download/all"><svg><use href="#i-download"/></svg>下载全部</a>
-      </div>
+    <dl class="stats" id="schedule-stats"></dl>
+    <button type="button" class="modal-x" data-close aria-label="关闭" autofocus><svg><use href="#i-close"/></svg></button>
+  </div>
+</dialog>
+
+<dialog class="modal" id="notice-dialog">
+  <div class="admin">
+    <h2>公告</h2>
+    <div class="notice-scroll" id="notice-list"></div>
+    <div class="modal-actions" id="notice-actions" hidden>
+      <button type="button" class="btn primary" id="notice-read"><svg><use href="#i-check"/></svg>标为已读</button>
     </div>
-    <button type="button" class="modal-x" id="admin-close" aria-label="关闭" autofocus><svg><use href="#i-close"/></svg></button>
+    <button type="button" class="modal-x" data-close aria-label="关闭" autofocus><svg><use href="#i-close"/></svg></button>
+  </div>
+</dialog>
+
+<dialog class="modal" id="notice-admin-dialog">
+  <div class="admin">
+    <h2>公告管理</h2>
+    <div class="na">
+      <div class="na-side">
+        <button type="button" class="btn ghost" id="na-new"><svg><use href="#i-plus"/></svg>新建公告</button>
+        <ul class="na-list" id="na-list" aria-label="公告列表"></ul>
+      </div>
+      <form class="na-edit" id="na-form" novalidate>
+        <p class="na-state" id="na-state"></p>
+        <label>标题<input name="title" maxlength="100" autocomplete="off" required></label>
+        <label>内容<textarea name="body" maxlength="5000" rows="9" placeholder="支持换行，网址会自动变成链接"></textarea></label>
+        <p class="na-count" id="na-count"></p>
+        <p class="form-error" id="na-error" hidden></p>
+        <div class="modal-actions spread">
+          <button type="button" class="btn ghost danger" id="na-delete">删除</button>
+          <div class="row">
+            <button type="button" class="btn ghost" id="na-draft">存为草稿</button>
+            <button type="submit" class="btn primary" id="na-publish"><span class="spinner" aria-hidden="true"></span><span>发布</span></button>
+          </div>
+        </div>
+      </form>
+    </div>
+    <button type="button" class="modal-x" data-close aria-label="关闭"><svg><use href="#i-close"/></svg></button>
   </div>
 </dialog>
 
@@ -262,6 +320,7 @@
         <dt><kbd>Shift</kbd> + 点击</dt><dd>连续选择一段画面</dd>
         <dt><kbd>Esc</kbd></dt><dd>清空选择</dd>
         <dt><kbd>T</kbd></dt><dd>切换明暗</dd>
+        <dt><kbd>N</kbd></dt><dd>查看公告</dd>
       </dl>
       <h3>大图</h3>
       <dl>
@@ -274,7 +333,7 @@
         <dt><kbd>Esc</kbd></dt><dd>关闭</dd>
       </dl>
     </div>
-    <button type="button" class="modal-x" id="keys-close" aria-label="关闭" autofocus><svg><use href="#i-close"/></svg></button>
+    <button type="button" class="modal-x" data-close aria-label="关闭" autofocus><svg><use href="#i-close"/></svg></button>
   </div>
 </dialog>
 

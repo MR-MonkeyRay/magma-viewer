@@ -18,6 +18,7 @@ import (
 
 	"magma-viewer/internal/config"
 	"magma-viewer/internal/fetcher"
+	"magma-viewer/internal/notice"
 	"magma-viewer/internal/store"
 )
 
@@ -37,6 +38,15 @@ func TestToken(t *testing.T) {
 	if a.validToken(tok) {
 		t.Fatal("expired token accepted")
 	}
+}
+
+func openNotices(t *testing.T) *notice.Store {
+	t.Helper()
+	ns, err := notice.Open(filepath.Join(t.TempDir(), "notices.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ns
 }
 
 func newTestServer(t *testing.T, n int) (*httptest.Server, string) {
@@ -59,7 +69,7 @@ func newTestServer(t *testing.T, n int) (*httptest.Server, string) {
 	}
 	f := fetcher.New(cfg.Magma, t.TempDir(), st)
 	static := fstest.MapFS{"index.html": {Data: []byte("<html></html>")}}
-	srv := httptest.NewServer(New(cfg, st, f, static).Handler())
+	srv := httptest.NewServer(New(cfg, st, f, openNotices(t), static).Handler())
 	t.Cleanup(srv.Close)
 
 	q := url.Values{}
@@ -192,7 +202,7 @@ func TestListReportsNextRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{Magma: config.Magma{URL: "http://127.0.0.1:1", Timeout: time.Second}, Schedule: "* * * * *"}
-	s := New(cfg, st, fetcher.New(cfg.Magma, t.TempDir(), st), fstest.MapFS{})
+	s := New(cfg, st, fetcher.New(cfg.Magma, t.TempDir(), st), openNotices(t), fstest.MapFS{})
 	next := time.Date(2026, 10, 21, 12, 1, 0, 0, time.UTC)
 	s.NextRun = func() time.Time { return next }
 	srv := httptest.NewServer(s.Handler())
@@ -275,5 +285,76 @@ func TestOverviewHonoursTimeZone(t *testing.T) {
 	}
 	if got, want := day("No/Such_Zone"), local.Format("2006-01-02"); got != want {
 		t.Errorf("unknown zone: %s, want server time %s", got, want)
+	}
+}
+
+func TestNotices(t *testing.T) {
+	srv, _ := newTestServer(t, 0)
+	send := func(method, path, body string, c *http.Cookie) (*http.Response, map[string]json.RawMessage) {
+		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if c != nil {
+			req.AddCookie(c)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var out map[string]json.RawMessage
+		json.NewDecoder(resp.Body).Decode(&out)
+		return resp, out
+	}
+	public := func() []notice.Notice {
+		_, out := send(http.MethodGet, "/api/notices", "", nil)
+		var items []notice.Notice
+		json.Unmarshal(out["items"], &items)
+		return items
+	}
+
+	if r, _ := send(http.MethodPost, "/api/notices", `{"title":"x","publish":true}`, nil); r.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("guest create: %s", r.Status)
+	}
+	if r, _ := send(http.MethodGet, "/api/notices/all", "", nil); r.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("guest list all: %s", r.Status)
+	}
+	c := login(t, srv.URL)
+	if _, out := send(http.MethodGet, "/api/notices/all", "", c); string(out["items"]) != "[]" {
+		t.Fatalf("empty list encodes as %s", out["items"])
+	}
+	if r, out := send(http.MethodPost, "/api/notices", `{"title":"  "}`, c); r.StatusCode != http.StatusBadRequest || !strings.Contains(string(out["error"]), "标题") {
+		t.Fatalf("blank title: %s %s", r.Status, out["error"])
+	}
+
+	r, out := send(http.MethodPost, "/api/notices", `{"title":"维护","body":"周六"}`, c)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("create draft: %s", r.Status)
+	}
+	var n notice.Notice
+	json.Unmarshal(out["notice"], &n)
+	if n.IsPublished() || len(public()) != 0 {
+		t.Fatal("draft is public")
+	}
+
+	if r, _ := send(http.MethodPut, "/api/notices/"+n.ID, `{"title":"维护","body":"周六","publish":true}`, c); r.StatusCode != http.StatusOK {
+		t.Fatalf("publish: %s", r.Status)
+	}
+	got := public()
+	if len(got) != 1 || got[0].Title != "维护" {
+		t.Fatalf("public after publish: %+v", got)
+	}
+	var list struct {
+		Notice time.Time `json:"notice"`
+	}
+	json.NewDecoder(get(t, srv.URL+"/api/images", nil).Body).Decode(&list)
+	if !list.Notice.Equal(got[0].Published) {
+		t.Fatalf("list reports notice %v, want %v", list.Notice, got[0].Published)
+	}
+
+	if r, _ := send(http.MethodPut, "/api/notices/missing", `{"title":"x"}`, c); r.StatusCode != http.StatusNotFound {
+		t.Fatalf("update missing: %s", r.Status)
+	}
+	if r, _ := send(http.MethodDelete, "/api/notices/"+n.ID, "", c); r.StatusCode != http.StatusOK || len(public()) != 0 {
+		t.Fatalf("delete: %s", r.Status)
 	}
 }

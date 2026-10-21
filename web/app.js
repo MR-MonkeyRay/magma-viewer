@@ -36,7 +36,7 @@
     nowBadge: $('#now-badge'), nowView: $('#now-view'), nowPrev: $('#now-prev'), nowNext: $('#now-next'), nowBack: $('#now-back'), reel: $('#reel'), reelTrack: $('#reel-track'),
     reelTicks: $('#reel-ticks'), reelHead: $('#reel-head'), reelAxis: $('#reel-axis'), reelPlay: $('#reel-play'),
     seg: $('.seg'), sort: $('#sort'), size: $('#size'), group: $('#group'), selectMode: $('#select-mode'),
-    theme: $('#theme'), account: $('#account'), foot: $('.foot'),
+    theme: $('#theme'), account: $('#account'), acctMenu: $('#acct-menu'), noticeBtn: $('#notice-btn'), foot: $('.foot'),
     selbar: $('#selbar'), selCount: $('#sel-count'), fresh: $('#fresh'),
     toast: $('#toast'), toastText: $('#toast span'), toastIcon: $('#toast use'),
     lb: $('#lightbox'), lbStage: $('#lb-stage'), lbImg: $('#lb-img'), lbTime: $('#lb-time'), lbSub: $('#lb-sub'),
@@ -45,8 +45,11 @@
     lbpDate: $('#lbp-date'), lbpTime: $('#lbp-time'), lbpAgo: $('#lbp-ago'), lbpDownload: $('#lbp-download'),
     lbpSize: $('#lbp-size'), lbpSizeMenu: $('#lbp-size-menu'), lbpGrid: $('#lbp-grid'), lbpName: $('#lbp-name'),
     loginDialog: $('#login-dialog'), loginForm: $('#login-form'), loginError: $('#login-error'), loginSubmit: $('#login-submit'),
-    adminDialog: $('#admin-dialog'), adminStats: $('#admin-stats'), fetchNow: $('#fetch-now'),
-    toggleSchedule: $('#toggle-schedule'), scheduleHint: $('#schedule-hint'),
+    statusDialog: $('#status-dialog'), adminStats: $('#admin-stats'), fetchNow: $('#fetch-now'),
+    scheduleDialog: $('#schedule-dialog'), scheduleStats: $('#schedule-stats'), toggleSchedule: $('#toggle-schedule'), scheduleHint: $('#schedule-hint'),
+    noticeDialog: $('#notice-dialog'), noticeList: $('#notice-list'), noticeActions: $('#notice-actions'),
+    naDialog: $('#notice-admin-dialog'), naList: $('#na-list'), naForm: $('#na-form'), naState: $('#na-state'), naCount: $('#na-count'),
+    naError: $('#na-error'), naDelete: $('#na-delete'), naDraft: $('#na-draft'), naPublish: $('#na-publish'),
     keysDialog: $('#keys-dialog'), task: $('#task'),
   };
 
@@ -164,8 +167,10 @@
     if (!d.open) d.showModal();
   }
 
-  function closeDialog(d) {
+  // A dialog may refuse to close (unsaved edits) through d.beforeClose; force skips the check.
+  function closeDialog(d, force = false) {
     if (!d.open || d.classList.contains('closing')) return;
+    if (!force && d.beforeClose && !d.beforeClose()) return;
     d.classList.add('closing');
     afterAnimation(d, () => {
       if (!d.classList.contains('closing')) return;
@@ -273,6 +278,7 @@
       const d = await api(`/api/images?page=${state.page}&size=${state.size}&sort=${state.sort}`);
       if (seq !== loadSeq) return false;
       Object.assign(state, { items: d.items, total: d.total, page: d.page, size: d.size, pages: d.pages, admin: d.admin, guestLimit: d.guest_limit, task: d.task });
+      checkNotices(d.notice);
       // New pictures shift indexes; keep the shift-click anchor on the same picture.
       if (anchor) { const j = state.items.findIndex((it) => it.name === anchor); state.lastIndex = j >= 0 ? j : null; }
       if (onFirstPage()) { state.latest = d.items[0] || null; hide(el.fresh); }
@@ -637,6 +643,14 @@
     const account = state.admin ? '管理' : '管理员登录';
     el.account.title = account;
     el.account.setAttribute('aria-label', account);
+    if (state.admin) {
+      el.account.setAttribute('aria-haspopup', 'menu');
+      if (menuBtn !== el.account) el.account.setAttribute('aria-expanded', 'false');
+    } else {
+      if (menuBtn === el.account) closeMenu();
+      el.account.removeAttribute('aria-haspopup');
+      el.account.removeAttribute('aria-expanded');
+    }
     el.account.querySelector('use').setAttribute('href', state.admin ? '#i-shield' : '#i-user');
     el.account.classList.toggle('is-admin', state.admin);
     const root = getComputedStyle(document.documentElement);
@@ -1107,15 +1121,41 @@
   }
 
   // ---------- admin ----------
-  async function openAdmin() {
-    el.adminStats.innerHTML = '<dt class="loading-row">状态</dt><dd class="loading-row">加载中…</dd>';
-    el.toggleSchedule.disabled = true;
-    el.scheduleHint.textContent = '加载中…';
-    $('#download-all').innerHTML = '<svg><use href="#i-download"/></svg>下载全部';
-    openDialog(el.adminDialog);
+  // The avatar opens a menu of admin sections; each section is its own dialog.
+  function renderAcct() {
+    $('#acct-sub').textContent = `存档 ${state.total} 张`;
+    const t = state.task;
+    const sch = $('#acct-schedule');
+    sch.textContent = t ? (t.paused ? '已暂停' : '运行中') : '';
+    sch.className = t && !t.paused ? 'ok' : '';
+    $('#acct-notices').textContent = na.items.length ? `${na.items.length} 条` : notices.items.length ? `${notices.items.length} 条` : '';
+  }
+
+  function openAcctMenu() {
+    renderAcct();
+    openMenu(el.account);
+    // Fill in the last fetch result and catch an expired session without waiting for a click.
+    api('/api/status').then(renderStats, (e) => { if (e.status === 401) handleAuthError(e); });
+  }
+
+  async function refreshStatus() {
     try {
       renderStats(await api('/api/status'));
     } catch (e) { handleAuthError(e); }
+  }
+
+  function openStatus() {
+    el.adminStats.innerHTML = '<dt class="loading-row">状态</dt><dd class="loading-row">加载中…</dd>';
+    openDialog(el.statusDialog);
+    refreshStatus();
+  }
+
+  function openSchedule() {
+    el.scheduleStats.innerHTML = '<dt class="loading-row">计划</dt><dd class="loading-row">加载中…</dd>';
+    el.toggleSchedule.disabled = true;
+    el.scheduleHint.textContent = '加载中…';
+    openDialog(el.scheduleDialog);
+    refreshStatus();
   }
 
   function renderStats(s) {
@@ -1129,14 +1169,20 @@
       <dt>结果</dt><dd>${result}${f.message ? `<br><span class="bad">${esc(f.message)}</span>` : ''}</dd>
       <dt>最近保存</dt><dd>${t(f.last_saved)}</dd>
       <dt>本次启动</dt><dd>抓取 ${f.runs} 次，保存 ${f.saved} 张</dd>${tokenRow(s.token)}`;
-    $('#download-all').innerHTML = `<svg><use href="#i-download"/></svg>下载全部 ${s.count} 张`;
+    const next = !f.paused && validTime(s.next_run) ? s.next_run : '';
+    el.scheduleStats.innerHTML = `
+      <dt>计划</dt><dd><code>${esc(s.schedule)}</code></dd>
+      <dt>下次抓取</dt><dd>${next ? `<span data-until="${esc(next)}">${fmtUntil(new Date(next))}</span>` : f.paused ? '已暂停' : '—'}</dd>
+      <dt>最近获取</dt><dd>${t(f.last_fetched)}</dd>`;
     el.toggleSchedule.disabled = false;
     el.toggleSchedule.setAttribute('aria-checked', String(!f.paused));
-    el.scheduleHint.innerHTML = f.paused
-      ? '已暂停，仍可手动立即抓取'
-      : `计划 <code>${esc(s.schedule)}</code>${validTime(s.next_run) ? `，下次 <span data-until="${esc(s.next_run)}">${fmtUntil(new Date(s.next_run))}</span>` : ''}`;
+    el.scheduleHint.textContent = f.paused ? '已暂停，仍可在「运行状态」中立即抓取' : '画板有变化时自动保存';
+    const res = $('#acct-result');
+    res.textContent = f.result === 'error' ? '失败' : '';
+    res.className = f.result === 'error' ? 'bad' : '';
     state.task = { paused: f.paused, last_fetched: f.last_fetched, next_run: s.next_run };
     renderTask();
+    renderAcct();
     schedulePoll();
   }
 
@@ -1152,11 +1198,217 @@
   function handleAuthError(e) {
     if (e.status === 401) {
       state.admin = false;
-      closeDialog(el.adminDialog);
+      closeMenu();
+      [el.statusDialog, el.scheduleDialog, el.naDialog].forEach((d) => closeDialog(d, true));
       renderControls();
       toast('登录已过期，请重新登录', 'error');
     } else {
       toast(e.message, 'error');
+    }
+  }
+
+  // ---------- notices ----------
+  // Visitors only see published notices. The bell glows while one is newer than the last
+  // "mark as read", which each browser keeps for itself; nothing ever opens on its own.
+  const notices = { items: [], stamp: undefined, seen: Date.parse(store.get('noticeSeen', '')) || 0 };
+  const noticeTime = (n) => new Date(n.published).getTime();
+  const isUnread = (n) => noticeTime(n) > notices.seen;
+
+  // stamp is the newest publish time the image list reports; a change means the list is stale.
+  function checkNotices(stamp) {
+    if (stamp === notices.stamp) return;
+    notices.stamp = stamp;
+    loadNotices();
+  }
+
+  async function loadNotices() {
+    try {
+      notices.items = (await api('/api/notices')).items;
+    } catch (e) { return; }
+    renderBell();
+    if (el.noticeDialog.open) renderNotices();
+  }
+
+  function renderBell() {
+    const n = notices.items.filter(isUnread).length;
+    const label = n ? `公告 · ${n} 条未读` : '公告';
+    el.noticeBtn.classList.toggle('unread', n > 0);
+    el.noticeBtn.title = `${label}（N）`;
+    el.noticeBtn.setAttribute('aria-label', label);
+  }
+
+  // Plain text with line breaks kept; only http(s) addresses become links.
+  function linkify(text) {
+    let out = '';
+    let last = 0;
+    for (const m of text.matchAll(/https?:\/\/[^\s<>"'，。；！？、）》」]+/g)) {
+      const url = m[0].replace(/[.,;:!?)\]]+$/, '');
+      out += esc(text.slice(last, m.index)) + `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`;
+      last = m.index + url.length;
+    }
+    return out + esc(text.slice(last));
+  }
+
+  function noticeHTML(n, lead = false) {
+    const d = new Date(n.published);
+    const unread = isUnread(n);
+    const edited = new Date(n.updated) - d > 60000;
+    return `<article class="notice${lead ? ' lead' : ''}${unread ? ' unread' : ''}">
+      <p class="notice-meta">${unread ? '<span class="notice-new">新</span>' : ''}<time datetime="${esc(n.published)}" title="${esc(fmtFull(d))}">${fmtDay(d)} ${fmtHM(d)}</time>${edited ? `<span title="${esc(fmtFull(new Date(n.updated)))}">已编辑</span>` : ''}</p>
+      <h3>${esc(n.title)}</h3>
+      ${n.body ? `<div class="notice-text">${linkify(n.body)}</div>` : ''}
+    </article>`;
+  }
+
+  // The newest notice is shown in full; earlier ones fold away, opened when one of them is unread.
+  function renderNotices() {
+    const [lead, ...older] = notices.items;
+    el.noticeActions.hidden = !notices.items.some(isUnread);
+    if (!lead) {
+      el.noticeList.innerHTML = '<p class="notice-empty"><svg><use href="#i-bell"/></svg>暂无公告</p>';
+      return;
+    }
+    const wasOpen = el.noticeList.querySelector('.notice-history')?.open;
+    el.noticeList.innerHTML = noticeHTML(lead, true) + (older.length
+      ? `<details class="notice-history"${wasOpen || older.some(isUnread) ? ' open' : ''}><summary><svg><use href="#i-right"/></svg>历史公告（${older.length}）</summary>${older.map((n) => noticeHTML(n)).join('')}</details>`
+      : '');
+  }
+
+  function openNotices() {
+    renderNotices();
+    openDialog(el.noticeDialog);
+    el.noticeList.scrollTop = 0;
+    loadNotices();
+  }
+
+  function setNoticesSeen(t) {
+    notices.seen = Math.max(notices.seen, t);
+    store.set('noticeSeen', new Date(notices.seen).toISOString());
+    renderBell();
+    if (el.noticeDialog.open) renderNotices();
+  }
+
+  // ---------- notice editor (admin) ----------
+  const na = { items: [], id: null, base: { title: '', body: '' }, delTimer: 0 };
+  const naFields = () => el.naForm.elements;
+  const naCurrent = () => na.items.find((n) => n.id === na.id) || null;
+  const naDirty = () => naFields().title.value !== na.base.title || naFields().body.value !== na.base.body;
+  const naDiscard = () => !naDirty() || confirm('放弃未保存的修改？');
+  el.naDialog.beforeClose = naDiscard;
+
+  async function openNoticeAdmin() {
+    editNotice(null);
+    openDialog(el.naDialog);
+    try {
+      na.items = (await api('/api/notices/all')).items;
+    } catch (e) { handleAuthError(e); return; }
+    if (!naDirty() && na.items.length) editNotice(na.items[0].id); else renderNaList();
+    renderAcct();
+    if (!na.id) naFields().title.focus();
+  }
+
+  function editNotice(id) {
+    const n = na.items.find((x) => x.id === id) || null;
+    na.id = n && n.id;
+    na.base = { title: n ? n.title : '', body: n ? n.body : '' };
+    naFields().title.value = na.base.title;
+    naFields().body.value = na.base.body;
+    el.naError.hidden = true;
+    resetDelete();
+    renderNaForm();
+    renderNaList();
+  }
+
+  function renderNaList() {
+    el.naList.innerHTML = na.items.length ? na.items.map((n) => {
+      const pub = validTime(n.published);
+      return `<li><button type="button" class="na-item" data-id="${esc(n.id)}"${n.id === na.id ? ' aria-current="true"' : ''}>
+        <strong>${esc(n.title)}</strong>
+        <span><span class="na-tag${pub ? ' on' : ''}">${pub ? '已发布' : '草稿'}</span>${fmtShort(new Date(pub ? n.published : n.updated))}</span></button></li>`;
+    }).join('') : '<li class="na-empty">还没有公告</li>';
+  }
+
+  function renderNaForm() {
+    const n = naCurrent();
+    const pub = n && validTime(n.published);
+    el.naState.innerHTML = !n ? '新公告'
+      : pub ? `<span class="na-tag on">已发布</span>${fmtShort(new Date(n.published))} 发布，修改后访客不会再次收到提醒`
+        : `<span class="na-tag">草稿</span>访客看不到，编辑于 ${fmtShort(new Date(n.updated))}`;
+    el.naDelete.hidden = !n;
+    el.naDraft.textContent = pub ? '撤回为草稿' : '存为草稿';
+    el.naPublish.lastElementChild.textContent = pub ? '保存更新' : '发布';
+    renderNaCount();
+  }
+
+  function renderNaCount() {
+    const len = naFields().body.value.length;
+    el.naCount.textContent = `${len} / 5000`;
+    el.naCount.classList.toggle('near', len > 4500);
+  }
+
+  function showNaError(msg) {
+    el.naError.innerHTML = `<svg><use href="#i-alert"/></svg>${esc(msg)}`;
+    el.naError.hidden = false;
+  }
+
+  function resetDelete() {
+    clearTimeout(na.delTimer);
+    el.naDelete.classList.remove('confirm');
+    el.naDelete.textContent = '删除';
+  }
+
+  async function saveNotice(publish) {
+    const f = naFields();
+    if (!f.title.value.trim()) {
+      showNaError('请填写标题');
+      f.title.focus();
+      return;
+    }
+    const n = naCurrent();
+    const wasPub = !!n && validTime(n.published);
+    const btn = publish ? el.naPublish : el.naDraft;
+    el.naPublish.disabled = el.naDraft.disabled = true;
+    btn.classList.add('loading');
+    try {
+      const d = await api(n ? `/api/notices/${enc(n.id)}` : '/api/notices', {
+        method: n ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: f.title.value, body: f.body.value, publish }),
+      });
+      na.items = d.items;
+      editNotice(d.notice.id);
+      renderAcct();
+      toast(publish ? (wasPub ? '公告已更新' : '公告已发布') : (wasPub ? '已撤回为草稿' : '草稿已保存'), 'ok');
+      // The author has read what they just published; their own bell stays calm.
+      if (publish && !wasPub) setNoticesSeen(noticeTime(d.notice));
+      loadNotices();
+    } catch (e) {
+      if (e.status === 401) handleAuthError(e); else showNaError(e.message);
+    } finally {
+      el.naPublish.disabled = el.naDraft.disabled = false;
+      btn.classList.remove('loading');
+    }
+  }
+
+  // Deleting takes a second click within 3 seconds.
+  async function deleteNotice() {
+    const n = naCurrent();
+    if (!n) return;
+    if (!el.naDelete.classList.contains('confirm')) {
+      el.naDelete.classList.add('confirm');
+      el.naDelete.textContent = '再点一次删除';
+      na.delTimer = setTimeout(resetDelete, 3000);
+      return;
+    }
+    resetDelete();
+    try {
+      na.items = (await api(`/api/notices/${enc(n.id)}`, { method: 'DELETE' })).items;
+      editNotice(na.items.length ? na.items[0].id : null);
+      renderAcct();
+      toast('公告已删除', 'ok');
+      loadNotices();
+    } catch (e) {
+      if (e.status === 401) handleAuthError(e); else showNaError(e.message);
     }
   }
 
@@ -1167,6 +1419,19 @@
   el.group.addEventListener('click', toggleGroup);
   el.selectMode.addEventListener('click', () => setSelectMode(!state.selectMode));
   el.theme.addEventListener('click', toggleTheme);
+  el.noticeBtn.addEventListener('click', openNotices);
+  $('#notice-read').addEventListener('click', () => {
+    if (!notices.items.length) return;
+    setNoticesSeen(noticeTime(notices.items[0]));
+    toast('公告已标为已读', 'ok');
+  });
+  // Another tab marked the notices read.
+  window.addEventListener('storage', (e) => {
+    if (e.key !== 'mv.noticeSeen') return;
+    notices.seen = Date.parse(e.newValue || '') || 0;
+    renderBell();
+    if (el.noticeDialog.open) renderNotices();
+  });
   $('#brand').addEventListener('click', (e) => {
     e.preventDefault();
     if (state.sort !== 'desc') { state.sort = 'desc'; store.set('sort', 'desc'); }
@@ -1429,6 +1694,7 @@
   document.addEventListener('keydown', (e) => {
     if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
     if (state.lbIndex >= 0) { lightboxKey(e); return; }
+    if (menuBtn && menuKey(e)) return;
     if (document.querySelector('dialog[open]') || (e.target instanceof Element && e.target.closest('input, select, textarea, [contenteditable]'))) return;
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     if (k === 'ArrowLeft' && state.page > 1) go(state.page - 1);
@@ -1440,6 +1706,7 @@
     else if (k === 'g') toggleGroup();
     else if (k === 'p' && !el.reel.hidden && !el.now.hidden) reelPlay();
     else if (k === '?') openDialog(el.keysDialog);
+    else if (k === 'n') openNotices();
     else if (k === 'Escape' && (state.selectMode || state.selected.size)) clearSelection();
     else return;
     e.preventDefault();
@@ -1453,11 +1720,11 @@
     d.addEventListener('pointerdown', (e) => { downOnBackdrop = e.target === d; });
     d.addEventListener('click', (e) => { if (e.target === d && downOnBackdrop) closeDialog(d); });
   });
+  document.querySelectorAll('dialog [data-close]').forEach((b) => b.addEventListener('click', () => closeDialog(b.closest('dialog'))));
   $('#show-keys').addEventListener('click', () => openDialog(el.keysDialog));
-  $('#keys-close').addEventListener('click', () => closeDialog(el.keysDialog));
 
   el.account.addEventListener('click', () => {
-    if (state.admin) return openAdmin();
+    if (state.admin) return menuBtn === el.account ? closeMenu(true) : openAcctMenu();
     el.loginError.hidden = true;
     el.loginForm.reset();
     setPasswordVisible(false);
@@ -1500,10 +1767,35 @@
     }
   });
 
-  $('#admin-close').addEventListener('click', () => closeDialog(el.adminDialog));
+  // Focus goes back to the avatar first, so closing the section's dialog returns it there.
+  const SECTIONS = { 'status-dialog': openStatus, 'schedule-dialog': openSchedule, 'notice-admin-dialog': openNoticeAdmin };
+  el.acctMenu.addEventListener('click', (e) => {
+    const item = e.target.closest('[data-open]');
+    if (item) { closeMenu(true); SECTIONS[item.dataset.open](); }
+    else if (e.target.closest('#download-all')) closeMenu(true);
+  });
+
+  el.naList.addEventListener('click', (e) => {
+    const b = e.target.closest('.na-item');
+    if (b && b.dataset.id !== na.id && naDiscard()) editNotice(b.dataset.id);
+  });
+  $('#na-new').addEventListener('click', () => {
+    if (!naDiscard()) return;
+    editNotice(null);
+    naFields().title.focus();
+  });
+  el.naForm.addEventListener('submit', (e) => { e.preventDefault(); saveNotice(true); });
+  // Enter in the title would submit, and so publish; move on to the body instead.
+  naFields().title.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); naFields().body.focus(); }
+  });
+  naFields().body.addEventListener('input', renderNaCount);
+  el.naDraft.addEventListener('click', () => saveNotice(false));
+  el.naDelete.addEventListener('click', deleteNotice);
+
   $('#logout').addEventListener('click', async () => {
+    closeMenu(true);
     await api('/api/logout', { method: 'POST' }).catch(() => {});
-    closeDialog(el.adminDialog);
     // Guests are capped, so trim an oversized selection.
     if (state.selected.size > state.guestLimit) state.selected = new Set([...state.selected].slice(0, state.guestLimit));
     toast('已退出登录', 'ok');
@@ -1581,6 +1873,7 @@
     let again = false;
     try {
       const d = await api('/api/images?page=1&size=12&sort=desc');
+      checkNotices(d.notice);
       const t = d.task;
       state.task = t;
       renderTask();

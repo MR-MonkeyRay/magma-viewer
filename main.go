@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 	_ "time/tzdata" // the scratch image has no zoneinfo; honour TZ anyway
@@ -20,6 +21,7 @@ import (
 
 	"magma-viewer/internal/config"
 	"magma-viewer/internal/fetcher"
+	"magma-viewer/internal/notice"
 	"magma-viewer/internal/store"
 	"magma-viewer/internal/web"
 )
@@ -74,11 +76,16 @@ func run(configPath string) error {
 	go st.Watch(ctx.Done(), time.Minute)
 	go st.Warm(ctx.Done())
 
+	ns, err := notice.Open(filepath.Join(cfg.Storage.Dir, ".state", "notices.json"))
+	if err != nil {
+		return fmt.Errorf("open notices: %w", err)
+	}
+
 	static, err := fs.Sub(webFS, "web")
 	if err != nil {
 		return err
 	}
-	ws := web.New(cfg, st, f, static)
+	ws := web.New(cfg, st, f, ns, static)
 	ws.NextRun = func() time.Time { return c.Entry(entry).Next }
 	srv := &http.Server{
 		Addr:              cfg.Listen,
