@@ -1,5 +1,5 @@
 # 使用 GitHub 工作流构建的镜像部署；配置与数据位于本目录。
-# 镜像默认 latest，可在本目录 .env 中设置 MAGMA_VIEWER_TAG=0.1.1 固定版本。
+# 镜像默认 latest，可在本目录 .env 中设置 MAGMA_VIEWER_TAG=<版本> 固定到所需的已发布版本。
 name: magma-viewer
 
 services:

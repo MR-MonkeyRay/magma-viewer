@@ -1,0 +1,208 @@
+name: Publish Linux release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A retry may replace assets on a draft, but never on a published release.
+concurrency:
+  group: linux-release-main
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      publish: ${{ steps.release.outputs.publish }}
+    steps:
+      - name: Check out intended source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Inspect version and release
+        id: release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('node:fs');
+            const version = fs.readFileSync('VERSION', 'utf8').replace(/\n+$/, '');
+            const number = '(0|[1-9][0-9]*)';
+            const pre = '(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)';
+            const identifier = '[0-9A-Za-z-]+';
+            const semver = new RegExp(`^${number}\\.${number}\\.${number}(-${pre}(\\.${pre})*)?(\\+${identifier}(\\.${identifier})*)?$`);
+            if (!semver.test(version)) throw new Error('VERSION must be a semantic version without a v prefix');
+            const tag = `v${version}`;
+            core.setOutput('version', version);
+            core.setOutput('tag', tag);
+            let release;
+            try {
+              release = (await github.rest.repos.getReleaseByTag({...context.repo, tag})).data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            // Ordinary main pushes keep VERSION unchanged. Never mutate a
+            // published release, even if main has moved beyond its source.
+            if (release && !release.draft) {
+              core.info(`${tag} is already published; skipping tests, packaging and publication.`);
+              core.setOutput('publish', 'false');
+              return;
+            }
+            let ref;
+            try {
+              ref = (await github.rest.git.getRef({...context.repo, ref: `tags/${tag}`})).data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            if (ref) {
+              let object = ref.object;
+              while (object.type === 'tag') {
+                object = (await github.rest.git.getTag({...context.repo, tag_sha: object.sha})).data.object;
+              }
+              if (object.type !== 'commit' || object.sha !== context.sha) {
+                throw new Error(`${tag} does not point to intended source ${context.sha}; use a new VERSION or retry the original workflow run`);
+              }
+            }
+            core.setOutput('publish', 'true');
+
+  package:
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out intended source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up module Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test before building release artifacts
+        run: go test ./...
+
+      - name: Package both Linux architectures
+        run: bash build/package.sh
+
+      - name: Save release assets for isolated publication
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release-assets
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            dist/magma-viewer_${{ needs.prepare.outputs.version }}_linux_amd64.tar.gz
+            dist/magma-viewer_${{ needs.prepare.outputs.version }}_linux_arm64.tar.gz
+            dist/SHA256SUMS
+            dist/install.sh
+            dist/VERSION
+
+  publish:
+    needs: [prepare, package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download tested release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-release-assets
+          path: dist
+
+      - name: Publish or resume draft release
+        uses: actions/github-script@v7
+        env:
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const version = process.env.RELEASE_VERSION;
+            const tag = process.env.RELEASE_TAG;
+            const assets = [
+              `magma-viewer_${version}_linux_amd64.tar.gz`,
+              `magma-viewer_${version}_linux_arm64.tar.gz`,
+              'SHA256SUMS', 'install.sh', 'VERSION',
+            ];
+            if (fs.readFileSync('dist/VERSION', 'utf8').replace(/\n+$/, '') !== version) {
+              throw new Error('Downloaded artifacts do not match the intended VERSION');
+            }
+            for (const name of assets) {
+              if (!fs.statSync(`dist/${name}`).size) throw new Error(`Empty release asset: ${name}`);
+            }
+            let release;
+            try {
+              release = (await github.rest.repos.getReleaseByTag({...context.repo, tag})).data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            if (release && !release.draft) {
+              core.info(`${tag} was already published; leaving all assets unchanged.`);
+              return;
+            }
+            // Re-check here, not just in prepare: publication must never reuse
+            // an existing lightweight or annotated tag for a different commit.
+            let ref;
+            try {
+              ref = (await github.rest.git.getRef({...context.repo, ref: `tags/${tag}`})).data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            if (ref) {
+              let object = ref.object;
+              while (object.type === 'tag') {
+                object = (await github.rest.git.getTag({...context.repo, tag_sha: object.sha})).data.object;
+              }
+              if (object.type !== 'commit' || object.sha !== context.sha) {
+                throw new Error(`${tag} does not point to intended source ${context.sha}; refusing publication`);
+              }
+            } else {
+              await github.rest.git.createRef({...context.repo, ref: `refs/tags/${tag}`, sha: context.sha});
+            }
+            const prerelease = version.split('+')[0].includes('-');
+            const notes = (await github.rest.repos.generateReleaseNotes({
+              ...context.repo, tag_name: tag, target_commitish: context.sha,
+            })).data;
+            if (!release) {
+              release = (await github.rest.repos.createRelease({
+                ...context.repo, tag_name: tag, target_commitish: context.sha,
+                name: notes.name, body: notes.body, draft: true, prerelease,
+              })).data;
+            }
+            // Keep incomplete uploads private. A failed run leaves a draft and
+            // the same-source retry replaces only our five named assets.
+            const existing = await github.paginate(github.rest.repos.listReleaseAssets, {
+              ...context.repo, release_id: release.id, per_page: 100,
+            });
+            for (const asset of existing) {
+              if (assets.includes(asset.name)) {
+                await github.rest.repos.deleteReleaseAsset({...context.repo, asset_id: asset.id});
+              }
+            }
+            for (const name of assets) {
+              await github.rest.repos.uploadReleaseAsset({
+                ...context.repo, release_id: release.id, name,
+                data: fs.readFileSync(`dist/${name}`),
+                headers: {'content-type': name.endsWith('.tar.gz') ? 'application/gzip' : 'text/plain'},
+              });
+            }
+            await github.rest.repos.updateRelease({
+              ...context.repo, release_id: release.id, draft: false, prerelease,
+              name: notes.name, body: notes.body,
+              // GitHub's semantic-version selection avoids making an older
+              // manually retried release the latest stable installer target.
+              make_latest: prerelease ? 'false' : 'legacy',
+            });
+            core.info(`Published ${tag} from ${context.sha}`);

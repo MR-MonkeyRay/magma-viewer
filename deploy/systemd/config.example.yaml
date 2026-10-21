@@ -1,0 +1,25 @@
+# Linux systemd 配置样例；安装脚本只在首次安装时创建 config.yaml。
+# 默认监听本机；公网访问建议通过带 HTTPS 的反向代理。
+listen: "127.0.0.1:8080"
+
+admin:
+  username: admin
+  # 安装脚本自动替换为随机密码，可在安装后的 config.yaml 中查看、修改。
+  password: "change-me"
+  session_secret: ""
+  session_ttl: 168h
+
+magma:
+  url: "https://magma.com/api/render/<画板ID>/jpg"
+  cookie: "AUTH_TOKEN=<你的 token>"
+  headers:
+    User-Agent: "Mozilla/5.0"
+  timeout: 30s
+
+# 标准 5 段 crontab；执行时区由 service 中的 TZ 决定。
+schedule: "* * * * *"
+
+storage:
+  # systemd 只允许在 /var/lib/magma-viewer 和私有 /tmp 内写入。
+  dir: /var/lib/magma-viewer/images
+  temp_dir: /tmp
