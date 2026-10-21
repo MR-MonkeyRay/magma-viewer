@@ -59,6 +59,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/status", s.adminOnly(s.handleStatus))
 	mux.HandleFunc("POST /api/fetch", s.adminOnly(s.handleFetch))
+	mux.HandleFunc("POST /api/schedule", s.adminOnly(s.handleSchedule))
 
 	mux.HandleFunc("GET /img/{name}", s.handleImage)
 	mux.HandleFunc("GET /thumb/{name}", s.handleThumb(store.Small))
@@ -119,6 +120,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	asc := r.URL.Query().Get("sort") == "asc"
 	page := max(intParam(r, "page", 1), 1)
 	items, total := s.store.List(page, size, asc)
+	task := s.fetcher.Status()
 	pages := max((total+size-1)/size, 1)
 	if page > pages {
 		page = pages
@@ -132,6 +134,8 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		"pages":       pages,
 		"admin":       s.auth.isAdmin(r),
 		"guest_limit": GuestZipLimit,
+		// Public subset of the fetch status; errors stay admin-only.
+		"task": map[string]any{"paused": task.Paused, "last_fetched": task.LastFetched},
 	})
 }
 
@@ -181,6 +185,27 @@ func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.Magma.Timeout+10*time.Second)
 	defer cancel()
 	s.fetcher.Run(ctx)
+	writeJSON(w, http.StatusOK, s.statusBody())
+}
+
+func (s *Server) handleSchedule(w http.ResponseWriter, r *http.Request) {
+	// A cross-origin form cannot send JSON without a CORS preflight.
+	if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt != "application/json" {
+		writeError(w, http.StatusUnsupportedMediaType, "请求格式错误")
+		return
+	}
+	var body struct {
+		Paused *bool `json:"paused"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil || body.Paused == nil {
+		writeError(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	if err := s.fetcher.SetPaused(*body.Paused); err != nil {
+		log.Printf("schedule: %v", err)
+		writeError(w, http.StatusInternalServerError, "保存定时任务状态失败")
+		return
+	}
 	writeJSON(w, http.StatusOK, s.statusBody())
 }
 

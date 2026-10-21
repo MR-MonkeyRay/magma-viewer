@@ -124,6 +124,12 @@ main { padding: 20px clamp(16px, 3vw, 32px) 120px; max-width: 1680px; margin: 0 
 .now-meta { margin: 0; color: var(--graphite); font-size: 14px; }
 .now-side .btn { align-self: flex-start; }
 
+.task { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 0 16px; color: var(--graphite); font-size: 14px; }
+.task strong { margin-left: 4px; color: #2f9e5b; }
+.task-dot { width: 8px; height: 8px; border-radius: 50%; background: #2f9e5b; box-shadow: 0 0 0 3px rgba(47, 158, 91, 0.2); }
+.task.paused strong { color: #c27c0e; }
+.task.paused .task-dot { background: #c27c0e; box-shadow: 0 0 0 3px rgba(194, 124, 14, 0.2); }
+
 .summary { display: flex; align-items: baseline; gap: 12px; margin: 0 0 14px; color: var(--graphite); font-size: 14px; }
 .summary strong { color: var(--ink); font-size: 15px; }
 
@@ -284,7 +290,7 @@ main { padding: 20px clamp(16px, 3vw, 32px) 120px; max-width: 1680px; margin: 0 
 .form-error { margin: 0; color: #d6453d; font-size: 14px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 .modal-actions.spread { justify-content: space-between; flex-wrap: wrap; }
-.modal-actions .row { display: flex; gap: 8px; }
+.modal-actions .row { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .modal-x { position: absolute; top: 14px; right: 14px; border: 0; background: none; cursor: pointer; color: var(--graphite); padding: 6px; }
 .admin { width: auto; }
 #admin-dialog { width: min(480px, calc(100vw - 32px)); }

@@ -119,3 +119,125 @@ func TestRunReportsHTTPError(t *testing.T) {
 		t.Fatalf("got %+v", got)
 	}
 }
+
+func TestPauseSkipsScheduledRunsAndPersists(t *testing.T) {
+	var hits atomic.Int32
+	img := pngBytes(t, color.RGBA{0, 255, 0, 255})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Write(img)
+	}))
+	defer srv.Close()
+	st, _ := store.New(t.TempDir())
+	cfg := config.Magma{URL: srv.URL, Timeout: 5 * time.Second}
+	f := New(cfg, t.TempDir(), st)
+
+	if err := f.SetPaused(true); err != nil {
+		t.Fatal(err)
+	}
+	f.RunScheduled(context.Background())
+	if hits.Load() != 0 {
+		t.Fatal("scheduled run fetched while paused")
+	}
+	// Manual runs still work while paused.
+	if got := f.Run(context.Background()); got.Result != ResultSaved || got.LastFetched.IsZero() {
+		t.Fatalf("manual run: %+v", got)
+	}
+	if err := st.Rescan(); err != nil || st.Count() != 1 {
+		t.Fatalf("state file indexed as image: count=%d err=%v", st.Count(), err)
+	}
+
+	f2 := New(cfg, t.TempDir(), st)
+	if !f2.Status().Paused {
+		t.Fatal("pause not restored after restart")
+	}
+	if err := f2.SetPaused(false); err != nil {
+		t.Fatal(err)
+	}
+	f2.RunScheduled(context.Background())
+	if hits.Load() != 2 {
+		t.Fatalf("resumed scheduled run: hits=%d", hits.Load())
+	}
+	if New(cfg, t.TempDir(), st).Status().Paused {
+		t.Fatal("resume not persisted")
+	}
+}
+
+func TestQueuedScheduledRunHonoursPause(t *testing.T) {
+	var hits atomic.Int32
+	entered, release := make(chan struct{}), make(chan struct{})
+	img := pngBytes(t, color.RGBA{0, 0, 0, 255})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+		w.Write(img)
+	}))
+	defer srv.Close()
+	st, _ := store.New(t.TempDir())
+	f := New(config.Magma{URL: srv.URL, Timeout: 5 * time.Second}, t.TempDir(), st)
+
+	manual := make(chan struct{})
+	go func() { f.Run(context.Background()); close(manual) }()
+	<-entered
+	scheduled := make(chan struct{})
+	go func() { f.RunScheduled(context.Background()); close(scheduled) }()
+	if err := f.SetPaused(true); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	<-manual
+	<-scheduled
+	if n := hits.Load(); n != 1 {
+		t.Fatalf("queued scheduled run fetched after pause: hits=%d", n)
+	}
+}
+
+func TestLastFetchedSurvivesRestart(t *testing.T) {
+	img := pngBytes(t, color.RGBA{9, 9, 9, 255})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(img) }))
+	defer srv.Close()
+	st, _ := store.New(t.TempDir())
+	cfg := config.Magma{URL: srv.URL, Timeout: 5 * time.Second}
+	f := New(cfg, t.TempDir(), st)
+	clock := time.Date(2026, 10, 20, 12, 0, 0, 0, time.Local)
+	f.now = func() time.Time { return clock }
+	f.Run(context.Background())
+	clock = clock.Add(time.Minute)
+	if got := f.Run(context.Background()); got.Result != ResultUnchanged || !got.LastFetched.Equal(clock) {
+		t.Fatalf("unchanged run: %+v", got)
+	}
+
+	// Errors leave the last successful fetch time alone.
+	f.cfg.URL = "http://127.0.0.1:1"
+	clock = clock.Add(time.Minute)
+	if got := f.Run(context.Background()); got.Result != ResultError || !got.LastFetched.Equal(clock.Add(-time.Minute)) {
+		t.Fatalf("error run: %+v", got)
+	}
+
+	if got := New(cfg, t.TempDir(), st).Status().LastFetched; !got.Equal(clock.Add(-time.Minute)) {
+		t.Fatalf("restored last_fetched=%v", got)
+	}
+}
+
+func TestCorruptStateFile(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(dir+"/.state", 0o755)
+	os.WriteFile(dir+"/"+stateFile, []byte("{not json"), 0o644)
+	st, _ := store.New(dir)
+	s := New(config.Magma{URL: "http://127.0.0.1:1"}, t.TempDir(), st).Status()
+	if s.Paused || !s.LastFetched.IsZero() {
+		t.Fatalf("corrupt state: %+v", s)
+	}
+}
+
+func TestNoFetchMeansNoLastFetched(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(dir+"/20261020-120000_"+strings.Repeat("a", 32)+".png", pngBytes(t, color.White), 0o644)
+	st, _ := store.New(dir)
+	// An imported image is not a backend fetch.
+	if s := New(config.Magma{URL: "http://127.0.0.1:1"}, t.TempDir(), st).Status(); !s.LastFetched.IsZero() {
+		t.Fatalf("last_fetched=%v", s.LastFetched)
+	}
+}

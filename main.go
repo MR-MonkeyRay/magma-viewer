@@ -62,12 +62,12 @@ func run(configPath string) error {
 
 	f := fetcher.New(cfg.Magma, cfg.Storage.TempDir, st)
 	c := cron.New(cron.WithChain(cron.SkipIfStillRunning(cron.DefaultLogger)))
-	if _, err := c.AddFunc(cfg.Schedule, func() { f.Run(ctx) }); err != nil {
+	if _, err := c.AddFunc(cfg.Schedule, func() { f.RunScheduled(ctx) }); err != nil {
 		return err
 	}
 	c.Start()
 	defer c.Stop()
-	go f.Run(ctx)
+	go f.RunScheduled(ctx)
 	log.Printf("fetch schedule: %q", cfg.Schedule)
 
 	go st.Watch(ctx.Done(), time.Minute)

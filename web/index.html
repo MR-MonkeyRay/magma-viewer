@@ -63,6 +63,7 @@
 </header>
 
 <main>
+  <p class="task" id="task" aria-live="polite" hidden></p>
   <section class="now" id="now" hidden></section>
 
   <div class="summary" id="summary"></div>
@@ -122,6 +123,7 @@
     <div class="modal-actions spread">
       <button type="button" class="btn ghost" id="logout">退出登录</button>
       <div class="row">
+        <button type="button" class="btn ghost" id="toggle-schedule">暂停定时抓取</button>
         <button type="button" class="btn ghost" id="fetch-now">立即抓取</button>
         <a class="btn primary" id="download-all" href="/download/all"><svg><use href="#i-download"/></svg>下载全部</a>
       </div>

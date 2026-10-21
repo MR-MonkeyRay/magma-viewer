@@ -3,6 +3,7 @@ package web
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -137,5 +138,50 @@ func TestLoginRejectsBadPassword(t *testing.T) {
 	resp, _ := http.Post(srv.URL+"/api/login", "application/json", strings.NewReader(`{"username":"admin","password":"bad"}`))
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("got %s", resp.Status)
+	}
+}
+
+func TestSchedulePause(t *testing.T) {
+	srv, _ := newTestServer(t, 0)
+	postAs := func(ct, body string, c *http.Cookie) *http.Response {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/schedule", strings.NewReader(body))
+		req.Header.Set("Content-Type", ct)
+		if c != nil {
+			req.AddCookie(c)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+	post := func(body string, c *http.Cookie) *http.Response { return postAs("application/json", body, c) }
+	if r := post(`{"paused":true}`, nil); r.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("guest: %s", r.Status)
+	}
+	c := login(t, srv.URL)
+	if r := postAs("text/plain", `{"paused":true}`, c); r.StatusCode != http.StatusUnsupportedMediaType {
+		t.Fatalf("form-style post: %s", r.Status)
+	}
+	if r := post(`{}`, c); r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing field: %s", r.Status)
+	}
+	if r := post(`{"paused":true}`, c); r.StatusCode != http.StatusOK {
+		t.Fatalf("admin: %s", r.Status)
+	}
+
+	var body struct {
+		Task struct {
+			Paused bool `json:"paused"`
+		} `json:"task"`
+	}
+	r := get(t, srv.URL+"/api/images", nil)
+	defer r.Body.Close()
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.Task.Paused {
+		t.Fatal("guest list does not report paused task")
 	}
 }

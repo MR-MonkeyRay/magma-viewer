@@ -18,6 +18,7 @@
     pages: 1,
     admin: false,
     guestLimit: 10,
+    task: null,
     selected: new Set(),
     selectMode: false,
     knownTotal: null,
@@ -33,6 +34,7 @@
     lbPrev: $('#lb-prev'), lbNext: $('#lb-next'), lbDownload: $('#lb-download'), lbSelect: $('#lb-select'),
     loginDialog: $('#login-dialog'), loginForm: $('#login-form'), loginError: $('#login-error'),
     adminDialog: $('#admin-dialog'), adminStats: $('#admin-stats'), fetchNow: $('#fetch-now'),
+    task: $('#task'), toggleSchedule: $('#toggle-schedule'),
   };
 
   // ---------- formatting ----------
@@ -48,13 +50,15 @@
     if (b < 1024 * 1024) return (b / 1024).toFixed(0) + ' KB';
     return (b / 1024 / 1024).toFixed(b < 10 * 1024 * 1024 ? 2 : 1) + ' MB';
   }
-  function fmtAgo(d) {
+  function fmtAgo(d, verb = '保存') {
     const s = Math.max(0, (Date.now() - d.getTime()) / 1000);
-    if (s < 60) return '刚刚保存';
-    if (s < 3600) return `${Math.floor(s / 60)} 分钟前保存`;
-    if (s < 86400) return `${Math.floor(s / 3600)} 小时前保存`;
-    return `${Math.floor(s / 86400)} 天前保存`;
+    if (s < 60) return '刚刚' + verb;
+    if (s < 3600) return `${Math.floor(s / 60)} 分钟前${verb}`;
+    if (s < 86400) return `${Math.floor(s / 3600)} 小时前${verb}`;
+    return `${Math.floor(s / 86400)} 天前${verb}`;
   }
+  // Go encodes an unset time.Time as 0001-01-01.
+  const validTime = (v) => !!v && !v.startsWith('0001');
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const enc = encodeURIComponent;
 
@@ -99,7 +103,7 @@
     try {
       const d = await api(`/api/images?page=${state.page}&size=${state.size}&sort=${state.sort}`);
       if (seq !== loadSeq) return;
-      Object.assign(state, { items: d.items, total: d.total, page: d.page, pages: d.pages, admin: d.admin, guestLimit: d.guest_limit });
+      Object.assign(state, { items: d.items, total: d.total, page: d.page, pages: d.pages, admin: d.admin, guestLimit: d.guest_limit, task: d.task });
       if (state.sort === 'desc' && state.page === 1) { state.knownTotal = d.total; el.fresh.hidden = true; }
       else if (state.knownTotal === null) state.knownTotal = d.total;
       writeHash();
@@ -176,7 +180,19 @@
       </div>`;
   }
 
+  function renderTask() {
+    const t = state.task;
+    el.task.hidden = !t;
+    if (!t) return;
+    const at = validTime(t.last_fetched) ? new Date(t.last_fetched) : null;
+    el.task.classList.toggle('paused', t.paused);
+    el.task.innerHTML = `<span class="task-dot" aria-hidden="true"></span>
+      <span>定时抓取<strong>${t.paused ? '已暂停' : '运行中'}</strong></span>
+      <span class="task-time">最近获取图片：${at ? `<time datetime="${esc(t.last_fetched)}">${fmtFull(at)}</time>（${fmtAgo(at, '')}）` : '暂无'}</span>`;
+  }
+
   function render() {
+    renderTask();
     renderNow();
     el.empty.hidden = state.total > 0;
     el.summary.hidden = state.total === 0;
@@ -325,23 +341,33 @@
   // ---------- admin ----------
   async function openAdmin() {
     el.adminStats.innerHTML = '<dt>状态</dt><dd>加载中…</dd>';
+    el.toggleSchedule.disabled = true;
     $('#download-all').textContent = '';
     el.adminDialog.showModal();
-    try { renderStats(await api('/api/status')); } catch (e) { handleAuthError(e); }
+    try {
+      renderStats(await api('/api/status'));
+      el.toggleSchedule.disabled = false;
+    } catch (e) { handleAuthError(e); }
   }
 
   function renderStats(s) {
     const f = s.fetch;
-    const t = (v) => (v && !v.startsWith('0001') ? fmtFull(new Date(v)) : '暂无');
+    const t = (v) => (validTime(v) ? fmtFull(new Date(v)) : '暂无');
     const result = { saved: '<span class="ok">已保存新画面</span>', unchanged: '画面没有变化，已跳过', error: '<span class="bad">失败</span>' }[f.result] || '尚未运行';
     el.adminStats.innerHTML = `
       <dt>存档总数</dt><dd>${s.count} 张</dd>
+      <dt>定时任务</dt><dd>${f.paused ? '<span class="bad">已暂停</span>' : '<span class="ok">运行中</span>'}</dd>
       <dt>抓取计划</dt><dd><code>${esc(s.schedule)}</code></dd>
       <dt>上次抓取</dt><dd>${t(f.last_run)}</dd>
+      <dt>最近获取</dt><dd>${t(f.last_fetched)}</dd>
       <dt>结果</dt><dd>${result}${f.message ? `<br><span class="bad">${esc(f.message)}</span>` : ''}</dd>
       <dt>最近保存</dt><dd>${t(f.last_saved)}</dd>
       <dt>本次启动</dt><dd>抓取 ${f.runs} 次，保存 ${f.saved} 张</dd>${tokenRow(s.token)}`;
     $('#download-all').innerHTML = `<svg><use href="#i-download"/></svg>下载全部 ${s.count} 张`;
+    el.toggleSchedule.textContent = f.paused ? '恢复定时抓取' : '暂停定时抓取';
+    el.toggleSchedule.dataset.paused = String(f.paused);
+    state.task = { paused: f.paused, last_fetched: f.last_fetched };
+    renderTask();
   }
 
   function tokenRow(tok) {
@@ -500,12 +526,31 @@
     }
   });
 
+  el.toggleSchedule.addEventListener('click', async () => {
+    const paused = el.toggleSchedule.dataset.paused !== 'true';
+    el.toggleSchedule.disabled = true;
+    try {
+      renderStats(await api('/api/schedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paused }),
+      }));
+      toast(paused ? '已暂停定时抓取' : '已恢复定时抓取');
+    } catch (e) {
+      handleAuthError(e);
+    } finally {
+      el.toggleSchedule.disabled = false;
+    }
+  });
+
   // Poll for newly saved images; reload silently only when it cannot disrupt the viewer.
   $('#fresh-btn').addEventListener('click', () => { el.fresh.hidden = true; state.sort = 'desc'; store.set('sort', 'desc'); go(1); });
   setInterval(async () => {
     if (document.hidden) return;
     try {
       const d = await api('/api/images?page=1&size=12&sort=desc');
+      state.task = d.task;
+      renderTask();
       if (state.knownTotal === null || d.total <= state.knownTotal) return;
       const idle = state.page === 1 && state.sort === 'desc' && el.lb.hidden && !state.selected.size && window.scrollY < 200;
       if (idle) { await load(); } else { el.fresh.hidden = false; }

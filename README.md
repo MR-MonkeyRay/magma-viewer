@@ -8,7 +8,8 @@ Magma 画板存档站：定时抓取画板图片，内容有变化才保存；�
 - 支持 jpg / jpeg / png / webp / gif，按 md5 去重
 - 自动生成 480px 缩略图与 1600px 预览图（缓存在存储目录的 `.thumbs/`），下载始终为原图
 - 网格 / 瀑布流 / 列表视图，按日分组，明暗主题，大图预览（← → 切换、Esc 关闭、手机滑动）
-- 访客最多打包 10 张；管理员可下载全部、查看抓取状态、立即抓取
+- 访客最多打包 10 张；管理员可下载全部、查看抓取状态、立即抓取、暂停/恢复定时抓取
+- 页面顶部向所有访客展示定时抓取状态（运行中/已暂停）和最近一次成功获取图片的时间
 
 ## 目录
 
@@ -112,7 +113,7 @@ sudo systemctl enable --now magma-viewer.service
 2. 按文件头判断图片类型，非图片（如 cookie 失效返回的登录页）则放弃并记录错误；
 3. 与上一张已保存图片的 md5 比较：相同则丢弃，不同则保存为 `YYYYMMDD-HHMMSS_<md5>.<ext>`。
 
-重启后从最新图片恢复 md5，不会重复保存。手动放入存储目录的图片会被识别（每分钟检查目录变化），时间取文件修改时间。新图保存后及启动时为缺失的图片补齐缩略图。
+重启后从最新图片恢复 md5，不会重复保存。管理员暂停定时抓取后，状态与最近获取时间保存在存储目录的 `.state/fetcher.json`，重启后保持；暂停期间仍可手动立即抓取。手动放入存储目录的图片会被识别（每分钟检查目录变化），时间取文件修改时间。新图保存后及启动时为缺失的图片补齐缩略图。
 
 ## 权限
 
@@ -121,7 +122,8 @@ sudo systemctl enable --now magma-viewer.service
 | 浏览、预览、下载单张 | ✓ | ✓ |
 | 多选打包下载 | 最多 10 张 | 不限 |
 | 打包下载全部 | | ✓ |
-| 查看抓取状态、立即抓取 | | ✓ |
+| 查看定时抓取是否运行、最近获取时间 | ✓ | ✓ |
+| 查看抓取详情、立即抓取、暂停/恢复定时抓取 | | ✓ |
 
 管理员通过页面右上角登录；同一 IP 连续失败 10 次后需等待 5 分钟。
 
@@ -129,7 +131,7 @@ sudo systemctl enable --now magma-viewer.service
 
 | 路由 | 说明 |
 |---|---|
-| `GET /api/images?page=1&size=48&sort=desc` | 分页列表，`size` 范围 12–200，`sort=asc` 为最早在前 |
+| `GET /api/images?page=1&size=48&sort=desc` | 分页列表，`size` 范围 12–200，`sort=asc` 为最早在前；`task` 字段为定时任务状态和最近获取时间 |
 | `GET /img/{name}` | 原图 |
 | `GET /thumb/{name}` / `GET /preview/{name}` | 480px 缩略图 / 1600px 预览图 |
 | `GET /download/{name}` | 下载单张 |
@@ -137,6 +139,7 @@ sudo systemctl enable --now magma-viewer.service
 | `GET /download/all` | 打包下载全部（管理员） |
 | `POST /api/login` / `POST /api/logout` | 登录 / 退出 |
 | `GET /api/status` / `POST /api/fetch` | 抓取状态 / 立即抓取（管理员） |
+| `POST /api/schedule` `{"paused": true}` | 暂停或恢复定时抓取（管理员） |
 | `GET /healthz` | 健康检查 |
 
 ## 本地开发

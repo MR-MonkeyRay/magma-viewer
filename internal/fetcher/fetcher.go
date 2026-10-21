@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -30,6 +31,11 @@ const (
 	ResultError     = "error"
 )
 
+// stateFile keeps the pause switch and last fetch time across restarts. It
+// lives in a dot-subdirectory: the store skips it, and rewriting it does not
+// touch the storage dir mtime that triggers a rescan.
+const stateFile = ".state/fetcher.json"
+
 var contentTypeExt = map[string]string{
 	"image/jpeg": ".jpg",
 	"image/png":  ".png",
@@ -38,13 +44,20 @@ var contentTypeExt = map[string]string{
 }
 
 type Status struct {
-	LastRun   time.Time `json:"last_run"`
-	Result    string    `json:"result"`
-	Message   string    `json:"message,omitempty"`
-	File      string    `json:"file,omitempty"`
-	LastSaved time.Time `json:"last_saved"`
-	Runs      int       `json:"runs"`
-	Saved     int       `json:"saved"`
+	Paused      bool      `json:"paused"`
+	LastRun     time.Time `json:"last_run"`
+	Result      string    `json:"result"`
+	Message     string    `json:"message,omitempty"`
+	File        string    `json:"file,omitempty"`
+	LastFetched time.Time `json:"last_fetched"` // last successful download, saved or not
+	LastSaved   time.Time `json:"last_saved"`
+	Runs        int       `json:"runs"`
+	Saved       int       `json:"saved"`
+}
+
+type savedState struct {
+	Paused      bool      `json:"paused"`
+	LastFetched time.Time `json:"last_fetched"`
 }
 
 type Fetcher struct {
@@ -57,6 +70,8 @@ type Fetcher struct {
 
 	runMu   sync.Mutex // serialises runs (cron + manual trigger)
 	lastMD5 string
+
+	stateMu sync.Mutex // serialises writes of stateFile
 
 	statusMu sync.RWMutex
 	status   Status
@@ -89,7 +104,79 @@ func New(cfg config.Magma, tempDir string, st *store.Store) *Fetcher {
 		f.lastMD5 = sum
 		f.status.LastSaved = it.Time
 	}
+	if data, err := os.ReadFile(f.statePath()); err == nil {
+		var s savedState
+		if err := json.Unmarshal(data, &s); err != nil {
+			log.Printf("fetcher: read %s: %v", stateFile, err)
+		}
+		f.status.Paused, f.status.LastFetched = s.Paused, s.LastFetched
+	} else if !errors.Is(err, os.ErrNotExist) {
+		log.Printf("fetcher: read %s: %v", stateFile, err)
+	}
+	if f.status.Paused {
+		log.Printf("fetcher: scheduled runs are paused")
+	}
 	return f
+}
+
+func (f *Fetcher) statePath() string { return filepath.Join(f.store.Dir(), stateFile) }
+
+// writeState persists s; the caller holds stateMu.
+func (f *Fetcher) writeState(s savedState) error {
+	data, err := json.Marshal(s)
+	if err != nil {
+		return err
+	}
+	path := f.statePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	part := path + ".part"
+	if err := os.WriteFile(part, data, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(part, path); err != nil {
+		os.Remove(part)
+		return err
+	}
+	return nil
+}
+
+// SetPaused switches scheduled runs off or on and persists the choice.
+// Manual runs are not affected.
+func (f *Fetcher) SetPaused(paused bool) error {
+	f.stateMu.Lock()
+	defer f.stateMu.Unlock()
+	if err := f.writeState(savedState{Paused: paused, LastFetched: f.Status().LastFetched}); err != nil {
+		return err
+	}
+	f.statusMu.Lock()
+	f.status.Paused = paused
+	f.statusMu.Unlock()
+	log.Printf("fetcher: scheduled runs paused=%v", paused)
+	return nil
+}
+
+// saveLastFetched persists the current status after a successful download.
+func (f *Fetcher) saveLastFetched() {
+	f.stateMu.Lock()
+	defer f.stateMu.Unlock()
+	st := f.Status()
+	if err := f.writeState(savedState{Paused: st.Paused, LastFetched: st.LastFetched}); err != nil {
+		log.Printf("fetcher: save %s: %v", stateFile, err)
+	}
+}
+
+// RunScheduled is the cron entry point; it does nothing while paused. The
+// check happens under runMu so a run queued behind a manual fetch still
+// honours a pause made in the meantime.
+func (f *Fetcher) RunScheduled(ctx context.Context) {
+	f.runMu.Lock()
+	defer f.runMu.Unlock()
+	if f.Status().Paused {
+		return
+	}
+	f.run(ctx)
 }
 
 func (f *Fetcher) Status() Status {
@@ -102,9 +189,16 @@ func (f *Fetcher) Status() Status {
 func (f *Fetcher) Run(ctx context.Context) Status {
 	f.runMu.Lock()
 	defer f.runMu.Unlock()
+	return f.run(ctx)
+}
 
+// run does the work of Run; the caller holds runMu.
+func (f *Fetcher) run(ctx context.Context) Status {
 	started := f.now()
 	file, err := f.fetchOnce(ctx, started)
+	if err == nil {
+		defer f.saveLastFetched() // runs after statusMu is released
+	}
 
 	f.statusMu.Lock()
 	defer f.statusMu.Unlock()
@@ -116,9 +210,9 @@ func (f *Fetcher) Run(ctx context.Context) Status {
 		st.Result, st.Message = ResultError, err.Error()
 		log.Printf("fetcher: %v", err)
 	case file == "":
-		st.Result = ResultUnchanged
+		st.Result, st.LastFetched = ResultUnchanged, started
 	default:
-		st.Result, st.File, st.LastSaved = ResultSaved, file, started
+		st.Result, st.File, st.LastSaved, st.LastFetched = ResultSaved, file, started, started
 		st.Saved++
 		log.Printf("fetcher: saved %s", file)
 	}
