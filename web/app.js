@@ -39,7 +39,9 @@
     toast: $('#toast'), toastText: $('#toast span'), toastIcon: $('#toast use'),
     lb: $('#lightbox'), lbStage: $('#lb-stage'), lbImg: $('#lb-img'), lbTime: $('#lb-time'), lbSub: $('#lb-sub'),
     lbCount: $('#lb-count'), lbPrev: $('#lb-prev'), lbNext: $('#lb-next'), lbDownload: $('#lb-download'),
-    lbSelect: $('#lb-select'), lbZoom: $('#lb-zoom'), lbLink: $('#lb-link'), lbMenu: $('#lb-menu'),
+    lbSelect: $('#lb-select'), lbZoom: $('#lb-zoom'), lbLink: $('#lb-link'), lbMenu: $('#lb-menu'), lbInfo: $('#lb-info'),
+    lbpDate: $('#lbp-date'), lbpTime: $('#lbp-time'), lbpAgo: $('#lbp-ago'), lbpDownload: $('#lbp-download'),
+    lbpSize: $('#lbp-size'), lbpSizeMenu: $('#lbp-size-menu'), lbpGrid: $('#lbp-grid'), lbpName: $('#lbp-name'),
     loginDialog: $('#login-dialog'), loginForm: $('#login-form'), loginError: $('#login-error'), loginSubmit: $('#login-submit'),
     adminDialog: $('#admin-dialog'), adminStats: $('#admin-stats'), fetchNow: $('#fetch-now'),
     toggleSchedule: $('#toggle-schedule'), scheduleHint: $('#schedule-hint'),
@@ -83,6 +85,26 @@
     if (s < 3600) return `${Math.floor(s / 60)} 分 ${pad(s % 60)} 秒后`;
     if (s < 86400) return `${Math.floor(s / 3600)} 小时 ${Math.floor((s % 3600) / 60)} 分后`;
     return fmtShort(d);
+  }
+  // Rounds before picking the unit, so 59.6 s reads "1 分钟" rather than "60 秒".
+  function fmtGap(s) {
+    s = Math.round(s);
+    if (s < 60) return `${s} 秒`;
+    const m = Math.round(s / 60);
+    if (m < 60) return `${m} 分钟`;
+    if (m < 1440) return `${Math.floor(m / 60)} 小时 ${m % 60} 分`;
+    return `${Math.floor(m / 1440)} 天`;
+  }
+  const extOf = (name) => ((/\.([a-z0-9]+)$/i.exec(name) || [])[1] || '').toUpperCase().replace('JPEG', 'JPG');
+  function ratioOf(w, h) {
+    const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+    const d = gcd(w, h);
+    return w / d <= 32 && h / d <= 32 ? `${w / d}:${h / d}` : `${(w / h).toFixed(2)}:1`;
+  }
+  // Mirrors store.fit (integer division included): the long edge shrinks to edge, small images keep their size.
+  function fitEdge(w, h, edge) {
+    if (w <= edge && h <= edge) return [w, h];
+    return w >= h ? [edge, Math.max(1, Math.floor(h * edge / w))] : [Math.max(1, Math.floor(w * edge / h)), edge];
   }
   // Go encodes an unset time.Time as 0001-01-01.
   const validTime = (v) => !!v && !v.startsWith('0001');
@@ -234,6 +256,7 @@
 
   let loadSeq = 0;
   // silent reloads come from polling: no skeleton, no progress bar, new tiles are highlighted.
+  // Resolves true once the page is shown, false when the request failed or was superseded.
   async function load({ scroll = false, silent = false } = {}) {
     const seq = ++loadSeq;
     if (!silent) {
@@ -243,24 +266,33 @@
     }
     const before = silent ? new Set(state.items.map((it) => it.name)) : null;
     const viewing = state.lbIndex >= 0 && state.items[state.lbIndex] ? state.items[state.lbIndex].name : null;
+    const anchor = state.lastIndex !== null && state.items[state.lastIndex] ? state.items[state.lastIndex].name : null;
     try {
       const d = await api(`/api/images?page=${state.page}&size=${state.size}&sort=${state.sort}`);
-      if (seq !== loadSeq) return;
-      Object.assign(state, { items: d.items, total: d.total, page: d.page, pages: d.pages, admin: d.admin, guestLimit: d.guest_limit, task: d.task });
+      if (seq !== loadSeq) return false;
+      Object.assign(state, { items: d.items, total: d.total, page: d.page, size: d.size, pages: d.pages, admin: d.admin, guestLimit: d.guest_limit, task: d.task });
+      // New pictures shift indexes; keep the shift-click anchor on the same picture.
+      if (anchor) { const j = state.items.findIndex((it) => it.name === anchor); state.lastIndex = j >= 0 ? j : null; }
       if (onFirstPage()) { state.latest = d.items[0] || null; hide(el.fresh); }
       writeHash();
       // Keep an open lightbox on the same picture even though indexes shifted.
+      let lost = false;
       if (viewing && state.lbIndex >= 0) {
         const i = state.items.findIndex((it) => it.name === viewing);
-        // Not on this page: step() opens the right picture once the load returns.
         if (i >= 0) { state.lbIndex = i; updateLightboxMeta(); }
-        else state.lbIndex = Math.max(0, Math.min(state.lbIndex, state.items.length - 1));
+        else { state.lbIndex = Math.max(0, Math.min(state.lbIndex, state.items.length - 1)); lost = true; }
       }
-      render({ animate: !silent });
+      olderTimes.clear();
+      render({ animate: !silent, slide: silent ? 0 : slideDir });
+      slideDir = 0;
       if (before && before.size) markNew(before);
       if (scroll) scrollToTop();
+      // The picture left this page: step() opens the right one itself; otherwise show the nearest one.
+      if (lost && !stepping) { if (state.items.length) openLightbox(state.lbIndex); else closeLightbox(); }
+      return true;
     } catch (e) {
       if (seq === loadSeq && !silent) renderError(e);
+      return false;
     } finally {
       if (!silent) busy(false);
       if (seq === loadSeq) el.gallery.classList.remove('stale');
@@ -268,7 +300,9 @@
     }
   }
 
+  let slideDir = 0; // pages slide in from the side they were reached from
   function go(page) {
+    slideDir = Math.sign(page - state.page);
     state.page = page;
     state.lastIndex = null;
     return load({ scroll: true });
@@ -279,6 +313,7 @@
     el.gallery.className = `gallery view-${state.view} skeleton`;
     const n = Math.min(state.size, 12);
     el.gallery.innerHTML = `<div class="tiles">${'<figure class="tile"><div class="tile-open"></div></figure>'.repeat(n)}</div>`;
+    if (onFirstPage() && !el.now.dataset.name) { el.now.hidden = false; el.now.classList.add('pending'); }
   }
 
   function renderError(e) {
@@ -288,6 +323,8 @@
       <button type="button" class="btn primary" data-retry><svg><use href="#i-refresh"/></svg>重试</button></div>`;
     el.summary.textContent = '';
     el.pager.innerHTML = '';
+    // A hero that never got a picture must not keep shimmering above the error.
+    if (!el.now.dataset.name) { el.now.classList.remove('pending'); el.now.hidden = true; }
   }
 
   function tileHTML(it, i) {
@@ -300,7 +337,7 @@
       <button type="button" class="tile-open" aria-label="查看 ${esc(fmtFull(d))}" title="${esc(fmtFull(d))}"><img loading="lazy" decoding="async" src="/thumb/${enc(it.name)}"${it.w ? ` width="${it.w}" height="${it.h}"` : ''} alt=""></button>
       <figcaption class="tile-cap">
         <time datetime="${esc(it.time)}">${list ? fmtFull(d) : fmtTile(d)}</time>
-        ${list ? `<span class="name" title="${name}">${name}</span><span class="size">${it.w ? `${it.w}×${it.h} · ` : ''}${fmtSize(it.size)}</span>` : ''}
+        ${list ? `<span class="name" title="${name}">${name}</span><span class="size">${it.w ? `<span class="dims">${it.w}×${it.h} · </span>` : ''}${fmtSize(it.size)}</span>` : ''}
         <a class="tile-dl" href="/download/${enc(it.name)}" download title="下载原图" aria-label="下载原图"><svg><use href="#i-download"/></svg></a>
       </figcaption>
     </figure>`;
@@ -329,6 +366,7 @@
   // The hero follows state.latest, which polling keeps current even when the gallery below is not reloaded.
   function renderNow() {
     const latest = onFirstPage() ? state.latest : null;
+    el.now.classList.remove('pending');
     el.now.hidden = !latest;
     if (!latest) return;
     const d = new Date(latest.time);
@@ -373,7 +411,9 @@
       ${next ? `<span class="task-item" title="下次抓取：${esc(fmtFull(new Date(next)))}"><svg aria-hidden="true"><use href="#i-clock"/></svg><span class="sr-only">下次抓取</span><span data-until="${esc(next)}">${fmtUntil(new Date(next))}</span></span>` : ''}`;
   }
 
-  function render({ animate = false } = {}) {
+  // slide is the direction a new page arrives from; view and grouping changes animate in place.
+  function render({ animate = false, slide = 0 } = {}) {
+    el.gallery.style.setProperty('--sx', `${slide * 28}px`);
     renderTask();
     renderNow();
     el.empty.hidden = state.total > 0;
@@ -609,6 +649,76 @@
     el.lbDownload.href = `/download/${enc(it.name)}`;
     el.lbPrev.disabled = i === 0 && state.page === 1;
     el.lbNext.disabled = i === state.items.length - 1 && state.page === state.pages;
+
+    const d = new Date(it.time);
+    el.lbpDate.textContent = fmtDay(d);
+    el.lbpTime.textContent = fmtClock(d);
+    el.lbpAgo.dataset.ago = it.time;
+    el.lbpAgo.dataset.verb = '保存';
+    el.lbpAgo.textContent = fmtAgo(d);
+    el.lbpDownload.href = `/download/${enc(it.name)}`;
+    el.lbpName.textContent = it.name;
+    renderGrid(i);
+    // Sizes the server already keeps, both JPEG: the 1600px preview, and the 480px thumbnail scaled down from it.
+    // GIFs are served as-is for the preview, so only the thumbnail is offered.
+    const dims = it.w ? `${it.w} × ${it.h}` : '未知';
+    const base = it.name.replace(/\.[^.]+$/, '');
+    const sizes = [[`/download/${enc(it.name)}`, '原图', `${extOf(it.name)} · ${dims} · ${fmtSize(it.size)}`, '']];
+    const preview = it.w ? fitEdge(it.w, it.h, 1600) : null;
+    if (preview && Math.max(it.w, it.h) > 1600 && extOf(it.name) !== 'GIF') {
+      const [w, h] = preview;
+      sizes.push([`/preview/${enc(it.name)}`, '大图', `JPG · ${w} × ${h}`, `${base}-${w}.jpg`]);
+    }
+    if (preview && Math.max(it.w, it.h) > 480) {
+      const [w, h] = fitEdge(...preview, 480);
+      sizes.push([`/thumb/${enc(it.name)}`, '缩略图', `JPG · ${w} × ${h}`, `${base}-${w}.jpg`]);
+    }
+    el.lbpSizeMenu.innerHTML = sizes.map(([href, label, sub, file]) =>
+      `<a role="menuitem" href="${href}" download="${esc(file)}"><strong>${label}</strong><span>${esc(sub)}</span></a>`).join('');
+  }
+
+  function renderGrid(i) {
+    const it = state.items[i];
+    const older = olderTime(i);
+    const gap = older ? (new Date(it.time) - new Date(older)) / 1000 : 0;
+    el.lbpGrid.innerHTML = [
+      ['尺寸', it.w ? `${it.w} × ${it.h}` : '未知'], ['大小', fmtSize(it.size)], ['格式', extOf(it.name) || '—'],
+      ['比例', it.w ? ratioOf(it.w, it.h) : '—'], ['距上一张', older === undefined ? '…' : gap > 0 ? fmtGap(gap) : '—'],
+      ['位置', el.lbCount.textContent],
+    ].map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('');
+  }
+
+  // The picture before the oldest one on a page sits on the neighbouring page: fetch just that one, once.
+  // Returns its time, null when there is none, or undefined while it is being fetched.
+  const olderTimes = new Map();
+  function olderTime(i) {
+    const older = state.items[state.sort === 'desc' ? i + 1 : i - 1];
+    if (older) return older.time;
+    const it = state.items[i];
+    if (olderTimes.has(it.name)) return olderTimes.get(it.name);
+    const g = (state.page - 1) * state.size + i + (state.sort === 'desc' ? 1 : -1);
+    if (g < 0 || g >= state.total) return null;
+    const n = 12; // the server's smallest page size
+    const page = Math.floor(g / n) + 1;
+    olderTimes.set(it.name, undefined);
+    api(`/api/images?page=${page}&size=${n}&sort=${state.sort}`).then((d) => {
+      const o = d.page === page ? d.items[g % n] : null;
+      olderTimes.set(it.name, o ? o.time : null);
+    }, () => olderTimes.delete(it.name)).then(() => {
+      if (state.items[state.lbIndex] === it) renderGrid(state.lbIndex);
+    });
+    return undefined;
+  }
+
+  const wideScreen = window.matchMedia('(min-width: 1100px)');
+  function setInfo(on, save) {
+    closeMenu();
+    el.lb.classList.toggle('info-open', on);
+    el.lbInfo.setAttribute('aria-pressed', String(on));
+    if (save) store.set('info', on ? '1' : '0');
+    if (state.lbIndex < 0) return;
+    fitImage();
+    if (zoom.on) { clampPan(); applyZoom(); }
   }
 
   function imgFor(i) {
@@ -646,10 +756,15 @@
     const img = el.lbImg;
     const seq = ++lbSeq;
     if (opening) {
+      // Reopened before the closing flip ended: its forwards fill would pin the image to the old tile.
+      img.getAnimations().forEach((a) => a.cancel());
+      el.lb.classList.remove('flipping');
       lbFrom = from;
       lbReturn = document.activeElement;
       el.lb.classList.remove('chrome-off');
       show(el.lb);
+      // The detail panel starts open on wide screens unless the viewer closed it last time.
+      setInfo(wideScreen.matches && store.get('info', '1') === '1');
       setInert(true);
       document.body.style.overflow = 'hidden';
       document.documentElement.classList.add('lb-open');
@@ -676,7 +791,7 @@
       clearTimeout(spin);
       if (seq !== lbSeq) return;
       el.lbStage.classList.remove('loading');
-      if (!(zoom.on && img.currentSrc.includes('/img/'))) img.src = src;
+      if (!(zoom.on && img.getAttribute('src').startsWith('/img/'))) img.src = src;
     };
     pre.decode().then(done, done);
     for (const n of [state.items[i + 1], state.items[i - 1]]) if (n) new Image().src = `/preview/${enc(n.name)}`;
@@ -685,7 +800,10 @@
 
   function closeLightbox(fromHistory = false) {
     if (state.lbIndex < 0) return;
-    const rect = zoom.on ? null : visibleRect(imgFor(state.lbIndex));
+    const shown = imgFor(state.lbIndex);
+    const rect = zoom.on ? null : visibleRect(shown);
+    // A reload re-renders the tiles, so the button that opened the lightbox may be gone.
+    const back = lbReturn && lbReturn.isConnected ? lbReturn : shown && shown.closest('button');
     ++lbSeq;
     state.lbIndex = -1;
     closeMenu();
@@ -702,7 +820,7 @@
       el.lbImg.removeAttribute('src');
       el.lbImg.style.width = el.lbImg.style.height = '';
     });
-    if (lbReturn && lbReturn.isConnected) lbReturn.focus({ preventScroll: true });
+    if (back) back.focus({ preventScroll: true });
     lbReturn = null;
     lbFrom = null;
     if (lbHistory) {
@@ -719,9 +837,17 @@
     const page = state.page + delta;
     if (page < 1 || page > state.pages) return;
     stepping = true;
+    const from = state.page;
     try {
-      await go(page);
-      if (state.lbIndex >= 0) openLightbox(delta < 0 ? state.items.length - 1 : 0, delta);
+      if (await go(page)) {
+        if (state.lbIndex >= 0) openLightbox(delta < 0 ? state.items.length - 1 : 0, delta);
+      } else if (state.page === page) {
+        // Still showing the old page's pictures: put the gallery back under them.
+        state.page = from;
+        writeHash();
+        render();
+        toast('加载失败，请稍后再试', 'error');
+      }
     } finally {
       stepping = false;
     }
@@ -764,7 +890,7 @@
     zoom.on = true;
     clampPan();
     const want = fullSrc(state.items[state.lbIndex], s);
-    if (want.startsWith('/img/') && !img.currentSrc.includes('/img/')) img.src = want;
+    if (want.startsWith('/img/') && !img.getAttribute('src').startsWith('/img/')) img.src = want;
     applyZoom();
   }
 
@@ -798,28 +924,44 @@
     return { url, md: `![${alt}](${url})`, html: `<img src="${url}" alt="${alt}">`, bb: `[img]${url}[/img]` }[fmt];
   }
 
-  function openMenu() {
-    el.lbMenu.hidden = false;
-    el.lbLink.setAttribute('aria-expanded', 'true');
-    el.lbMenu.querySelector('button').focus();
+  let menuBtn = null; // the trigger of the open menu; its menu is the next sibling
+  function openMenu(btn) {
+    closeMenu();
+    const menu = btn.nextElementSibling;
+    menu.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+    menuBtn = btn;
+    menu.querySelector('button, a').focus();
   }
 
   function closeMenu(refocus) {
-    if (el.lbMenu.hidden) return;
-    el.lbMenu.hidden = true;
-    el.lbLink.setAttribute('aria-expanded', 'false');
-    if (refocus) el.lbLink.focus();
+    if (!menuBtn) return;
+    const btn = menuBtn;
+    menuBtn = null;
+    btn.nextElementSibling.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+    if (refocus) btn.focus();
   }
 
   function menuKey(e) {
-    const items = [...el.lbMenu.querySelectorAll('button')];
+    const items = [...menuBtn.nextElementSibling.querySelectorAll('button, a')];
     const at = items.indexOf(document.activeElement);
     if (e.key === 'Escape' || e.key === 'Tab') closeMenu(e.key === 'Escape');
     else if (e.key === 'ArrowDown') items[(at + 1) % items.length].focus();
     else if (e.key === 'ArrowUp') items[(at - 1 + items.length) % items.length].focus();
-    else return e.key === 'Enter' || e.key === ' ';
+    // Links ignore Space natively; click both kinds so Enter and Space behave alike.
+    else if ((e.key === 'Enter' || e.key === ' ') && at >= 0) items[at].click();
+    else return false;
     if (e.key !== 'Tab') e.preventDefault();
     return true;
+  }
+
+  async function copyLink(fmt, label) {
+    const it = state.items[state.lbIndex];
+    if (!it) return false;
+    const ok = await copyText(linkText(fmt, it));
+    toast(ok ? `已复制${fmt === 'url' ? '原图链接' : ' ' + label}` : '复制失败，请长按下载按钮复制链接', ok ? 'ok' : 'error');
+    return ok;
   }
 
   // ---------- admin ----------
@@ -964,17 +1106,23 @@
   el.lbNext.addEventListener('click', () => step(1));
   el.lbSelect.addEventListener('click', lbToggleSelect);
   el.lbZoom.addEventListener('click', () => toggleZoom());
-  el.lbLink.addEventListener('click', () => (el.lbMenu.hidden ? openMenu() : closeMenu(true)));
-  el.lbMenu.addEventListener('click', async (e) => {
+  for (const btn of [el.lbLink, el.lbpSize]) {
+    btn.addEventListener('click', () => (menuBtn === btn ? closeMenu(true) : openMenu(btn)));
+  }
+  el.lbMenu.addEventListener('click', (e) => {
     const b = e.target.closest('[data-fmt]');
-    const it = state.items[state.lbIndex];
-    if (!b || !it) return;
+    if (!b) return;
     closeMenu(true);
-    const ok = await copyText(linkText(b.dataset.fmt, it));
-    toast(ok ? `已复制${b.dataset.fmt === 'url' ? '原图链接' : ' ' + b.textContent}` : '复制失败，请长按下载按钮复制链接', ok ? 'ok' : 'error');
+    copyLink(b.dataset.fmt, b.textContent);
   });
+  el.lbpSizeMenu.addEventListener('click', (e) => { if (e.target.closest('a')) closeMenu(true); });
+  $('#lbp-share').addEventListener('click', async (e) => {
+    const chip = e.target.closest('.chip');
+    if (chip && await copyLink(chip.dataset.fmt, chip.textContent)) replay(chip, 'done');
+  });
+  el.lbInfo.addEventListener('click', () => setInfo(!el.lb.classList.contains('info-open'), true));
   document.addEventListener('pointerdown', (e) => {
-    if (!el.lbMenu.hidden && !e.target.closest('.lb-menu-wrap')) closeMenu();
+    if (menuBtn && !menuBtn.parentElement.contains(e.target)) closeMenu();
   });
   el.lb.addEventListener('click', (e) => {
     if (!zoom.on && (e.target === el.lb || e.target === el.lbStage || e.target.classList.contains('lb-foot'))) closeLightbox();
@@ -1119,7 +1267,7 @@
 
   // ---------- keyboard ----------
   function lightboxKey(e) {
-    if (!el.lbMenu.hidden && menuKey(e)) return;
+    if (menuBtn && menuKey(e)) return;
     const pan = { ArrowLeft: [80, 0], ArrowRight: [-80, 0], ArrowUp: [0, 80], ArrowDown: [0, -80] }[e.key];
     const k = e.key.toLowerCase();
     if (pan && zoom.on) panBy(...pan);
@@ -1128,7 +1276,8 @@
     else if (e.key === 'ArrowRight') step(1);
     else if (k === 'z') toggleZoom();
     else if (k === 'x') lbToggleSelect();
-    else if (k === 'c') openMenu();
+    else if (k === 'i') setInfo(!el.lb.classList.contains('info-open'), true);
+    else if (k === 'c') { if (el.lb.classList.contains('info-open')) copyLink('url'); else openMenu(el.lbLink); }
     else if (k === 'd') el.lbDownload.click();
     else return;
     e.preventDefault();
@@ -1267,6 +1416,7 @@
   let awaitUntil = 0;
   function schedulePoll(delay) {
     clearTimeout(pollTimer);
+    if (delay === undefined && awaitUntil > Date.now()) delay = 4000; // a page load mid-run keeps watching it
     if (delay === undefined) {
       delay = 60000;
       awaitRun = '';
@@ -1274,7 +1424,7 @@
       const t = state.task;
       if (t && !t.paused && validTime(t.next_run)) {
         const wait = new Date(t.next_run) - Date.now() + 5000;
-        if (wait < 60000) { delay = Math.max(wait, 5000); awaitRun = t.next_run; }
+        if (wait <= 65000) { delay = Math.max(wait, 5000); awaitRun = t.next_run; }
       }
     }
     pollTimer = setTimeout(poll, delay);
@@ -1297,6 +1447,7 @@
         if (!awaitUntil) awaitUntil = Date.now() + 45000;
         again = Date.now() < awaitUntil;
       }
+      if (!again) awaitUntil = 0;
       const top = d.items[0] || null;
       if (state.latest === undefined) {
         state.latest = top;
@@ -1304,7 +1455,8 @@
         state.latest = top;
         if (onFirstPage()) {
           renderNow();
-          const idle = state.lbIndex < 0 && window.scrollY < 400 && !document.querySelector('dialog[open]');
+          const idle = state.lbIndex < 0 && window.scrollY < 400 && !document.querySelector('dialog[open]') &&
+            !el.gallery.contains(document.activeElement); // re-rendering would drop keyboard focus
           if (idle) { await load({ silent: true }); return; } // load reschedules
         }
         show(el.fresh);

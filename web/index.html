@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#eceef2" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#12161e" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b0f19" media="(prefers-color-scheme: dark)">
 <title>Magma 画板存档</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233346d3'/%3E%3Cpath d='M8 22c3-8 6-12 8-12s2 6 4 6 3-3 4-5' stroke='white' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="app.css">
@@ -42,6 +42,8 @@
   <symbol id="i-sort-asc" viewBox="0 0 24 24"><path d="M7 4h2v12.2l2.6-2.6L13 15l-5 5-5-5 1.4-1.4L7 16.2zM13 5h4v2h-4zm0 4h6v2h-6zm0 4h8v2h-8z"/></symbol>
   <symbol id="i-calendar" viewBox="0 0 24 24"><path d="M7 2h2v2h6V2h2v2h3a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3zM5 9v10h14V9zm2 2h4v4H7z"/></symbol>
   <symbol id="i-clock" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm0 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16zm-1 3h2v4.6l3.2 3.2-1.4 1.4L11 12.4z"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M5.4 8.6 4 10l8 8 8-8-1.4-1.4L12 15.2z"/></symbol>
+  <symbol id="i-panel" viewBox="0 0 24 24"><path d="M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm1 2v12h9V6zm11 0v12h3V6z"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><path d="M8 3h11a2 2 0 0 1 2 2v11h-2V5H8zM5 7h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2zm0 2v10h10V9z"/></symbol>
 </svg>
 
@@ -136,7 +138,7 @@
     <div class="lb-actions">
       <button type="button" class="lb-btn" id="lb-select" title="选择（X）" aria-label="选择" aria-pressed="false"><svg><use href="#i-check"/></svg></button>
       <button type="button" class="lb-btn" id="lb-zoom" title="放大（Z / 单击 / 滚轮）" aria-label="放大" aria-pressed="false"><svg><use href="#i-zoom"/></svg></button>
-      <span class="lb-menu-wrap">
+      <span class="lb-menu-wrap lb-dup">
         <button type="button" class="lb-btn" id="lb-link" title="复制链接（C）" aria-label="复制链接" aria-haspopup="menu" aria-expanded="false"><svg><use href="#i-link"/></svg></button>
         <span class="menu" id="lb-menu" role="menu" hidden>
           <button type="button" role="menuitem" data-fmt="url">原图链接</button>
@@ -145,7 +147,8 @@
           <button type="button" role="menuitem" data-fmt="bb">BBCode</button>
         </span>
       </span>
-      <a class="lb-btn" id="lb-download" href="#" title="下载原图（D）" aria-label="下载原图"><svg><use href="#i-download"/></svg></a>
+      <a class="lb-btn lb-dup" id="lb-download" href="#" title="下载原图（D）" aria-label="下载原图"><svg><use href="#i-download"/></svg></a>
+      <button type="button" class="lb-btn" id="lb-info" title="详情（I）" aria-label="详情" aria-pressed="false" aria-controls="lb-panel"><svg><use href="#i-panel"/></svg></button>
       <button type="button" class="lb-btn lb-close" id="lb-close" aria-label="关闭（Esc）" title="关闭（Esc）"><svg><use href="#i-close"/></svg></button>
     </div>
   </div>
@@ -156,6 +159,34 @@
   </figure>
   <button type="button" class="lb-nav next" id="lb-next" aria-label="下一张" title="下一张（→）"><svg><use href="#i-right"/></svg></button>
   <div class="lb-foot"><span class="lb-count" id="lb-count"></span></div>
+  <aside class="lb-panel" id="lb-panel" aria-label="画面详情">
+    <div class="lbp-head">
+      <p class="lbp-date" id="lbp-date"></p>
+      <p class="lbp-time" id="lbp-time"></p>
+      <p class="lbp-ago" id="lbp-ago"></p>
+    </div>
+    <div class="lbp-dl">
+      <a class="btn primary" id="lbp-download" href="#"><svg><use href="#i-download"/></svg>下载原图</a>
+      <span class="lb-menu-wrap">
+        <button type="button" class="btn primary lbp-more" id="lbp-size" title="选择尺寸" aria-label="选择下载尺寸" aria-haspopup="menu" aria-expanded="false"><svg><use href="#i-down"/></svg></button>
+        <span class="menu" id="lbp-size-menu" role="menu" hidden></span>
+      </span>
+    </div>
+    <dl class="lbp-grid" id="lbp-grid"></dl>
+    <div class="lbp-block">
+      <p class="lbp-label">复制链接</p>
+      <div class="chips" id="lbp-share">
+        <button type="button" class="chip" data-fmt="url">链接</button>
+        <button type="button" class="chip" data-fmt="md">Markdown</button>
+        <button type="button" class="chip" data-fmt="html">HTML</button>
+        <button type="button" class="chip" data-fmt="bb">BBCode</button>
+      </div>
+    </div>
+    <div class="lbp-block">
+      <p class="lbp-label">文件</p>
+      <code class="lbp-name" id="lbp-name"></code>
+    </div>
+  </aside>
 </div>
 
 <dialog class="modal" id="login-dialog">
@@ -218,6 +249,7 @@
         <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>上一张 / 下一张（可跨页）</dd>
         <dt><kbd>Z</kbd> / 单击 / 滚轮</dt><dd>放大或还原，放大后可拖动</dd>
         <dt><kbd>X</kbd></dt><dd>选择当前画面</dd>
+        <dt><kbd>I</kbd></dt><dd>显示或隐藏详情</dd>
         <dt><kbd>C</kbd></dt><dd>复制链接</dd>
         <dt><kbd>D</kbd></dt><dd>下载原图</dd>
         <dt><kbd>Esc</kbd></dt><dd>关闭</dd>
