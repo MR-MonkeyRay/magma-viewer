@@ -1,38 +1,31 @@
-# magma-viewer 完整配置样例。从项目根目录复制本文件为 config.yaml 后按需修改。
+# 完整配置样例。复制为项目根目录的 config.yaml 后修改。
 
-# HTTP 监听地址
 listen: ":8080"
 
-# 管理员登录凭证（访客无需登录即可浏览和下载）
 admin:
   username: admin
   password: "change-me"
-  # 会话签名密钥。留空则每次启动随机生成，重启后管理员需重新登录。
+  # 留空则每次启动随机生成，重启后需重新登录
   session_secret: ""
-  # 登录有效期
   session_ttl: 168h
 
-# magma 绘画图片抓取配置
 magma:
-  # 绘画图片地址：magma 的画板渲染接口，<画板ID> 是画板链接中的 ID（如 8In5cvqsHD）
-  # 末尾可选 jpg / png；接口会 302 跳转到渲染好的图片，程序会自动跟随
+  # 画板 ID 取自 magma 画板链接；接口会 302 跳转到渲染图片
   url: "https://magma.com/api/render/<画板ID>/jpg"
-  # 原样放入 Cookie 请求头。magma 只需要 AUTH_TOKEN（JWT，有效期约 90 天），
-  # 程序会解析其中的过期时间，在日志和管理面板中提示
+  # 只需 AUTH_TOKEN；程序会读取 JWT 过期时间，不足 7 天时告警
   cookie: "AUTH_TOKEN=<你的 token>"
-  # 可选：额外请求头
+  # 可选额外请求头
   headers:
     User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
     # Referer: "https://magma.com/"
-  # 单次下载超时
   timeout: 30s
 
-# 定时下载计划，标准 5 段 crontab（分 时 日 月 周），默认每分钟执行
-# 示例："*/5 * * * *" 每 5 分钟；"0 * * * *" 每小时整点；也支持 "@every 30s"、"@hourly"
+# 标准 5 段 crontab（分 时 日 月 周）；也支持 "@every 30s"、"@hourly"
+# 示例："*/5 * * * *" 每 5 分钟，"0 * * * *" 每小时整点
 schedule: "* * * * *"
 
 storage:
-  # 图片存储目录（容器内路径，compose 中挂载到宿主机）
+  # 容器内路径，compose 中挂载到宿主机
   dir: /data/images
   # 下载临时目录
   temp_dir: /tmp

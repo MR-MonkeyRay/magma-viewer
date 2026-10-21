@@ -280,8 +280,8 @@ func (s *Server) handleZipAll(w http.ResponseWriter, r *http.Request) {
 	s.writeZip(w, r, "magma-all-"+time.Now().Format(store.TimeLayout)+".zip", items)
 }
 
-// writeZip streams the archive. Images are already compressed, so entries are
-// stored without deflate to keep CPU usage low.
+// writeZip streams the archive with uncompressed entries; images are already
+// compressed, so deflate would only waste CPU.
 func (s *Server) writeZip(w http.ResponseWriter, r *http.Request, filename string, items []store.Item) {
 	w.Header().Set("Content-Type", "application/zip")
 	attachment(w, filename)

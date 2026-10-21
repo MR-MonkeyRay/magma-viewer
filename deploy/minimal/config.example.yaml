@@ -1,3 +1,5 @@
+# 最小配置样例，完整项见 deploy/compose/config.example.yaml。
+
 admin:
   username: admin
   password: "change-me"

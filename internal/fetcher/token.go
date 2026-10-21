@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// TokenInfo describes a JWT found in the configured cookie (magma's
-// AUTH_TOKEN), so expiry can be surfaced before fetches start failing.
+// TokenInfo describes the JWT in the configured cookie, so its expiry can be
+// surfaced before fetches fail.
 type TokenInfo struct {
 	Cookie  string    `json:"cookie"`
 	Expires time.Time `json:"expires"`

@@ -1,3 +1,4 @@
+# 从项目根目录构建并部署；配置与数据挂载到项目根目录。
 name: magma-viewer
 
 services:
@@ -5,15 +6,16 @@ services:
     build:
       context: ../..
       dockerfile: build/docker/Dockerfile
+      # 国内网络可取消注释
       # args:
-      #   GOPROXY: https://goproxy.cn,direct   # 国内网络构建时打开
+      #   GOPROXY: https://goproxy.cn,direct
     image: magma-viewer:latest
     container_name: magma-viewer
     restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
-      TZ: Asia/Shanghai          # 影响 crontab 计划和文件名中的时间
+      TZ: Asia/Shanghai          # 影响计划执行和文件名中的时间
     volumes:
       - ../../config.yaml:/config/config.yaml:ro
       - ../../data/images:/data/images

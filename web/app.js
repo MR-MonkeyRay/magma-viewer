@@ -139,8 +139,7 @@
     </figure>`;
   }
 
-  // Masonry: place each tile in the currently shortest column so the reading
-  // order stays left-to-right, newest first.
+  // Masonry fills the shortest column, keeping left-to-right, newest-first order.
   const MASONRY_COL = 260;
   function masonryCols() {
     const gap = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--gap')) || 14;

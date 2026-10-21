@@ -1,5 +1,5 @@
-// Package store keeps an in-memory, time-sorted index of the image directory
-// and generates cached thumbnails on demand.
+// Package store indexes the image directory in memory and generates cached
+// thumbnails.
 package store
 
 import (
@@ -195,8 +195,7 @@ func (s *Store) Add(name string) error {
 	return nil
 }
 
-// Watch rescans the directory whenever its mtime changes, so files added or
-// removed by hand show up without a restart.
+// Watch rescans when the directory mtime changes, picking up manual edits.
 func (s *Store) Watch(stop <-chan struct{}, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -274,8 +273,8 @@ func (s *Store) Latest() (Item, bool) {
 	return s.items[0], true
 }
 
-// Path returns the on-disk path of an indexed image. Only names present in
-// the index are accepted, which also rules out path traversal.
+// Path returns the on-disk path for an indexed name, which also rules out
+// path traversal.
 func (s *Store) Path(name string) (string, error) {
 	if _, ok := s.Get(name); !ok {
 		return "", ErrNotFound
@@ -317,9 +316,8 @@ func (s *Store) cachePath(name string, size Size) string {
 	return filepath.Join(s.thumbDir, name+".jpg")
 }
 
-// Thumb returns the path of a cached JPEG rendition, generating it if needed.
-// Images already within the preview size, and GIFs (to keep animation), are
-// served as-is for Preview.
+// Thumb returns a cached JPEG, generating it if needed. For Preview, GIFs and
+// images within 1600px are served as-is.
 func (s *Store) Thumb(name string, size Size) (string, error) {
 	it, ok := s.Get(name)
 	if !ok {
@@ -364,8 +362,7 @@ func (s *Store) Ensure(name string) error {
 	return nil
 }
 
-// Warm generates renditions for every indexed image that lacks them, one at
-// a time, so thumbnails are ready before anyone opens the page.
+// Warm generates missing renditions one at a time at startup.
 func (s *Store) Warm(stop <-chan struct{}) {
 	n := 0
 	for _, it := range s.All() {
@@ -408,10 +405,9 @@ func fit(w, h, edge int) (int, int) {
 	return max(1, w*edge/h), edge
 }
 
-// scale downsamples img to fit within edge by area averaging, flattening any
-// transparency onto white (JPEG has no alpha). Unlike x/image/draw's kernels,
-// which allocate 32 bytes per destination-width × source-height pixel (~110 MB
-// for a 4K source), it only needs one row of accumulators.
+// scale downsamples to fit within edge by area averaging, flattening
+// transparency onto white. Unlike x/image/draw kernels, it keeps one row of
+// accumulators instead of allocating 32 bytes per destination/source pixel.
 func scale(img image.Image, edge int) *image.RGBA {
 	b := img.Bounds()
 	sw, sh := b.Dx(), b.Dy()
@@ -454,7 +450,7 @@ func scale(img image.Image, edge int) *image.RGBA {
 }
 
 // pixelReader returns an 8-bit RGB accessor composited onto white, with fast
-// paths for the types produced by the JPEG and PNG decoders.
+// paths for JPEG and PNG decoder types.
 func pixelReader(img image.Image) func(x, y int) (uint8, uint8, uint8) {
 	switch m := img.(type) {
 	case *image.YCbCr:

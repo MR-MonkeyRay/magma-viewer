@@ -1,5 +1,5 @@
-// Package fetcher downloads the magma painting image and stores it when it
-// differs from the previously saved one.
+// Package fetcher downloads the magma canvas image and stores it when it differs
+// from the previously saved one.
 package fetcher
 
 import (
@@ -98,7 +98,7 @@ func (f *Fetcher) Status() Status {
 	return f.status
 }
 
-// Run performs one download/compare/store cycle and returns the new status.
+// Run performs one fetch cycle and returns the updated status.
 func (f *Fetcher) Run(ctx context.Context) Status {
 	f.runMu.Lock()
 	defer f.runMu.Unlock()
@@ -199,8 +199,8 @@ func (f *Fetcher) fetchOnce(ctx context.Context, now time.Time) (string, error) 
 	return name, nil
 }
 
-// sniffExt detects the image type from the file's leading bytes rather than
-// trusting the Content-Type header (login pages often come back as 200 HTML).
+// sniffExt detects the image type from leading bytes; a login page may return
+// 200 HTML, so the Content-Type header is not trusted.
 func sniffExt(f *os.File) (string, error) {
 	head := make([]byte, 512)
 	n, err := f.ReadAt(head, 0)
@@ -218,8 +218,7 @@ func sniffExt(f *os.File) (string, error) {
 	return ext, nil
 }
 
-// copyInto copies src to dst atomically; /tmp is usually on another device,
-// so a plain rename is not possible.
+// copyInto copies src to dst via a temp file, as /tmp may be on another device.
 func copyInto(src *os.File, dst string) error {
 	if _, err := src.Seek(0, io.SeekStart); err != nil {
 		return err

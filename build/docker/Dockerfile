@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 ARG GO_IMAGE=golang:1.26
 FROM ${GO_IMAGE} AS build
-# 国内网络可构建时传入：--build-arg GOPROXY=https://goproxy.cn,direct
+# 国内网络可传入 --build-arg GOPROXY=https://goproxy.cn,direct
 ARG GOPROXY=https://proxy.golang.org,direct
 ENV GOPROXY=${GOPROXY} CGO_ENABLED=0
 WORKDIR /src
@@ -14,7 +14,7 @@ RUN go build -trimpath -ldflags "-s -w" -o /out/magma-viewer . \
 FROM scratch
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=build /out/magma-viewer /magma-viewer
-# scratch 没有 /tmp，这里预建临时目录和存储目录
+# scratch 无 /tmp，预建临时目录和存储目录
 COPY --from=build --chmod=1777 /out/tmp /tmp
 COPY --from=build /out/data /data
 ENV CONFIG=/config/config.yaml TZ=Asia/Shanghai
