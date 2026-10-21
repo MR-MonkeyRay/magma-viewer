@@ -30,44 +30,49 @@ jobs:
           version=$(<VERSION)
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           if [[ "$GITHUB_REF_NAME" == "main" ]]; then
-            tag="$version"
+            tags=("$version" "latest")
           else
             branch=$(printf '%s' "$GITHUB_REF_NAME" | LC_ALL=C sed -E 's/[^a-zA-Z0-9_.-]+/-/g; s/^[.-]+//')
             branch="${branch:0:120}"
-            tag="${branch:-branch}-${GITHUB_SHA:0:7}"
+            tags=("${branch:-branch}-${GITHUB_SHA:0:7}")
           fi
           {
             echo "version=$version"
-            echo "tag=$tag"
-            echo "image=$image:$tag"
+            echo "tags<<EOF"
+            printf '%s\n' "${tags[@]}"
+            echo "EOF"
+            echo "refs<<EOF"
+            printf '%s\n' "${tags[@]/#/$image:}"
+            echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Check whether image exists
         id: exists
         uses: actions/github-script@v7
         env:
-          IMAGE_TAG: ${{ steps.metadata.outputs.tag }}
+          TARGET_TAGS: ${{ steps.metadata.outputs.tags }}
         with:
           script: |
+            const targets = process.env.TARGET_TAGS.split('\n').map(tag => tag.trim()).filter(Boolean);
             const ownerType = context.payload.repository.owner.type === 'Organization' ? 'orgs' : 'users';
             const route = `GET /${ownerType}/{owner}/packages/container/{package_name}/versions`;
-            let exists = false;
+            const present = new Set();
             try {
               for await (const {data} of github.paginate.iterator(route, {
                 owner: context.repo.owner,
                 package_name: context.repo.repo.toLowerCase(),
                 per_page: 100,
               })) {
-                if (data.some(version => version.metadata.container.tags.includes(process.env.IMAGE_TAG))) {
-                  exists = true;
-                  break;
+                for (const version of data) {
+                  for (const tag of version.metadata.container.tags) present.add(tag);
                 }
               }
             } catch (error) {
               if (error.status !== 404) throw error;
             }
-            core.setOutput('exists', String(exists));
-            core.info(exists ? 'Image tag already exists; skipping build and push.' : 'Image tag does not exist; building.');
+            const missing = targets.filter(tag => !present.has(tag));
+            core.setOutput('exists', String(missing.length === 0));
+            core.info(missing.length === 0 ? 'All target tags already exist; skipping build and push.' : `Missing tags: ${missing.join(', ')}; building.`);
 
       - name: Log in to GHCR
         if: steps.exists.outputs.exists == 'false'
@@ -88,7 +93,7 @@ jobs:
           context: .
           file: build/docker/Dockerfile
           push: true
-          tags: ${{ steps.metadata.outputs.image }}
+          tags: ${{ steps.metadata.outputs.refs }}
           labels: |
             org.opencontainers.image.version=${{ steps.metadata.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}

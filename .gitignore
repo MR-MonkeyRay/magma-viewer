@@ -9,6 +9,7 @@
 # 抓取图片、缩略图与下载临时文件
 /data/
 /images/
+/deploy/compose/data/
 /deploy/minimal/images/
 .thumbs/
 *.download

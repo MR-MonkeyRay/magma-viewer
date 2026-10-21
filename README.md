@@ -14,24 +14,25 @@ Magma 画板存档站：定时抓取画板图片，内容有变化才保存；�
 
 ```text
 build/docker/       Dockerfile 与构建上下文忽略规则
-deploy/compose/     从源码构建并部署（构建上下文为项目根目录）
-deploy/minimal/     使用已有镜像的最小部署
+deploy/compose/     使用 GHCR 镜像部署（配置与数据在本目录）
+deploy/minimal/     使用本地构建镜像的最小部署
 .github/workflows/  GHCR 镜像发布工作流
 ```
 
-本地配置 `config.yaml` 和图片数据 `data/` 由 `.gitignore` 排除。
+本地配置、`.env` 与运行数据由 `.gitignore` 排除。
 
 ## 部署
 
-### docker compose（从源码构建）
+### docker compose（使用 GHCR 镜像）
 
 ```bash
-cp deploy/compose/config.example.yaml config.yaml   # 已有配置可跳过
-vi config.yaml                                      # 修改密码、magma 地址和 cookie
-docker compose -f deploy/compose/docker-compose.yml up -d --build
+cd deploy/compose
+cp config.example.yaml config.yaml   # 已有配置可跳过
+vi config.yaml                       # 修改密码、magma 地址和 cookie
+docker compose up -d
 ```
 
-在项目根目录执行，访问 `http://<服务器>:8080`。后续操作同样指定 `-f deploy/compose/docker-compose.yml`。国内网络可在该文件中打开 `GOPROXY` 构建参数。
+在 `deploy/compose` 下执行，配置为同目录的 `config.yaml`，图片保存在同目录的 `data/images`。镜像默认 `ghcr.io/mr-monkeyray/magma-viewer:latest`；需要固定版本时设置 `MAGMA_VIEWER_TAG=0.1.1`（或写入同目录 `.env`）。访问 `http://<服务器>:8080`。私有包需先 `docker login ghcr.io`。
 
 ### 最小部署（使用已有镜像）
 
@@ -42,7 +43,7 @@ cp config.example.yaml config.yaml && vi config.yaml
 docker compose up -d
 ```
 
-图片保存在当前目录的 `./images`；源码部署保存在项目根目录的 `data/images`。
+图片保存在当前目录的 `./images`；主部署保存在 `deploy/compose/data/images`。
 
 ## 配置
 
@@ -124,10 +125,10 @@ go run . -config ./config.yaml
 
 | 分支 | 标签 | 示例 |
 |---|---|---|
-| `main` | `VERSION` 原值 | `ghcr.io/mr-monkeyray/magma-viewer:0.1.1` |
+| `main` | `VERSION` 原值与 `latest` | `ghcr.io/mr-monkeyray/magma-viewer:0.1.1`、`ghcr.io/mr-monkeyray/magma-viewer:latest` |
 | 其他分支 | `<分支名>-<7 位 commit>` | `ghcr.io/mr-monkeyray/magma-viewer:feature-login-abcdef0` |
 
-分支名会转为合法的 Docker 标签；目标标签已存在时跳过构建，不覆盖已有镜像，也不推送 `latest`。因此 `main` 上再次发布需先递增 `VERSION`。
+分支名会转为合法的 Docker 标签；目标标签全部已存在时跳过构建，不覆盖已有镜像。`main` 推送会同时更新 `VERSION` 标签和 `latest`，因此再次发布需先递增 `VERSION`。
 
 使用预构建镜像时，把 `deploy/minimal/docker-compose.yml` 的 `image` 改为上述完整地址即可。GHCR 包默认私有，匿名拉取需在包设置中改为 Public；私有包需先 `docker login ghcr.io`。
 

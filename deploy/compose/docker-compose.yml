@@ -1,21 +1,16 @@
-# 从项目根目录构建并部署；配置与数据挂载到项目根目录。
+# 使用 GitHub 工作流构建的镜像部署；配置与数据位于本目录。
+# 镜像默认 latest，可在本目录 .env 中设置 MAGMA_VIEWER_TAG=0.1.1 固定版本。
 name: magma-viewer
 
 services:
   magma-viewer:
-    build:
-      context: ../..
-      dockerfile: build/docker/Dockerfile
-      # 国内网络可取消注释
-      # args:
-      #   GOPROXY: https://goproxy.cn,direct
-    image: magma-viewer:latest
     container_name: magma-viewer
+    image: ghcr.io/mr-monkeyray/magma-viewer:${MAGMA_VIEWER_TAG:-latest}
     restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
-      TZ: Asia/Shanghai          # 影响计划执行和文件名中的时间
+      TZ: Asia/Shanghai
     volumes:
-      - ../../config.yaml:/config/config.yaml:ro
-      - ../../data/images:/data/images
+      - ./config.yaml:/config/config.yaml:ro
+      - ./images:/data/images

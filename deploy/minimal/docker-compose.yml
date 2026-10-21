@@ -2,7 +2,8 @@
 # 镜像需先在项目根目录构建：docker build -f build/docker/Dockerfile -t magma-viewer:latest .
 services:
   magma-viewer:
-    image: magma-viewer:latest
+    container_name: magma-viewer
+    image: ghcr.io/mr-monkeyray/magma-viewer:${MAGMA_VIEWER_TAG:-latest}
     restart: unless-stopped
     ports:
       - "8080:8080"
