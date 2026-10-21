@@ -20,6 +20,7 @@ build/docker/       Dockerfile 与构建上下文忽略规则
 build/package.sh    Linux amd64 / arm64 Release 打包脚本
 deploy/compose/     使用 GHCR 镜像部署（配置与数据在本目录）
 deploy/systemd/     Linux 原生服务、配置样例与 Release 安装脚本
+deploy/nginx/       精简 HTTPS 反向代理配置，可选 Cloudflare 真实 IP 支持
 .github/workflows/  GHCR 镜像与 Linux GitHub Release 发布工作流
 ```
 
@@ -38,9 +39,9 @@ docker compose up -d
 
 在 `deploy/compose` 下执行，配置为同目录的 `config.yaml`，图片保存在同目录的 `data/images`。镜像默认 `ghcr.io/mr-monkeyray/magma-viewer:latest`；需要固定版本时设置 `MAGMA_VIEWER_TAG=<版本>`（或写入同目录 `.env`，将 `<版本>` 替换为所需的已发布版本）。访问 `http://<服务器>:8080`。私有包需先 `docker login ghcr.io`。
 
-### nginx 反向代理与 Cloudflare
+### nginx 反向代理（可选 Cloudflare）
 
-公网部署建议经 nginx 反代并接入 Cloudflare：配置、IP 列表更新脚本和面板设置见 [`deploy/nginx`](deploy/nginx/README.md)。此时应用只监听本机（compose 端口改为 `127.0.0.1:8080:8080`）。
+公网部署建议经 nginx 提供 HTTPS；精简配置、安装步骤及可选 Cloudflare 设置见 [`deploy/nginx`](deploy/nginx/README.md)。默认不依赖 Cloudflare，保留登录限流和跨站请求防护。此时应用只监听本机（compose 端口改为 `127.0.0.1:8080:8080`）。
 
 ### Linux systemd（从 GitHub Release 一键安装）
 

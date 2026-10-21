@@ -1,105 +1,98 @@
-# nginx + Cloudflare 部署
+# nginx 反向代理
 
-访客 → Cloudflare（CDN / WAF）→ nginx（TLS、来源校验、限流）→ magma-viewer（会话校验、登录失败限制）
+默认配置不依赖 Cloudflare：只需修改域名、证书路径和应用地址。保留登录限流、跨站 POST 防护、安全响应头与 ZIP 流式下载，不再按每个业务接口单独配置代理规则。
 
-| 文件 | 安装位置 | 说明 |
-|---|---|---|
-| `magma-viewer.conf` | `/etc/nginx/conf.d/magma-viewer.conf` | 站点配置，含 http 级的 map / geo / 限流区 |
-| `cloudflare-realip.conf` | `/etc/nginx/magma-viewer/` | Cloudflare 回源网段 → 采用 `CF-Connecting-IP` 作为访客 IP |
-| `cloudflare-geo.conf` | `/etc/nginx/magma-viewer/` | 同一份网段，用于拒绝不经过 Cloudflare 的直连 |
-| `update-cloudflare-ips.sh` | `/etc/nginx/magma-viewer/` | 从 cloudflare.com 重新生成上面两个文件，校验通过后重载 nginx |
+## 1. 应用只监听本机
 
-两个 IP 列表是生成时的快照，部署时请先执行一次更新脚本，并加入定时任务。
-
-## 1. 应用配置
-
-在 `config.yaml` 中：
+systemd 部署在 `/etc/magma-viewer/config.yaml` 中设置：
 
 ```yaml
-listen: "127.0.0.1:8080"        # 只监听本机，公网只能经 nginx 访问
+listen: "127.0.0.1:8080"
 admin:
-  session_secret: "<随机长字符串>" # 固定密钥，重启后不必重新登录
+  session_secret: "<随机长字符串>"
 ```
 
-使用 docker compose 时，端口改为只绑定本机：`ports: ["127.0.0.1:8080:8080"]`，否则 8080 会绕过 nginx 直接暴露在公网。
+Docker Compose 部署则将 `deploy/compose/compose.yaml` 的端口改为：
 
-请求来自本机或内网地址（nginx、docker 网桥）时，应用按 `X-Real-IP` 识别访客 IP，登录失败限制按访客分别计算；nginx 总会用 Cloudflare 给出的访客 IP 覆盖该头，客户端无法伪造。应用不要直接暴露给内网中不可信的机器。
+```yaml
+ports:
+  - "127.0.0.1:8080:8080"
+```
 
-## 2. 安装 nginx 配置
+容器内的应用仍监听 `:8080`，不要改成容器内的 `127.0.0.1:8080`。以上示例假设 nginx 运行在宿主机。
+
+应用仅对本机或内网来源采用 `X-Real-IP`；nginx 会覆盖客户端传入的代理头。不要将应用端口暴露给公网或内网中不可信的机器。
+
+## 2. 安装配置
+
+在仓库根目录执行：
 
 ```bash
 sudo mkdir -p /etc/nginx/magma-viewer
-sudo cp update-cloudflare-ips.sh /etc/nginx/magma-viewer/
-sudo cp magma-viewer.conf /etc/nginx/conf.d/
-sudo vi /etc/nginx/conf.d/magma-viewer.conf          # 替换 viewer.example.com 等占位
-
-# Cloudflare 面板 → SSL/TLS → 源服务器 → 创建证书，保存为下面两个文件
-sudo vi /etc/nginx/magma-viewer/origin.pem
-sudo vi /etc/nginx/magma-viewer/origin.key && sudo chmod 600 /etc/nginx/magma-viewer/origin.key
-
-sudo /etc/nginx/magma-viewer/update-cloudflare-ips.sh   # 生成 IP 列表并重载 nginx
-echo '0 4 * * 1 root /etc/nginx/magma-viewer/update-cloudflare-ips.sh' | sudo tee /etc/cron.d/magma-viewer-cf-ips
+sudo cp deploy/nginx/magma-viewer.conf /etc/nginx/conf.d/magma-viewer.conf
+sudo vi /etc/nginx/conf.d/magma-viewer.conf
 ```
 
-需要 nginx ≥ 1.25.1（`http2 on`），更早的版本按配置中的注释改用 `listen 443 ssl http2`。本机已有其他 `default_server` 时，删除配置里拒绝未知域名的两个 server 块。
+修改以下内容：
 
-## 3. Cloudflare 设置
+- `viewer.example.com`：替换为实际域名，包括 HTTP 跳转地址。
+- `ssl_certificate` / `ssl_certificate_key`：替换为已有证书路径，或将证书部署到示例中的路径。直接对外提供 HTTPS 时，使用浏览器信任的证书；Cloudflare Origin CA 仅适用于经 Cloudflare 代理的站点。
+- `127.0.0.1:8080`：若修改了应用端口，更新两处 `proxy_pass`。
 
-**DNS**：站点记录开启代理（橙色云朵）。
+配置包含 `map` 和 `limit_req_zone`，必须在 nginx 的 `http {}` 中引入，不能粘贴到已有 `server {}` 中。发行版通常已在 `http {}` 中引入 `conf.d/*.conf`。本配置不声明 `default_server`，无需修改同机其他站点。
 
-**SSL/TLS**
+证书就绪后检查并重载：
 
-- 加密模式选 **完全（严格）**，源站使用上一步的 Origin CA 证书。不要用「灵活」：Cloudflare 到源站会变成明文。
-- 开启 **始终使用 HTTPS**，最低 TLS 版本 1.2。
-- HSTS 已在 nginx 中设置。如改在 Cloudflare 开启，删除 nginx 中的 `Strict-Transport-Security`。
-- 可选：**Authenticated Origin Pulls**。开启后取消配置中 `ssl_verify_client` 两行的注释，源站只接受 Cloudflare 的 TLS 连接。
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
 
-**缓存规则**（缓存 → Cache Rules，按顺序创建）
+## 3. 可选：Cloudflare
 
-1. 图片长缓存
-   - 条件：`(starts_with(http.request.uri.path, "/thumb/") or starts_with(http.request.uri.path, "/preview/") or starts_with(http.request.uri.path, "/img/") or starts_with(http.request.uri.path, "/download/")) and not http.request.uri.path in {"/download/all" "/download/zip"}`
-   - 操作：符合缓存条件；边缘 TTL 忽略源站，30 天；浏览器 TTL 遵循源站（1 天）。
-   - 文件名包含 md5，内容不会变化。从存储目录删除图片后，需要在 Cloudflare 按 URL 清除缓存。
-2. 接口与打包下载不缓存
-   - 条件：`starts_with(http.request.uri.path, "/api/") or http.request.uri.path in {"/download/all" "/download/zip"}`
-   - 操作：绕过缓存。
-   - 应用已对这些响应返回 `Cache-Control: no-store`，这条规则是双重保险。`/api/images` 的内容随登录状态不同，绝不能被缓存。
+不使用 Cloudflare 时跳过本节。使用时：
 
-不要开启全站「缓存所有内容」。页面、`app.js`、`app.css` 由应用返回 `no-cache`，Cloudflare 每次回源校验，升级后无需清缓存。
+1. DNS 记录开启代理（橙色云朵）。
+2. SSL/TLS 选择 **完全（严格）** 并开启 **始终使用 HTTPS**；不要使用「灵活」模式。
+3. 如使用 Origin CA，将证书与私钥放到配置指定路径，私钥权限设为 `600`。
+4. 按下方步骤启用真实访客 IP，否则登录限流会按 Cloudflare 出口 IP 共享计数。
 
-**速度 / 优化**：关闭 **Rocket Loader**。它会改写脚本标签，被 CSP 拦截。开启 Web Analytics 自动注入时，按 nginx 配置中 CSP 的注释放行它的域名。
+```bash
+sudo cp deploy/nginx/update-cloudflare-ips.sh /etc/nginx/magma-viewer/
+# 先生成列表，再启用 include，避免首次检查时缺少文件。
+sudo env RELOAD=0 sh /etc/nginx/magma-viewer/update-cloudflare-ips.sh
+sudo vi /etc/nginx/conf.d/magma-viewer.conf
+# 取消 include /etc/nginx/magma-viewer/cloudflare-realip.conf; 的注释
+sudo nginx -t && sudo systemctl reload nginx
+printf '%s\n' '0 4 * * 1 root sh /etc/nginx/magma-viewer/update-cloudflare-ips.sh' | sudo tee /etc/cron.d/magma-viewer-cf-ips
+```
 
-**安全 → WAF**
+`cloudflare-realip.conf` 是网段快照，更新脚本从 Cloudflare 官方下载 IPv4 / IPv6 网段，仅信任这些网段的 `CF-Connecting-IP`。自动更新时会先检查 nginx 配置，失败则恢复已有列表。
 
-- 速率限制规则：`http.request.uri.path eq "/api/login" and http.request.method eq "POST"`，按 IP 每 10 秒 5 次，阻止 10 秒（免费版可建 1 条）。
-- 可选自定义规则：管理入口只允许特定国家或 IP，例如 `http.request.uri.path in {"/api/login" "/api/status" "/api/fetch" "/api/schedule" "/download/all"} and not ip.src in {203.0.113.10}` → 阻止。
-  - 这些路径由页面内的 fetch 调用，无法完成交互式质询，所以操作应选「阻止」，不要选「质询」。
-- 「我受到攻击」模式和 Bot Fight Mode 会质询请求。如果访客反馈列表加载失败或不刷新，先检查这两项。
+**源站保护**：此精简配置不再阻止非 Cloudflare 来源。需要防止绕过 CDN / WAF 时，在主机或云防火墙中仅允许 [Cloudflare 网段](https://www.cloudflare.com/ips/) 访问源站 80/443，并随官方网段更新规则。启用前确认 SSH 等管理入口不受影响。
 
-**超时**：Cloudflare 等待源站响应最长 100 秒。「立即抓取」最长约 `magma.timeout + 10s`，`magma.timeout` 不要超过 80 秒。打包下载边打包边传输，不受影响。
+**缓存**：默认遵循应用响应头，不开启全站「缓存所有内容」。API 与 ZIP 下载为 `no-store`，页面和脚本为 `no-cache`。若自定义缓存规则，必须绕过 `/api/*`、`/download/all` 和 `/download/zip`；`/api/images` 随登录状态变化，不能缓存。
 
-## 4. 防护一览
+**脚本与 WAF**：关闭 Rocket Loader；若启用 Web Analytics 自动注入，在 CSP 的 `script-src` 中加入 `https://static.cloudflareinsights.com`，在 `connect-src` 中加入 `https://cloudflareinsights.com`。管理接口由页面通过 fetch 调用，WAF 规则应选「阻止」而非交互式「质询」。大批量下载与立即抓取仍受 Cloudflare 套餐的回源超时限制，nginx 的 300 秒读超时不会延长 CDN 上限。
 
-| 威胁 | Cloudflare | nginx | 应用 |
-|---|---|---|---|
-| 绕过 CDN 直连源站 | 仅代理流量 | 非 Cloudflare 来源、未知域名、按 IP 访问直接断开（444） | 只监听本机 |
-| 伪造访客 IP | 生成 `CF-Connecting-IP` | 仅信任 Cloudflare 网段的该头，覆盖客户端自带的 `X-Real-IP` / `X-Forwarded-For` | 仅对本机 / 内网来源采用 `X-Real-IP` |
-| 暴力破解登录 | WAF 速率限制 | `/api/login` 每 IP 6 次/分钟（突发 5），超出返回 429 | 每 IP 5 分钟内失败 10 次即拒绝 |
-| 管理接口滥用 | 可选 IP / 国家规则 | 限流；可选 IP 白名单（`$mv_admin_allowed`） | 会话 cookie（HMAC，HttpOnly、Secure、SameSite=Lax） |
-| 跨站请求伪造 | — | POST 要求 Origin 与 Host 一致，拒绝 `Sec-Fetch-Site: cross-site / same-site` | `/api/schedule` 要求 JSON |
-| 打包下载耗尽资源 | — | 每 IP 频率与并发限制 | 访客最多 10 张 |
-| 缓存泄露登录状态 | 绕过缓存规则 | — | API 与打包响应 `no-store` |
-| 点击劫持、XSS 放大 | — | CSP（`script-src 'self'`）、`X-Frame-Options`、`nosniff` | 输出转义 |
+## 4. 从旧配置迁移
+
+替换配置时保留实际域名、证书路径和应用地址；使用 Cloudflare 的站点仍需启用真实 IP 的 include。
+
+- 删除旧配置的 `geo`、管理 IP 白名单、按接口限流区、默认拒绝站点与分路径代理；只保留登录限流和两个代理 location。
+- 不再使用 `cloudflare-geo.conf`；确认其他配置未引用后，可删除服务器上的旧文件。新更新脚本只维护 `cloudflare-realip.conf`。
+- 若原来依赖 nginx 阻止源站直连或限制管理 IP，切换前将这些策略配置到防火墙 / Cloudflare WAF；精简配置不会自动保留它们。
+- HSTS、额外响应头及压缩不再由本示例设置；若此前启用了 HSTS，浏览器会继续执行到期前的策略，必须持续提供有效 HTTPS。
 
 ## 5. 验证
 
+将域名替换为实际值：
+
 ```bash
-D=viewer.example.com
-curl -sI https://$D/ | grep -iE 'strict-transport|content-security|cf-cache-status'
-curl -sI https://$D/api/images | grep -i cache-control                               # no-store
-curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Origin: https://evil.example' https://$D/api/logout   # 403
-for i in $(seq 8); do curl -s -o /dev/null -w '%{http_code} ' -X POST https://$D/api/login; done; echo    # 后几次 429
-curl -sk -o /dev/null -w '%{http_code}\n' --resolve $D:443:<源站IP> https://$D/            # 000：直连被拒绝
+curl -I http://viewer.example.com/                   # 301 跳转 HTTPS
+curl -i https://viewer.example.com/healthz           # 200，正文 ok
+curl -I https://viewer.example.com/api/images        # Cache-Control: no-store
+curl -i -X POST -H 'Origin: https://evil.example' \
+  https://viewer.example.com/api/logout             # 403
 ```
 
-缩略图第二次请求的响应头中，`cf-cache-status` 应为 `HIT`。
+最后在浏览器登录、加载图片并打包下载，确认会话与 ZIP 正常。登录接口按 IP 每分钟 6 次、突发 5 次，超出返回 429；应用仍执行自身的登录失败限制和管理会话校验。

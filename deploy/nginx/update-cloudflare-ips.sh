@@ -1,12 +1,11 @@
 #!/bin/sh
-# 从 Cloudflare 官方地址重新生成 magma-viewer.conf 引用的两个 IP 列表，校验通过后重载 nginx。
+# 更新可选的 Cloudflare 真实 IP 配置，校验通过后重载 nginx。
 #
 #   用法：update-cloudflare-ips.sh [输出目录]          默认 /etc/nginx/magma-viewer
 #   定时：0 4 * * 1 root /etc/nginx/magma-viewer/update-cloudflare-ips.sh
 #   RELOAD=0 只生成文件，不检查、不重载 nginx。
 #
-# cloudflare-realip.conf  set_real_ip_from 列表：只有来自这些地址的 CF-Connecting-IP 才被当作访客 IP
-# cloudflare-geo.conf     geo 列表：判断连接是否来自 Cloudflare，用于拒绝绕过 CDN 的直连
+# 只有来自 Cloudflare 网段的 CF-Connecting-IP 才被当作访客 IP。
 set -eu
 
 dir=${1:-/etc/nginx/magma-viewer}
@@ -19,9 +18,9 @@ for v in 4 6; do
 done
 cat "$tmp/v4" "$tmp/v6" >"$tmp/all"
 
-# 空列表或异常内容会让所有访客被拒绝或 IP 识别错误，宁可保留旧文件。
+# 空列表或异常内容会导致 IP 识别错误，宁可保留旧文件。
 if grep -Evq '^[0-9A-Fa-f:.]+/[0-9]{1,3}$' "$tmp/all" || [ "$(wc -l <"$tmp/all")" -lt 10 ]; then
-  echo "update-cloudflare-ips: unexpected response from cloudflare.com, keeping current lists" >&2
+  echo "update-cloudflare-ips: unexpected response from cloudflare.com, keeping current list" >&2
   exit 1
 fi
 
@@ -31,24 +30,17 @@ stamp="# 由 update-cloudflare-ips.sh 生成于 $(date -u '+%Y-%m-%d %H:%M UTC')
   awk '{ print "set_real_ip_from " $0 ";" }' "$tmp/all"
   echo "real_ip_header CF-Connecting-IP;"
 } >"$tmp/cloudflare-realip.conf"
-{
-  echo "$stamp"
-  awk '{ print $0 " 1;" }' "$tmp/all"
-} >"$tmp/cloudflare-geo.conf"
 
 mkdir -p "$dir"
-for f in cloudflare-realip.conf cloudflare-geo.conf; do
-  [ -f "$dir/$f" ] && cp "$dir/$f" "$tmp/$f.bak"
-  cp "$tmp/$f" "$dir/.$f.new" && mv "$dir/.$f.new" "$dir/$f"
-done
+file=cloudflare-realip.conf
+[ -f "$dir/$file" ] && cp "$dir/$file" "$tmp/$file.bak"
+cp "$tmp/$file" "$dir/.$file.new" && mv "$dir/.$file.new" "$dir/$file"
 
 [ "$reload" = 0 ] && exit 0
 if nginx -t -q; then
   nginx -s reload
 else
-  echo "update-cloudflare-ips: nginx -t failed, restoring previous lists" >&2
-  for f in cloudflare-realip.conf cloudflare-geo.conf; do
-    [ -f "$tmp/$f.bak" ] && cp "$tmp/$f.bak" "$dir/$f"
-  done
+  echo "update-cloudflare-ips: nginx -t failed, restoring previous list" >&2
+  [ -f "$tmp/$file.bak" ] && cp "$tmp/$file.bak" "$dir/$file"
   exit 1
 fi
