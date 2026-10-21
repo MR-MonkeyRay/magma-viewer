@@ -215,7 +215,7 @@ func TestListReportsNextRun(t *testing.T) {
 
 func TestAPIResponsesAreNotCached(t *testing.T) {
 	srv, q := newTestServer(t, 2)
-	for _, path := range []string{"/api/images", "/api/status", "/download/zip?" + q} {
+	for _, path := range []string{"/api/images", "/api/overview", "/api/status", "/download/zip?" + q} {
 		r := get(t, srv.URL+path, nil)
 		r.Body.Close()
 		if cc := r.Header.Get("Cache-Control"); cc != "no-store" {
@@ -244,5 +244,35 @@ func TestClientIP(t *testing.T) {
 		if got := clientIP(r); got != c.want {
 			t.Errorf("clientIP(%s, %q) = %s, want %s", c.remote, c.header, got, c.want)
 		}
+	}
+}
+
+func TestOverviewHonoursTimeZone(t *testing.T) {
+	srv, _ := newTestServer(t, 1) // saved 2026-10-20 12:00:00 server time
+	day := func(tz string) string {
+		var body struct {
+			Days []struct {
+				Date  string  `json:"date"`
+				Hours [24]int `json:"hours"`
+			} `json:"days"`
+		}
+		r := get(t, srv.URL+"/api/overview?tz="+url.QueryEscape(tz), nil)
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Days) != 1 {
+			t.Fatalf("tz %q: %v %v", tz, err, body)
+		}
+		for h, n := range body.Days[0].Hours {
+			if n == 1 {
+				return fmt.Sprintf("%s %02d", body.Days[0].Date, h)
+			}
+		}
+		return ""
+	}
+	local := time.Date(2026, 10, 20, 12, 0, 0, 0, time.Local)
+	if got, want := day("UTC"), local.UTC().Format("2006-01-02 15"); got != want {
+		t.Errorf("UTC: %s, want %s", got, want)
+	}
+	if got, want := day("No/Such_Zone"), local.Format("2006-01-02 15"); got != want {
+		t.Errorf("unknown zone: %s, want server time %s", got, want)
 	}
 }

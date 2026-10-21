@@ -139,3 +139,63 @@ func TestScaleAveragesAndFlattens(t *testing.T) {
 		t.Fatalf("got %+v, want ~{255 127 127}", got)
 	}
 }
+
+func TestOverview(t *testing.T) {
+	dir := t.TempDir()
+	sum := strings.Repeat("b", 32)
+	for _, ts := range []string{"20261019-230000", "20261020-080000", "20261020-200000", "20261021-070000"} {
+		touch(t, dir, ts+"_"+sum+".png", time.Now())
+	}
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := s.Overview(24*time.Hour, 10, time.Local)
+	if o.Count != 4 || o.Bytes != 4 {
+		t.Fatalf("count, bytes = %d, %d", o.Count, o.Bytes)
+	}
+	if o.First.Format(TimeLayout) != "20261019-230000" || o.Last.Format(TimeLayout) != "20261021-070000" {
+		t.Fatalf("span = %v .. %v", o.First, o.Last)
+	}
+	want := []struct {
+		date  string
+		count int
+		hours map[int]int
+	}{
+		{"2026-10-21", 1, map[int]int{7: 1}},
+		{"2026-10-20", 2, map[int]int{8: 1, 20: 1}},
+		{"2026-10-19", 1, map[int]int{23: 1}},
+	}
+	if len(o.Days) != len(want) {
+		t.Fatalf("days = %v", o.Days)
+	}
+	for i, w := range want {
+		d := o.Days[i]
+		if d.Date != w.date || d.Count != w.count {
+			t.Fatalf("day %d = %s/%d, want %s/%d", i, d.Date, d.Count, w.date, w.count)
+		}
+		for h, n := range d.Hours {
+			if n != w.hours[h] {
+				t.Fatalf("%s hour %d = %d, want %d", d.Date, h, n, w.hours[h])
+			}
+		}
+	}
+	// 2026-10-20 08:00 is 23 h before the newest picture; 2026-10-19 23:00 is 32 h before.
+	if len(o.Recent) != 3 || o.Recent[2].Time.Format(TimeLayout) != "20261020-080000" {
+		t.Fatalf("recent = %v", o.Recent)
+	}
+	if got := s.Overview(24*time.Hour, 1, time.Local).Recent; len(got) != 1 {
+		t.Fatalf("recent cap ignored: %d", len(got))
+	}
+	// Buckets follow the viewer's zone: 23:00 local moves to the next day 7 hours east.
+	_, off := time.Date(2026, 10, 19, 23, 0, 0, 0, time.Local).Zone()
+	east := time.FixedZone("east", off+7*3600)
+	if d := s.Overview(time.Hour, 0, east).Days; d[len(d)-1].Date != "2026-10-20" || d[len(d)-1].Hours[6] != 1 {
+		t.Fatalf("shifted days = %v", d)
+	}
+
+	empty, _ := New(t.TempDir())
+	if o := empty.Overview(time.Hour, 10, time.Local); o.Count != 0 || o.Days == nil || o.Recent == nil {
+		t.Fatalf("empty overview = %+v", o)
+	}
+}

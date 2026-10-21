@@ -41,6 +41,9 @@ type Server struct {
 	NextRun func() time.Time
 }
 
+// Go's built-in table lacks woff2, and slim images ship no /etc/mime.types.
+func init() { _ = mime.AddExtensionType(".woff2", "font/woff2") }
+
 func New(cfg *config.Config, st *store.Store, f *fetcher.Fetcher, static fs.FS) *Server {
 	return &Server{
 		cfg:     cfg,
@@ -55,9 +58,11 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	staticFS := http.FileServerFS(s.static)
 	mux.Handle("GET /", noCache(staticFS))
+	mux.Handle("GET /fonts/", cacheFor(30*24*time.Hour, staticFS))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") })
 
 	mux.HandleFunc("GET /api/images", s.handleList)
+	mux.HandleFunc("GET /api/overview", s.handleOverview)
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/status", s.adminOnly(s.handleStatus))
@@ -71,6 +76,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /download/all", s.adminOnly(s.handleZipAll))
 	mux.HandleFunc("GET /download/{name}", s.handleDownload)
 	return logRequests(mux)
+}
+
+// Embedded files carry no modification time, so revalidation cannot answer 304; fonts change rarely enough to cache.
+func cacheFor(d time.Duration, h http.Handler) http.Handler {
+	v := "public, max-age=" + strconv.Itoa(int(d.Seconds()))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", v)
+		h.ServeHTTP(w, r)
+	})
 }
 
 func noCache(h http.Handler) http.Handler {
@@ -142,6 +156,19 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		// Public subset of the fetch status; errors stay admin-only.
 		"task": map[string]any{"paused": task.Paused, "last_fetched": task.LastFetched, "next_run": s.nextRun()},
 	})
+}
+
+// handleOverview feeds the timeline strip and archive facts beside the latest picture.
+func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
+	// Days and hours are counted in the viewer's zone (an IANA name such as Asia/Shanghai) so they match the
+	// times the page shows; an unknown or missing zone falls back to the server's.
+	loc := time.Local
+	if tz := r.URL.Query().Get("tz"); tz != "" && len(tz) <= 64 {
+		if l, err := time.LoadLocation(tz); err == nil {
+			loc = l
+		}
+	}
+	writeJSON(w, http.StatusOK, s.store.Overview(24*time.Hour, 400, loc))
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {

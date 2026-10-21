@@ -3,10 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0b0f19" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#eef0f3" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121418" media="(prefers-color-scheme: dark)">
 <title>Magma 画板存档</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233346d3'/%3E%3Cpath d='M8 22c3-8 6-12 8-12s2 6 4 6 3-3 4-5' stroke='white' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="preload" href="fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="app.css">
 <script src="theme.js"></script>
 </head>
@@ -44,6 +45,8 @@
   <symbol id="i-clock" viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm0 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16zm-1 3h2v4.6l3.2 3.2-1.4 1.4L11 12.4z"/></symbol>
   <symbol id="i-down" viewBox="0 0 24 24"><path d="M5.4 8.6 4 10l8 8 8-8-1.4-1.4L12 15.2z"/></symbol>
   <symbol id="i-panel" viewBox="0 0 24 24"><path d="M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm1 2v12h9V6zm11 0v12h3V6z"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12.5-7.5z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><path d="M8 3h11a2 2 0 0 1 2 2v11h-2V5H8zM5 7h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2zm0 2v10h10V9z"/></symbol>
 </svg>
 
@@ -82,24 +85,37 @@
 
 <main id="main">
   <section class="now" id="now" aria-label="画板最新状态" hidden>
-    <button type="button" class="now-frame" id="now-open" aria-label="查看最新画面">
-      <img id="now-img" alt="最新画面">
-    </button>
-    <div class="now-bar">
-      <span class="now-badge">最新</span>
-      <time id="now-time"></time>
-      <span class="now-ago" id="now-ago"></span>
-      <span class="now-meta" id="now-meta"></span>
-      <span class="now-actions">
-        <button type="button" class="mini-btn" id="now-zoom" title="查看大图" aria-label="查看大图"><svg><use href="#i-expand"/></svg></button>
-        <a class="mini-btn" id="now-dl" href="#" download title="下载原图" aria-label="下载原图"><svg><use href="#i-download"/></svg></a>
-      </span>
+    <div class="now-stage">
+      <button type="button" class="now-frame" id="now-open" aria-label="查看大图">
+        <img id="now-img" alt="画板画面">
+      </button>
+      <div class="reel" id="reel" hidden>
+        <button type="button" class="reel-play" id="reel-play" title="回放最近 24 小时（P）" aria-label="回放最近 24 小时" aria-pressed="false"><svg><use href="#i-play"/></svg></button>
+        <div class="reel-track" id="reel-track" role="slider" tabindex="0" aria-label="最近 24 小时的画面" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+          <div class="reel-ticks" id="reel-ticks"></div>
+          <span class="reel-head" id="reel-head" aria-hidden="true"></span>
+        </div>
+        <div class="reel-axis" id="reel-axis" aria-hidden="true"></div>
+      </div>
     </div>
+    <aside class="now-card" aria-live="polite">
+      <p class="now-state"><span class="now-badge" id="now-badge">最新</span><span class="now-ago" id="now-ago"></span></p>
+      <p class="now-date" id="now-date"></p>
+      <time class="now-clock" id="now-time"></time>
+      <dl class="now-facts" id="now-facts"></dl>
+      <div class="now-actions">
+        <button type="button" class="btn primary" id="now-zoom"><svg><use href="#i-expand"/></svg>查看大图</button>
+        <a class="btn ghost" id="now-dl" href="#" download><svg><use href="#i-download"/></svg>下载</a>
+      </div>
+      <button type="button" class="linkish now-back" id="now-back" hidden><svg><use href="#i-right"/></svg>回到最新</button>
+      <dl class="now-task" id="task" hidden></dl>
+    </aside>
   </section>
 
+  <div class="browse">
+  <div class="browse-main">
   <div class="strip">
     <div class="summary" id="summary"></div>
-    <div class="task" id="task" hidden></div>
   </div>
   <div class="gallery" id="gallery" aria-live="polite"></div>
   <div class="empty" id="empty" hidden>
@@ -113,6 +129,15 @@
     <p>画板有变化时会自动保存到这里</p>
   </div>
   <nav class="pager" id="pager" aria-label="分页"></nav>
+  </div>
+  <nav class="rail" id="rail" aria-label="时间轴：拖动跳到某一小时" hidden>
+    <div class="rail-scroll" id="rail-scroll">
+      <ol class="tl" id="rail-list"></ol>
+      <span class="tl-handle" id="rail-handle" role="slider" tabindex="0" aria-label="时间轴" title="拖动或用 ↑ ↓ 跳到某一小时"></span>
+    </div>
+    <span class="tl-tip" id="rail-tip" aria-hidden="true"></span>
+  </nav>
+  </div>
 </main>
 
 <footer class="foot">
@@ -239,6 +264,7 @@
         <dt><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></dt><dd>网格 / 瀑布流 / 列表</dd>
         <dt><kbd>O</kbd></dt><dd>切换最新 / 最早在前</dd>
         <dt><kbd>G</kbd></dt><dd>按日分组</dd>
+        <dt><kbd>P</kbd></dt><dd>回放或暂停最近 24 小时</dd>
         <dt><kbd>S</kbd></dt><dd>进入或退出多选</dd>
         <dt><kbd>Shift</kbd> + 点击</dt><dd>连续选择一段画面</dd>
         <dt><kbd>Esc</kbd></dt><dd>清空选择</dd>

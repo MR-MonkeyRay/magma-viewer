@@ -15,7 +15,7 @@
     size: Number(store.get('size', 48)),
     sort: store.get('sort', 'desc'),
     view: store.get('view', 'grid'),
-    group: store.get('group', '0') === '1',
+    group: store.get('group', '1') === '1',
     items: [],
     total: 0,
     pages: 1,
@@ -32,7 +32,9 @@
   const el = {
     bar: $('#bar'), main: $('#main'), toTop: $('#to-top'),
     gallery: $('#gallery'), summary: $('#summary'), empty: $('#empty'), pager: $('#pager'),
-    now: $('#now'), nowImg: $('#now-img'), nowTime: $('#now-time'), nowAgo: $('#now-ago'), nowMeta: $('#now-meta'), nowDl: $('#now-dl'),
+    now: $('#now'), nowImg: $('#now-img'), nowTime: $('#now-time'), nowAgo: $('#now-ago'), nowDate: $('#now-date'), nowFacts: $('#now-facts'), nowDl: $('#now-dl'),
+    nowBadge: $('#now-badge'), nowBack: $('#now-back'), reel: $('#reel'), reelTrack: $('#reel-track'),
+    reelTicks: $('#reel-ticks'), reelHead: $('#reel-head'), reelAxis: $('#reel-axis'), reelPlay: $('#reel-play'),
     seg: $('.seg'), sort: $('#sort'), size: $('#size'), group: $('#group'), selectMode: $('#select-mode'),
     theme: $('#theme'), account: $('#account'), foot: $('.foot'),
     selbar: $('#selbar'), selCount: $('#sel-count'), fresh: $('#fresh'),
@@ -45,7 +47,8 @@
     loginDialog: $('#login-dialog'), loginForm: $('#login-form'), loginError: $('#login-error'), loginSubmit: $('#login-submit'),
     adminDialog: $('#admin-dialog'), adminStats: $('#admin-stats'), fetchNow: $('#fetch-now'),
     toggleSchedule: $('#toggle-schedule'), scheduleHint: $('#schedule-hint'),
-    keysDialog: $('#keys-dialog'), task: $('#task'),
+    keysDialog: $('#keys-dialog'), task: $('#task'), rail: $('#rail'), railList: $('#rail-list'),
+    railScroll: $('#rail-scroll'), railHandle: $('#rail-handle'), railTip: $('#rail-tip'),
   };
 
   // ---------- formatting ----------
@@ -344,9 +347,11 @@
   }
 
   // Masonry fills the shortest column, keeping left-to-right, newest-first order.
-  const MASONRY_COL = 260;
+  // Columns follow the same --tile-min as the grid, so both views widen their tiles on large screens.
   function masonryCols() {
-    const gap = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--gap')) || 14;
+    const root = getComputedStyle(document.documentElement);
+    const gap = parseFloat(root.getPropertyValue('--gap')) || 4;
+    const MASONRY_COL = parseFloat(root.getPropertyValue('--tile-min')) || 220;
     const w = el.gallery.clientWidth || window.innerWidth;
     return Math.max(2, Math.floor((w + gap) / (MASONRY_COL + gap)));
   }
@@ -364,39 +369,335 @@
   }
 
   // The hero follows state.latest, which polling keeps current even when the gallery below is not reloaded.
+  // While the reel is scrubbed it shows reel.at instead; leaving the reel returns to the newest picture.
   function renderNow() {
     const latest = onFirstPage() ? state.latest : null;
     el.now.classList.remove('pending');
     el.now.hidden = !latest;
     if (!latest) return;
-    const d = new Date(latest.time);
-    el.nowTime.dateTime = latest.time;
+    const shown = (reel.at >= 0 && reel.items[reel.at]) || latest;
+    const live = shown.name === latest.name;
+    const d = new Date(shown.time);
+    el.now.classList.toggle('past', !live);
+    el.nowBadge.textContent = live ? '最新' : '回看';
+    el.nowBack.hidden = live;
+    el.nowDate.textContent = fmtDay(d);
+    el.nowTime.dateTime = shown.time;
     el.nowTime.title = fmtFull(d);
-    el.nowTime.textContent = `${sameDay(d, new Date()) ? '今天' : fmtDate(d)} ${fmtClock(d)}`;
-    el.nowAgo.dataset.ago = latest.time;
-    el.nowAgo.textContent = fmtAgo(d, '');
-    el.nowMeta.textContent = `${latest.w ? `${latest.w}×${latest.h} · ` : ''}${fmtSize(latest.size)}`;
-    el.nowDl.href = `/download/${enc(latest.name)}`;
-    if (el.now.dataset.name === latest.name) return;
+    el.nowTime.textContent = fmtHM(d);
+    el.nowAgo.dataset.ago = shown.time;
+    el.nowAgo.textContent = fmtAgo(d, '保存');
+    const idx = reel.items.findIndex((it) => it.name === shown.name);
+    const prev = idx >= 0 ? reel.items[idx - 1] : null;
+    el.nowFacts.innerHTML = `
+      <div><dt>距上一张</dt><dd>${prev ? fmtGap((new Date(shown.time) - new Date(prev.time)) / 1000) : '—'}</dd></div>
+      <div><dt>尺寸</dt><dd>${shown.w ? `${shown.w}×${shown.h}` : '—'}</dd></div>
+      <div><dt>大小</dt><dd>${fmtSize(shown.size)}</dd></div>
+      <div><dt>今天已保存</dt><dd>${overview.today === null ? '—' : `${overview.today} 张`}</dd></div>`;
+    el.nowDl.href = `/download/${enc(shown.name)}`;
+    renderReelHead();
+    if (el.now.dataset.name === shown.name) return;
     const first = !el.now.dataset.name;
-    el.now.dataset.name = latest.name;
-    const src = `/preview/${enc(latest.name)}`;
+    const scrubbing = reel.at >= 0 || reel.playing;
+    el.now.dataset.name = shown.name;
+    // Scrubbing swaps small thumbnails instantly; the preview replaces them once it has loaded.
+    const src = `/preview/${enc(shown.name)}`;
     const swap = () => {
-      if (el.now.dataset.name !== latest.name) return;
-      if (latest.w) { el.nowImg.width = latest.w; el.nowImg.height = latest.h; }
+      if (el.now.dataset.name !== shown.name) return;
+      if (shown.w) { el.nowImg.width = shown.w; el.nowImg.height = shown.h; }
       el.nowImg.src = src;
-      if (first) { markCached(el.now); return; }
+      if (first || scrubbing || !live) { markCached(el.now); return; }
       replay(el.now, 'updated');
       if (!reduced()) {
         el.nowImg.animate([{ opacity: 0.3, filter: 'blur(8px)' }, { opacity: 1, filter: 'blur(0)' }], { duration: 700, easing: 'ease-out' });
       }
     };
     if (first) return swap();
-    // Decode the new picture before swapping so the old one stays until the new one can fade in whole.
+    if (scrubbing) { el.nowImg.src = `/thumb/${enc(shown.name)}`; }
     const pre = new Image();
     pre.src = src;
     pre.decode().then(swap, swap);
   }
+
+  // ---------- timeline: one node per hour of every archived day, in the gallery's order ----------
+  // Dragging the handle (or using the arrow keys on it) loads the page holding that hour; scrolling the
+  // gallery moves the handle to the hour at the top of the view.
+  const hourKey = (d) => `${fmtDate(d)}T${pad(d.getHours())}`;
+  const tl = { sig: '', key: '', dragging: false, jumped: '', timer: 0, quietUntil: 0, autoScroll: 0, pointerY: 0 };
+  function renderRail() {
+    const show = state.total > 0 && overview.order.length > 0;
+    el.rail.hidden = !show;
+    if (!show) return;
+    const desc = state.sort === 'desc';
+    const days = desc ? overview.order : overview.order.slice().reverse();
+    const sig = `${state.sort}|${days.join()}|${days.map((k) => overview.days.get(k).count).join()}`;
+    if (sig !== tl.sig) {
+      tl.sig = sig;
+      let max = 1;
+      overview.days.forEach((d) => d.hours.forEach((n) => { if (n > max) max = n; }));
+      const thisYear = new Date().getFullYear();
+      let month = '';
+      el.railList.innerHTML = days.map((key) => {
+        const [y, m, dd] = key.split('-').map(Number);
+        const d = overview.days.get(key);
+        const label = `${y}-${m}` !== month ? `${y === thisYear ? '' : `${y}年`}${m}月${dd}日` : `${dd}日`;
+        month = `${y}-${m}`;
+        const hours = [];
+        for (let i = 0; i < 24; i++) {
+          const h = desc ? 23 - i : i;
+          const n = d.hours[h];
+          hours.push(`<i data-k="${key}T${pad(h)}" data-n="${n}"${n ? ` style="--v:${(n / max).toFixed(3)}"` : ' class="none"'}></i>`);
+        }
+        return `<li class="tl-day"><span class="tl-label" title="${m}月${dd}日 · ${d.count} 张">${label}</span><span class="tl-hours">${hours.join('')}</span></li>`;
+      }).join('');
+      tl.key = '';
+    }
+    syncRail();
+  }
+  const railNode = (key) => el.railList.querySelector(`i[data-k="${key}"]`);
+  function tipText(node) {
+    const [date, h] = node.dataset.k.split('T');
+    const [, m, d] = date.split('-').map(Number);
+    const n = Number(node.dataset.n);
+    return `${m}月${d}日 ${Number(h)}时 · ${n ? `${n} 张` : '无画面'}`;
+  }
+  function placeHandle(node, reveal) {
+    if (!node) return;
+    tl.key = node.dataset.k;
+    el.railList.querySelector('i.at')?.classList.remove('at');
+    node.classList.add('at');
+    el.railHandle.style.top = `${node.offsetTop + node.offsetHeight / 2}px`;
+    el.railTip.textContent = tipText(node);
+    el.railHandle.setAttribute('aria-valuetext', tipText(node));
+    if (reveal) {
+      const top = node.offsetTop - el.railScroll.scrollTop;
+      if (top < 40 || top > el.railScroll.clientHeight - 40) el.railScroll.scrollTop = node.offsetTop - el.railScroll.clientHeight / 2;
+    }
+    placeTip();
+  }
+  // The tip sits outside the scrolling column so it can hang over the gallery without being clipped.
+  function placeTip() {
+    const node = tl.key && railNode(tl.key);
+    if (!node) return;
+    el.railTip.style.top = `${node.offsetTop + node.offsetHeight / 2 - el.railScroll.scrollTop}px`;
+  }
+  // The handle follows the first tile visible below the bar.
+  function syncRail() {
+    if (el.rail.hidden || tl.dragging || Date.now() < tl.quietUntil) return;
+    const top = el.bar.offsetHeight;
+    let first = -1;
+    el.gallery.querySelectorAll('.tile[data-i]').forEach((t) => {
+      const r = t.getBoundingClientRect();
+      const i = Number(t.dataset.i);
+      if (r.bottom > top + 4 && r.top < window.innerHeight && (first < 0 || i < first)) first = i;
+    });
+    const it = state.items[first < 0 ? 0 : first];
+    if (!it) return;
+    const key = hourKey(new Date(it.time));
+    if (key !== tl.key) placeHandle(railNode(key), true);
+  }
+  let railFrame = 0;
+  window.addEventListener('scroll', () => {
+    if (!railFrame) railFrame = requestAnimationFrame(() => { railFrame = 0; syncRail(); });
+  }, { passive: true });
+
+  async function jumpToHour(key) {
+    if (!key || key === tl.jumped) return;
+    tl.jumped = key;
+    const [date, hh] = key.split('T');
+    const h = Number(hh);
+    const desc = state.sort === 'desc';
+    // Pictures ahead of the hour in the current order decide its page.
+    let before = 0;
+    for (const k of desc ? overview.order : overview.order.slice().reverse()) {
+      const d = overview.days.get(k);
+      if (k !== date) { before += d.count; continue; }
+      d.hours.forEach((n, i) => { if (desc ? i > h : i < h) before += n; });
+      break;
+    }
+    before = Math.min(before, state.total - 1);
+    const page = Math.floor(before / state.size) + 1;
+    tl.quietUntil = Date.now() + 1500;
+    if (page !== state.page) {
+      state.page = page;
+      state.lastIndex = null;
+      await load();
+    }
+    if (tl.jumped !== key) return; // a newer jump has taken over
+    const i = Math.min(before - (state.page - 1) * state.size, state.items.length - 1);
+    const tile = el.gallery.querySelector(`.tile[data-i="${i}"]`);
+    if (!tile) return;
+    const title = tile.closest('.tiles')?.previousElementSibling;
+    const target = title && title.matches('.group-title') && Number(title.dataset.from) === i ? title : tile;
+    const y = target.getBoundingClientRect().top + window.scrollY - el.bar.offsetHeight - (target === tile ? 8 : 0);
+    window.scrollTo({ top: Math.max(0, y), behavior: 'auto' });
+    // An empty hour lands on the nearest picture after it; the handle settles on that picture's hour.
+    if (!tl.dragging) placeHandle(railNode(hourKey(new Date(state.items[i].time))), true);
+    tl.quietUntil = Date.now() + 200;
+  }
+  function nodeAtY(clientY) {
+    const r = el.railScroll.getBoundingClientRect();
+    const y = Math.max(r.top + 1, Math.min(r.bottom - 1, clientY));
+    const hit = document.elementFromPoint(r.left + r.width / 2, y);
+    if (hit && hit.matches('i[data-k]')) return hit;
+    // Over a day label: take the nearest hour node.
+    let best = null;
+    let bestD = Infinity;
+    el.railList.querySelectorAll('i[data-k]').forEach((n) => {
+      const nr = n.getBoundingClientRect();
+      const d = Math.abs(nr.top + nr.height / 2 - y);
+      if (d < bestD) { bestD = d; best = n; }
+    });
+    return best;
+  }
+  function dragTo(clientY) {
+    tl.pointerY = clientY;
+    const node = nodeAtY(clientY);
+    if (!node || node.dataset.k === tl.key) return;
+    placeHandle(node, false);
+    clearTimeout(tl.timer);
+    tl.timer = setTimeout(() => jumpToHour(tl.key), 250); // follows the drag once it pauses
+  }
+  // Holding the pointer near either end of the rail scrolls it, so a drag can reach any day.
+  function railAutoScroll() {
+    if (!tl.dragging) { tl.autoScroll = 0; return; }
+    const r = el.railScroll.getBoundingClientRect();
+    const edge = 36;
+    const v = tl.pointerY < r.top + edge ? -(r.top + edge - tl.pointerY) : tl.pointerY > r.bottom - edge ? tl.pointerY - (r.bottom - edge) : 0;
+    if (v) { el.railScroll.scrollTop += v / 3; dragTo(tl.pointerY); }
+    tl.autoScroll = requestAnimationFrame(railAutoScroll);
+  }
+  el.rail.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    el.rail.setPointerCapture(e.pointerId);
+    tl.dragging = true;
+    el.rail.classList.add('dragging');
+    tl.jumped = '';
+    dragTo(e.clientY);
+    railAutoScroll();
+  });
+  el.rail.addEventListener('pointermove', (e) => { if (tl.dragging) dragTo(e.clientY); });
+  el.railScroll.addEventListener('scroll', placeTip, { passive: true });
+  const endRailDrag = () => {
+    if (!tl.dragging) return;
+    tl.dragging = false;
+    el.rail.classList.remove('dragging');
+    cancelAnimationFrame(tl.autoScroll);
+    clearTimeout(tl.timer);
+    jumpToHour(tl.key);
+  };
+  el.rail.addEventListener('pointerup', endRailDrag);
+  el.rail.addEventListener('pointercancel', endRailDrag);
+  // Arrow keys step through hours that have pictures; Page Up / Down move a day.
+  el.railHandle.addEventListener('keydown', (e) => {
+    const nodes = [...el.railList.querySelectorAll('i[data-k]')];
+    let i = nodes.findIndex((n) => n.dataset.k === tl.key);
+    const step = { ArrowUp: -1, ArrowDown: 1, PageUp: -24, PageDown: 24 }[e.key];
+    if (step === undefined) return;
+    e.preventDefault();
+    e.stopPropagation();
+    do i += step < 0 ? -1 : 1; while (Math.abs(step) === 1 && nodes[i] && nodes[i].dataset.n === '0');
+    if (Math.abs(step) === 24) i = Math.max(0, Math.min(nodes.length - 1, nodes.findIndex((n) => n.dataset.k === tl.key) + step));
+    const node = nodes[Math.max(0, Math.min(nodes.length - 1, i))];
+    placeHandle(node, true);
+    tl.jumped = '';
+    clearTimeout(tl.timer);
+    tl.timer = setTimeout(() => jumpToHour(tl.key), 300);
+  });
+
+  // ---------- reel: the last 24 hours as a strip of ticks, oldest on the left ----------
+  const overview = { today: null, first: '', days: new Map(), order: [] }; // days: YYYY-MM-DD -> count, order newest first
+  const reel = { items: [], at: -1, playing: 0, pinned: false, from: 0, to: 0 };
+  async function loadOverview() {
+    try {
+      let tz = '';
+      try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { /* server time then */ }
+      const o = await api(`/api/overview${tz ? `?tz=${enc(tz)}` : ''}`);
+      const today = fmtDate(new Date());
+      // Counted from the 24-hour window in the viewer's time zone; today's pictures always fall inside it.
+      overview.today = o.recent.filter((it) => fmtDate(new Date(it.time)) === today).length;
+      overview.first = validTime(o.first) ? o.first : '';
+      overview.days = new Map(o.days.map((x) => [x.date, x]));
+      overview.order = o.days.map((x) => x.date);
+      reel.items = o.recent.slice().reverse();
+      reel.to = o.recent.length ? new Date(o.last).getTime() : 0;
+      reel.from = reel.to - 864e5;
+      renderReel();
+      // Day counts feed the gallery's headers and summary; before the first page arrives only the hero needs them.
+      if (state.items.length) render(); else renderNow();
+    } catch (e) { /* the reel and rail are optional */ }
+  }
+  const reelX = (t) => (new Date(t).getTime() - reel.from) / (reel.to - reel.from);
+  function renderReel() {
+    el.reel.hidden = reel.items.length < 2;
+    if (el.reel.hidden) return;
+    el.reelTrack.setAttribute('aria-valuemax', reel.items.length - 1);
+    el.reelTicks.innerHTML = reel.items.map((it, i) => `<i style="left:${(reelX(it.time) * 100).toFixed(3)}%" data-i="${i}"></i>`).join('');
+    const marks = [];
+    const start = new Date(reel.from);
+    start.setMinutes(0, 0, 0);
+    for (let t = start.getTime() + 36e5; t < reel.to; t += 36e5) {
+      const h = new Date(t).getHours();
+      if (h % 6 === 0) marks.push(`<span style="left:${(reelX(t) * 100).toFixed(3)}%">${h === 0 ? `${new Date(t).getMonth() + 1}/${new Date(t).getDate()}` : pad(h) + ':00'}</span>`);
+    }
+    el.reelAxis.innerHTML = marks.join('') + `<span class="end">${Date.now() - reel.to < 36e5 ? '现在' : fmtHM(new Date(reel.to))}</span>`;
+  }
+  function renderReelHead() {
+    const i = reel.at >= 0 ? reel.at : reel.items.length - 1;
+    const it = reel.items[i];
+    if (!it) return;
+    el.reelHead.style.left = `${(reelX(it.time) * 100).toFixed(3)}%`;
+    el.reelTrack.setAttribute('aria-valuenow', i);
+    el.reelTrack.setAttribute('aria-valuetext', fmtFull(new Date(it.time)));
+    el.reelTicks.querySelector('.on')?.classList.remove('on');
+    el.reelTicks.children[i]?.classList.add('on');
+  }
+  function reelSeek(i) {
+    i = Math.max(0, Math.min(reel.items.length - 1, i));
+    reel.at = i === reel.items.length - 1 && !reel.playing ? -1 : i;
+    renderNow();
+  }
+  function reelNearest(clientX) {
+    const r = el.reelTrack.getBoundingClientRect();
+    const t = reel.from + ((clientX - r.left) / r.width) * (reel.to - reel.from);
+    let best = 0;
+    reel.items.forEach((it, i) => { if (Math.abs(new Date(it.time) - t) < Math.abs(new Date(reel.items[best].time) - t)) best = i; });
+    return best;
+  }
+  function reelStop() {
+    clearInterval(reel.playing);
+    reel.playing = 0;
+    el.reelPlay.setAttribute('aria-pressed', 'false');
+    el.reelPlay.querySelector('use').setAttribute('href', '#i-play');
+  }
+  function reelPlay() {
+    if (reel.playing) { reelStop(); return; }
+    el.reelPlay.setAttribute('aria-pressed', 'true');
+    el.reelPlay.querySelector('use').setAttribute('href', '#i-pause');
+    reel.pinned = true;
+    let i = reel.at >= 0 && reel.at < reel.items.length - 1 ? reel.at : 0;
+    reel.playing = setInterval(() => {
+      reelSeek(i++);
+      if (i >= reel.items.length) { reelStop(); reelSeek(reel.items.length - 1); }
+    }, 140);
+  }
+  el.reelTrack.addEventListener('pointermove', (e) => { if (!reel.playing) reelSeek(reelNearest(e.clientX)); });
+  el.reelTrack.addEventListener('pointerdown', (e) => { reelStop(); reel.pinned = true; reelSeek(reelNearest(e.clientX)); });
+  // Hovering only peeks; a click pins the picture so the card's buttons act on it.
+  el.reelTrack.addEventListener('pointerleave', () => { if (!reel.pinned && !reel.playing) reelSeek(reel.items.length - 1); });
+  el.reelTrack.addEventListener('keydown', (e) => {
+    const cur = reel.at >= 0 ? reel.at : reel.items.length - 1;
+    const step = { ArrowLeft: -1, ArrowRight: 1, Home: -cur, End: reel.items.length }[e.key];
+    if (step === undefined) return;
+    e.preventDefault();
+    e.stopPropagation();
+    reelStop();
+    reel.pinned = true;
+    reelSeek(cur + step);
+  });
+  el.reelPlay.addEventListener('click', reelPlay);
+  el.nowBack.addEventListener('click', () => { reelStop(); reel.pinned = false; reelSeek(reel.items.length - 1); });
 
   function renderTask() {
     const t = state.task;
@@ -405,10 +706,9 @@
     const at = validTime(t.last_fetched) ? new Date(t.last_fetched) : null;
     const next = !t.paused && validTime(t.next_run) ? t.next_run : '';
     el.task.classList.toggle('paused', t.paused);
-    el.task.innerHTML = `<span class="task-state" title="定时抓取${t.paused ? '已暂停' : '运行中'}"><span class="task-dot" aria-hidden="true"></span>${t.paused ? '已暂停' : '运行中'}</span>
-      <span class="task-item" title="最近获取图片${at ? '：' + fmtFull(at) : '：暂无'}"><svg aria-hidden="true"><use href="#i-refresh"/></svg><span class="sr-only">最近获取</span>${at
-        ? `<span data-ago="${esc(t.last_fetched)}">${fmtAgo(at, '')}</span>` : '暂无'}</span>
-      ${next ? `<span class="task-item" title="下次抓取：${esc(fmtFull(new Date(next)))}"><svg aria-hidden="true"><use href="#i-clock"/></svg><span class="sr-only">下次抓取</span><span data-until="${esc(next)}">${fmtUntil(new Date(next))}</span></span>` : ''}`;
+    el.task.innerHTML = `<dt>定时抓取</dt><dd><span class="task-state"><span class="task-dot" aria-hidden="true"></span>${t.paused ? '已暂停' : '运行中'}</span></dd>
+      <dt>最近获取</dt><dd title="${at ? esc(fmtFull(at)) : '暂无'}">${at ? `<span data-ago="${esc(t.last_fetched)}">${fmtAgo(at, '')}</span>` : '暂无'}</dd>
+      ${next ? `<dt>下次抓取</dt><dd title="${esc(fmtFull(new Date(next)))}"><span data-until="${esc(next)}">${fmtUntil(new Date(next))}</span></dd>` : ''}`;
   }
 
   // slide is the direction a new page arrives from; view and grouping changes animate in place.
@@ -420,8 +720,9 @@
     el.summary.hidden = state.total === 0;
     const from = (state.page - 1) * state.size + 1;
     const to = from + state.items.length - 1;
+    const since = overview.first ? new Date(overview.first) : null;
     el.summary.innerHTML = state.total
-      ? `<strong>${state.total}</strong> 张${state.pages > 1 ? `<span>${from}–${to}</span>` : ''}`
+      ? `<strong>${state.total}</strong> 张${since ? `<span>从 ${fmtDay(since).split(' ')[0]} 开始记录</span>` : ''}${state.pages > 1 ? `<span>本页第 ${from}–${to} 张</span>` : ''}`
       : '';
 
     el.gallery.className = `gallery view-${state.view}${state.selectMode ? ' selecting' : ''}${animate ? ' animate' : ''}`;
@@ -442,15 +743,21 @@
       el.gallery.innerHTML = groups.map((g) => {
         const first = g.entries[0][1];
         const last = g.entries[g.entries.length - 1][1];
-        return `<h2 class="group-title" data-from="${first}" data-to="${last}">
+        // A day can run across pages: the header gives the whole day's count and this page's share of it.
+        const total = (overview.days.get(g.key) || { count: 0 }).count;
+        const n = g.entries.length;
+        const t0 = fmtHM(new Date(g.entries[0][0].time));
+        const t1 = fmtHM(new Date(g.entries[n - 1][0].time));
+        return `<h2 class="group-title" data-from="${first}" data-to="${last}" data-date="${g.key}">
           <button type="button" class="group-check" aria-label="选择这一天" title="选择这一天"><svg><use href="#i-check"/></svg></button>
-          ${fmtDay(g.d)}<span>${g.entries.length}</span></h2>${tilesHTML(g.entries)}`;
+          <span class="gt-day">${fmtDay(g.d)}</span><span class="gt-count">${total > n ? `本页 ${n} / 共 ${total} 张` : `${n} 张`}</span><span class="gt-range">${n > 1 ? `${state.sort === 'desc' ? t1 : t0}–${state.sort === 'desc' ? t0 : t1}` : t0}</span></h2>${tilesHTML(g.entries)}`;
       }).join('');
     }
     markCached(el.gallery);
     renderPager();
     renderControls();
     renderSelection();
+    renderRail();
   }
 
   function markNew(before) {
@@ -1065,6 +1372,7 @@
   // The hero may already show a newer picture than the gallery holds; catch the gallery up first.
   async function openLatest() {
     const name = el.now.dataset.name;
+    reelStop();
     let i = state.items.findIndex((it) => it.name === name);
     if (i < 0) {
       await load({ silent: true });
@@ -1295,6 +1603,7 @@
     else if (k === 't') toggleTheme();
     else if (k === 'o') toggleSort();
     else if (k === 'g') toggleGroup();
+    else if (k === 'p' && !el.reel.hidden && !el.now.hidden) reelPlay();
     else if (k === '?') openDialog(el.keysDialog);
     else if (k === 'Escape' && (state.selectMode || state.selected.size)) clearSelection();
     else return;
@@ -1453,6 +1762,7 @@
         state.latest = top;
       } else if ((top && top.name) !== (state.latest && state.latest.name)) {
         state.latest = top;
+        loadOverview();
         if (onFirstPage()) {
           renderNow();
           const idle = state.lbIndex < 0 && window.scrollY < 400 && !document.querySelector('dialog[open]') &&
@@ -1473,6 +1783,7 @@
   window.addEventListener('offline', () => toast('网络已断开，恢复后会自动刷新', 'error'));
   window.addEventListener('online', () => { toast('网络已恢复', 'ok'); poll(); });
   setInterval(() => { if (!document.hidden) tickTimes(); }, 1000);
+  loadOverview();
 
   $('#fresh-btn').addEventListener('click', () => { hide(el.fresh); state.sort = 'desc'; store.set('sort', 'desc'); go(1); });
 
