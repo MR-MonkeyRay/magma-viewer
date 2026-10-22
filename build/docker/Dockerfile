@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG GO_IMAGE=golang:1.26
+ARG GO_IMAGE=golang:1.27
 FROM ${GO_IMAGE} AS build
 # 国内网络可传入 --build-arg GOPROXY=https://goproxy.cn,direct
 ARG GOPROXY=https://proxy.golang.org,direct
