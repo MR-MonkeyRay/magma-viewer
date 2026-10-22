@@ -54,6 +54,8 @@ type Status struct {
 	LastSaved   time.Time `json:"last_saved"`
 	Runs        int       `json:"runs"`
 	Saved       int       `json:"saved"`
+	Failures    int       `json:"failures"`          // consecutive failed runs
+	RetryAt     time.Time `json:"retry_at,omitzero"` // scheduled runs wait until then after repeated failures
 }
 
 type savedState struct {
@@ -71,6 +73,9 @@ type Fetcher struct {
 
 	runMu   sync.Mutex // serialises runs (cron + manual trigger)
 	lastMD5 string
+	// Validators of the last good response and the URL that sent them (the
+	// end of any redirect), so an unchanged image can be answered with 304.
+	etag, lastModified, validatorURL string
 
 	stateMu sync.Mutex // serialises writes of stateFile
 
@@ -156,16 +161,29 @@ func (f *Fetcher) saveLastFetched() {
 	}
 }
 
-// RunScheduled is the cron entry point; it does nothing while paused. The
-// check happens under runMu so a run queued behind a manual fetch still
-// honours a pause made in the meantime.
+// RunScheduled is the cron entry point; it does nothing while paused or while
+// backing off after repeated failures. The checks happen under runMu so a run
+// queued behind a manual fetch still honours a pause made in the meantime.
 func (f *Fetcher) RunScheduled(ctx context.Context) {
 	f.runMu.Lock()
 	defer f.runMu.Unlock()
-	if f.Status().Paused {
+	st := f.Status()
+	// The tolerance keeps a retry due on the very tick it was aimed at from
+	// being skipped by a few milliseconds of jitter.
+	if st.Paused || f.now().Add(2*time.Second).Before(st.RetryAt) {
 		return
 	}
 	f.run(ctx)
+}
+
+// backoff is how long scheduled runs pause after the given number of
+// consecutive failures: not at all for the first two, then from one minute
+// doubling up to half an hour. A schedule slower than that is unaffected.
+func backoff(failures int) time.Duration {
+	if failures < 3 {
+		return 0
+	}
+	return min(time.Minute<<min(failures-3, 10), 30*time.Minute)
 }
 
 func (f *Fetcher) Status() Status {
@@ -192,15 +210,31 @@ func (f *Fetcher) run(ctx context.Context) Status {
 	f.statusMu.Lock()
 	defer f.statusMu.Unlock()
 	st := &f.status
-	st.LastRun, st.File, st.Message = started, "", ""
+	prevMsg := st.Message
+	st.LastRun, st.File, st.Message, st.RetryAt = started, "", "", time.Time{}
 	st.Runs++
-	switch {
-	case err != nil:
+	if err != nil {
 		st.Result, st.Message = ResultError, err.Error()
-		log.Printf("fetcher: %v", err)
-	case file == "":
+		st.Failures++
+		if d := backoff(st.Failures); d > 0 {
+			st.RetryAt = f.now().Add(d) // from the end: a slow failure must not eat the pause
+		}
+		// A lasting outage (say an expired cookie) would otherwise log the same line every run.
+		switch {
+		case st.Message != prevMsg:
+			log.Printf("fetcher: %v", err)
+		case st.Failures%60 == 0:
+			log.Printf("fetcher: still failing after %d attempts: %v", st.Failures, err)
+		}
+		return *st
+	}
+	if st.Failures > 0 {
+		log.Printf("fetcher: recovered after %d failed attempts", st.Failures)
+		st.Failures = 0
+	}
+	if file == "" {
 		st.Result, st.LastFetched = ResultUnchanged, started
-	default:
+	} else {
 		st.Result, st.File, st.LastSaved, st.LastFetched = ResultSaved, file, started, started
 		st.Saved++
 		log.Printf("fetcher: saved %s", file)
@@ -220,11 +254,38 @@ func (f *Fetcher) fetchOnce(ctx context.Context, now time.Time) (string, error) 
 	if f.cfg.Cookie != "" {
 		req.Header.Set("Cookie", f.cfg.Cookie)
 	}
-	resp, err := f.client.Do(req)
+	// Validators only mean something to the URL that issued them, and only
+	// while the image they describe is the latest saved one.
+	conditional := func(r *http.Request) {
+		r.Header.Del("If-None-Match")
+		r.Header.Del("If-Modified-Since")
+		if f.lastMD5 == "" || r.URL.String() != f.validatorURL {
+			return
+		}
+		if f.etag != "" {
+			r.Header.Set("If-None-Match", f.etag)
+		}
+		if f.lastModified != "" {
+			r.Header.Set("If-Modified-Since", f.lastModified)
+		}
+	}
+	conditional(req)
+	client := *f.client
+	client.CheckRedirect = func(r *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		conditional(r) // redirects copy the first request's headers
+		return nil
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("request: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotModified && f.lastMD5 != "" {
+		return "", nil
+	}
 	if resp.StatusCode != http.StatusOK {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
 		msg := strings.TrimSpace(string(snippet))
@@ -255,8 +316,16 @@ func (f *Fetcher) fetchOnce(ctx context.Context, now time.Time) (string, error) 
 		return "", err
 	}
 
+	// Validators are kept only once this image is safely the latest saved one;
+	// keeping them after a failed save would turn every later answer into a 304.
+	remember := func() {
+		f.etag, f.lastModified = resp.Header.Get("ETag"), resp.Header.Get("Last-Modified")
+		f.validatorURL = resp.Request.URL.String()
+	}
+
 	sum := hex.EncodeToString(h.Sum(nil))
 	if sum == f.lastMD5 {
+		remember()
 		return "", nil
 	}
 
@@ -273,6 +342,7 @@ func (f *Fetcher) fetchOnce(ctx context.Context, now time.Time) (string, error) 
 		return "", fmt.Errorf("save: %w", err)
 	}
 	f.lastMD5 = sum
+	remember()
 	// Render thumbnails now so the first visitor does not wait for a 4K decode.
 	go func() {
 		if err := f.store.Ensure(name); err != nil {

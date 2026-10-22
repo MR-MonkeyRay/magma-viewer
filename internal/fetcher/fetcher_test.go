@@ -241,3 +241,150 @@ func TestNoFetchMeansNoLastFetched(t *testing.T) {
 		t.Fatalf("last_fetched=%v", s.LastFetched)
 	}
 }
+
+func TestConditionalRequestAnswered304(t *testing.T) {
+	img := pngBytes(t, color.RGBA{1, 2, 3, 255})
+	var conditional atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") == `"v1"` {
+			conditional.Add(1)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", `"v1"`)
+		w.Write(img)
+	}))
+	defer srv.Close()
+	st, _ := store.New(t.TempDir())
+	f := New(config.Magma{URL: srv.URL, Timeout: 5 * time.Second}, t.TempDir(), st)
+	if got := f.Run(context.Background()); got.Result != ResultSaved {
+		t.Fatalf("first run: %+v", got)
+	}
+	if got := f.Run(context.Background()); got.Result != ResultUnchanged || got.LastFetched.IsZero() {
+		t.Fatalf("304 run: %+v", got)
+	}
+	if conditional.Load() != 1 || st.Count() != 1 {
+		t.Fatalf("conditional requests %d, images %d", conditional.Load(), st.Count())
+	}
+}
+
+func TestBackoffAfterRepeatedFailures(t *testing.T) {
+	var hits atomic.Int32
+	var fail atomic.Bool
+	fail.Store(true)
+	img := pngBytes(t, color.RGBA{4, 5, 6, 255})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if fail.Load() {
+			http.Error(w, "down", http.StatusBadGateway)
+			return
+		}
+		w.Write(img)
+	}))
+	defer srv.Close()
+	st, _ := store.New(t.TempDir())
+	f := New(config.Magma{URL: srv.URL, Timeout: 5 * time.Second}, t.TempDir(), st)
+	clock := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	f.now = func() time.Time { return clock }
+
+	for range 3 {
+		f.RunScheduled(context.Background())
+		clock = clock.Add(time.Minute)
+	}
+	got := f.Status()
+	if got.Failures != 3 || !got.RetryAt.Equal(time.Date(2026, 10, 20, 12, 3, 0, 0, time.UTC)) {
+		t.Fatalf("after 3 failures: failures=%d retry_at=%v", got.Failures, got.RetryAt)
+	}
+	// A scheduled run before retry_at is skipped; the one due at retry_at goes ahead.
+	clock = got.RetryAt.Add(-30 * time.Second)
+	f.RunScheduled(context.Background())
+	if hits.Load() != 3 {
+		t.Fatalf("scheduled run during backoff hit the server (%d hits)", hits.Load())
+	}
+	clock = got.RetryAt.Add(-time.Second) // cron jitter: a hair early still counts
+	f.RunScheduled(context.Background())
+	if hits.Load() != 4 {
+		t.Fatal("run due at retry_at was skipped")
+	}
+	f.Run(context.Background()) // manual runs ignore the backoff
+	if hits.Load() != 5 {
+		t.Fatal("manual run was held back")
+	}
+	fail.Store(false)
+	clock = clock.Add(time.Hour)
+	if got := f.Run(context.Background()); got.Failures != 0 || !got.RetryAt.IsZero() || got.Result != ResultSaved {
+		t.Fatalf("after recovery: %+v", got)
+	}
+}
+
+func TestBackoffSchedule(t *testing.T) {
+	for n, want := range map[int]time.Duration{0: 0, 2: 0, 3: time.Minute, 4: 2 * time.Minute, 7: 16 * time.Minute, 8: 30 * time.Minute, 1000: 30 * time.Minute} {
+		if got := backoff(n); got != want {
+			t.Errorf("backoff(%d) = %v, want %v", n, got, want)
+		}
+	}
+}
+
+func TestRetryAtCountsFromTheEndOfASlowFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "down", http.StatusBadGateway)
+	}))
+	defer srv.Close()
+	st, _ := store.New(t.TempDir())
+	f := New(config.Magma{URL: srv.URL, Timeout: 5 * time.Second}, t.TempDir(), st)
+	clock := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	calls := 0
+	f.now = func() time.Time {
+		calls++
+		if calls%2 == 0 {
+			return clock.Add(90 * time.Second) // each run ends 90s after it started
+		}
+		return clock
+	}
+	for range 3 {
+		f.Run(context.Background())
+	}
+	if got := f.Status().RetryAt; !got.Equal(clock.Add(90*time.Second + time.Minute)) {
+		t.Fatalf("retry_at %v, want a minute after the failure ended", got)
+	}
+}
+
+func TestValidatorsStayWithTheirURL(t *testing.T) {
+	red, blue := pngBytes(t, color.RGBA{255, 0, 0, 255}), pngBytes(t, color.RGBA{0, 0, 255, 255})
+	var target atomic.Value
+	target.Store("/old")
+	mux := http.NewServeMux()
+	mux.HandleFunc("/render", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.Load().(string), http.StatusFound)
+	})
+	// Both objects use the same ETag, which is legal: validators are per URL.
+	serve := func(img []byte) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("If-None-Match") == `"v1"` {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+			w.Header().Set("ETag", `"v1"`)
+			w.Write(img)
+		}
+	}
+	mux.HandleFunc("/old", serve(red))
+	mux.HandleFunc("/new", serve(blue))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	st, _ := store.New(t.TempDir())
+	f := New(config.Magma{URL: srv.URL + "/render", Timeout: 5 * time.Second}, t.TempDir(), st)
+	clock := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	f.now = func() time.Time { clock = clock.Add(time.Minute); return clock }
+	if got := f.Run(context.Background()); got.Result != ResultSaved {
+		t.Fatalf("first: %+v", got)
+	}
+	if got := f.Run(context.Background()); got.Result != ResultUnchanged {
+		t.Fatalf("same target: %+v", got)
+	}
+	target.Store("/new")
+	if got := f.Run(context.Background()); got.Result != ResultSaved || st.Count() != 2 {
+		t.Fatalf("new target judged by the old validator: %+v, %d images", got, st.Count())
+	}
+}

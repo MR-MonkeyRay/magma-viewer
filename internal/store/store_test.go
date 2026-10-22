@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -333,5 +334,122 @@ func TestImportDuringRescanIsNotLost(t *testing.T) {
 	<-done
 	if s.Count() != 50 {
 		t.Fatalf("count %d after concurrent rescans", s.Count())
+	}
+}
+
+func TestPixelReaderFastPathsMatchGeneric(t *testing.T) {
+	r := image.Rect(0, 0, 3, 2)
+	nrgba := image.NewNRGBA(r)
+	gray := image.NewGray(r)
+	pal := image.NewPaletted(r, color.Palette{color.NRGBA{10, 200, 30, 255}, color.NRGBA{255, 0, 0, 128}, color.Transparent})
+	for i, c := range []color.NRGBA{{255, 0, 0, 255}, {0, 128, 255, 128}, {9, 9, 9, 0}, {200, 100, 50, 77}, {1, 2, 3, 254}, {0, 0, 0, 255}} {
+		x, y := i%3, i/3
+		nrgba.SetNRGBA(x, y, c)
+		gray.SetGray(x, y, color.Gray{uint8(i * 40)})
+		pal.SetColorIndex(x, y, uint8(i%3))
+	}
+	// The generic path wraps the image so the type switch cannot see its concrete type.
+	type opaque struct{ image.Image }
+	for name, img := range map[string]image.Image{"nrgba": nrgba, "gray": gray, "paletted": pal} {
+		fast, slow := pixelReader(img), pixelReader(opaque{img})
+		for y := 0; y < 2; y++ {
+			for x := 0; x < 3; x++ {
+				fr, fg, fb := fast(x, y)
+				sr, sg, sb := slow(x, y)
+				// Rounding differs between 8- and 16-bit arithmetic by at most one step.
+				if absDiff(fr, sr) > 1 || absDiff(fg, sg) > 1 || absDiff(fb, sb) > 1 {
+					t.Errorf("%s (%d,%d): fast %d,%d,%d slow %d,%d,%d", name, x, y, fr, fg, fb, sr, sg, sb)
+				}
+			}
+		}
+	}
+}
+
+func absDiff(a, b uint8) uint8 {
+	if a > b {
+		return a - b
+	}
+	return b - a
+}
+
+func TestUndecodableImageIsNotRetriedUntilChanged(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, dir, "broken.png", time.Now().Add(-time.Hour))
+	s, _ := New(dir)
+	for range 2 {
+		if _, err := s.Thumb("broken.png", Small); !errors.Is(err, errUndecodable) {
+			t.Fatalf("broken image: %v", err)
+		}
+	}
+	if _, ok := s.undecoded.Load("broken.png"); !ok {
+		t.Fatal("failure not remembered")
+	}
+	// Replacing the file lifts the verdict, even if a copy tool kept the old mtime.
+	p := filepath.Join(dir, "broken.png")
+	before, _ := os.Stat(p)
+	f, _ := os.Create(p)
+	png.Encode(f, image.NewRGBA(image.Rect(0, 0, 600, 300)))
+	f.Close()
+	os.Chtimes(p, before.ModTime(), before.ModTime())
+	os.Chtimes(filepath.Join(dir, ".thumbs"), before.ModTime(), before.ModTime())
+	if _, err := s.Thumb("broken.png", Small); err != nil {
+		t.Fatalf("after repair: %v", err)
+	}
+	if _, ok := s.undecoded.Load("broken.png"); ok {
+		t.Fatal("stale failure kept after a good render")
+	}
+	n := 0
+	s.thumbLocks.Range(func(any, any) bool { n++; return true })
+	if n != 0 {
+		t.Fatalf("%d render locks kept after use", n)
+	}
+}
+
+func TestCleanupRemovesStaleLeftoversOnly(t *testing.T) {
+	dir, tmp := t.TempDir(), t.TempDir()
+	keep := "20261020-100000_" + strings.Repeat("a", 32) + ".png"
+	touch(t, dir, keep, time.Now())
+	s, _ := New(dir)
+	old, recent := time.Now().Add(-2*time.Hour), time.Now()
+	stale := []string{
+		filepath.Join(dir, keep+".part"),
+		filepath.Join(dir, ".state", "fetcher.json.part"),
+		filepath.Join(dir, ".state", "tmp", ".import.abc.part"),
+		filepath.Join(dir, ".thumbs", ".thumb-123"),
+		filepath.Join(tmp, "magma-1.download"),
+		filepath.Join(dir, ".thumbs", "gone.png.jpg"),   // orphaned thumbnail
+		filepath.Join(dir, ".thumbs", "gone.png.m.jpg"), // orphaned preview
+	}
+	touch(t, dir, "fresh-copy.png", old) // on disk but not indexed yet
+	kept := []string{
+		filepath.Join(dir, ".thumbs", "fresh-copy.png.jpg"),
+		filepath.Join(dir, ".thumbs", keep+".jpg"),
+		filepath.Join(dir, ".thumbs", keep+".m.jpg"),
+		filepath.Join(tmp, "magma-2.download"), // possibly still being written
+		filepath.Join(tmp, "unrelated.txt"),
+	}
+	for _, p := range append(stale, kept...) {
+		touch(t, filepath.Dir(p), filepath.Base(p), old)
+	}
+	os.Chtimes(kept[3], recent, recent)
+	s.Cleanup(tmp)
+	for _, p := range stale {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("%s survived cleanup", p)
+		}
+	}
+	for _, p := range kept {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s was removed", p)
+		}
+	}
+}
+
+func TestGenerationChangesWithIndex(t *testing.T) {
+	s, _ := New(t.TempDir())
+	g := s.Generation()
+	s.Import(strings.NewReader("x"), "20261020-100000_"+strings.Repeat("a", 32)+".png")
+	if s.Generation() == g {
+		t.Fatal("generation unchanged after import")
 	}
 }

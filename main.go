@@ -95,7 +95,10 @@ func run(configPath string) error {
 	log.Printf("fetch schedule: %q", cfg.Schedule)
 
 	go st.Watch(ctx.Done(), time.Minute)
-	go st.Warm(ctx.Done())
+	go func() {
+		st.Cleanup(cfg.Storage.TempDir)
+		st.Warm(ctx.Done())
+	}()
 
 	ns, err := notice.Open(filepath.Join(cfg.Storage.Dir, ".state", "notices.json"))
 	if err != nil {

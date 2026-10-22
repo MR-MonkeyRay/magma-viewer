@@ -13,8 +13,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"magma-viewer/internal/config"
@@ -38,7 +40,14 @@ type Server struct {
 	fetcher *fetcher.Fetcher
 	notices *notice.Store
 	auth    *auth
-	static  fs.FS
+	assets  map[string]asset // embedded page files by path
+
+	zones    sync.Map // tz name -> *time.Location
+	overview struct {
+		mu     sync.Mutex
+		gen    uint64
+		byZone map[string][]byte // encoded responses for gen
+	}
 
 	// NextRun reports when the scheduler fires next; nil leaves next_run unset.
 	NextRun func() time.Time
@@ -52,21 +61,23 @@ func init() { _ = mime.AddExtensionType(".woff2", "font/woff2") }
 func New(cfg *config.Config, st *store.Store, f *fetcher.Fetcher, ns *notice.Store, static fs.FS) *Server {
 	a := newAuth(cfg.Admin.Username, cfg.Admin.Password, cfg.Admin.SessionSecret, cfg.Admin.SessionTTL)
 	a.proxies = cfg.TrustedProxyPrefixes()
+	assets, err := loadAssets(static)
+	if err != nil {
+		log.Printf("web: %v", err) // only an unreadable embedded FS gets here
+	}
 	return &Server{
 		cfg:     cfg,
 		store:   st,
 		fetcher: f,
 		notices: ns,
 		auth:    a,
-		static:  static,
+		assets:  assets,
 	}
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	staticFS := http.FileServerFS(s.static)
-	mux.Handle("GET /", noCache(staticFS))
-	mux.Handle("GET /fonts/", cacheFor(30*24*time.Hour, staticFS))
+	mux.HandleFunc("GET /", s.handleAsset)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") })
 
 	mux.HandleFunc("GET /api/images", s.handleList)
@@ -92,7 +103,7 @@ func (s *Server) Handler() http.Handler {
 	// still lets a sibling subdomain post with the session cookie.
 	cop := http.NewCrossOriginProtection()
 	cop.SetDenyHandler(http.HandlerFunc(denyCrossOrigin))
-	return logRequests(securityHeaders(cop.Handler(mux)))
+	return logRequests(securityHeaders(gzipAPI(cop.Handler(mux))))
 }
 
 func denyCrossOrigin(w http.ResponseWriter, _ *http.Request) {
@@ -145,22 +156,6 @@ func startedHere(r *http.Request) bool {
 	return false
 }
 
-// Embedded files carry no modification time, so revalidation cannot answer 304; fonts change rarely enough to cache.
-func cacheFor(d time.Duration, h http.Handler) http.Handler {
-	v := "public, max-age=" + strconv.Itoa(int(d.Seconds()))
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", v)
-		h.ServeHTTP(w, r)
-	})
-}
-
-func noCache(h http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-cache")
-		h.ServeHTTP(w, r)
-	})
-}
-
 func logRequests(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -177,6 +172,13 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeCachedJSON sends an already encoded 200 response.
+func writeCachedJSON(w http.ResponseWriter, body []byte) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(body)
 }
 
 // writeError answers with a Chinese message and a stable code the page translates.
@@ -223,7 +225,11 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		"guest_limit": GuestZipLimit,
 		"version":     s.Version,
 		// Public subset of the fetch status; errors stay admin-only.
-		"task": map[string]any{"paused": task.Paused, "last_fetched": task.LastFetched, "next_run": s.nextRun()},
+		"task": map[string]any{
+			"paused": task.Paused, "last_fetched": task.LastFetched, "next_run": s.nextRun(),
+			// Scheduled runs before retry_at are skipped while failures keep coming.
+			"failures": task.Failures, "retry_at": task.RetryAt,
+		},
 		// Lets polling notice a new announcement without fetching the list.
 		"notice": s.notices.Latest(),
 	})
@@ -234,13 +240,49 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	// Days and hours are counted in the viewer's zone (an IANA name such as Asia/Shanghai) so they match the
 	// times the page shows; an unknown or missing zone falls back to the server's.
 	loc := time.Local
-	if tz := r.URL.Query().Get("tz"); tz != "" && len(tz) <= 64 {
-		if l, err := time.LoadLocation(tz); err == nil {
+	// Only canonical names: aliases such as Europe/./Paris would each take a cache slot.
+	if tz := r.URL.Query().Get("tz"); tz != "" && len(tz) <= 64 && path.Clean(tz) == tz {
+		if l := s.location(tz); l != nil {
 			loc = l
 		}
 	}
+	writeCachedJSON(w, s.overviewJSON(loc))
+}
+
+// overviewJSON encodes the overview for loc, reusing it until the index changes.
+func (s *Server) overviewJSON(loc *time.Location) []byte {
+	gen := s.store.Generation()
+	c := &s.overview
+	c.mu.Lock()
+	if c.gen != gen || c.byZone == nil {
+		c.gen, c.byZone = gen, map[string][]byte{}
+	}
+	body, ok := c.byZone[loc.String()]
+	c.mu.Unlock()
+	if ok {
+		return body
+	}
 	// 96 quarter hours feed the reel's heat strip; playback is capped at the newest 400 pictures.
-	writeJSON(w, http.StatusOK, s.store.Overview(24*time.Hour, 96, 400, loc))
+	body, _ = json.Marshal(s.store.Overview(24*time.Hour, 96, 400, loc))
+	c.mu.Lock()
+	if c.gen == gen {
+		c.byZone[loc.String()] = body
+	}
+	c.mu.Unlock()
+	return body
+}
+
+// location loads an IANA zone once; nil when the name is unknown.
+func (s *Server) location(tz string) *time.Location {
+	if l, ok := s.zones.Load(tz); ok {
+		return l.(*time.Location)
+	}
+	l, err := time.LoadLocation(tz)
+	if err != nil {
+		return nil // not cached: the map must not grow with junk names
+	}
+	s.zones.Store(tz, l)
+	return l
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -400,15 +442,24 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, path, cacheCo
 	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 }
 
-const imageCache = "public, max-age=86400"
+// imageCache picks how long browsers may keep an image or one of its
+// renditions. Archived names embed the content's md5, so they never change;
+// other files dropped in by hand might be replaced under the same name.
+func (s *Server) imageCache(name string) string {
+	if it, ok := s.store.Get(name); ok && it.MD5 != "" {
+		return "public, max-age=31536000, immutable"
+	}
+	return "public, max-age=86400"
+}
 
 func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
-	path, err := s.store.Path(r.PathValue("name"))
+	name := r.PathValue("name")
+	path, err := s.store.Path(name)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	s.serveFile(w, r, path, imageCache)
+	s.serveFile(w, r, path, s.imageCache(name))
 }
 
 func (s *Server) handleThumb(size store.Size) http.HandlerFunc {
@@ -424,7 +475,7 @@ func (s *Server) handleThumb(size store.Size) http.HandlerFunc {
 			s.handleImage(w, r)
 			return
 		}
-		s.serveFile(w, r, path, imageCache)
+		s.serveFile(w, r, path, s.imageCache(r.PathValue("name")))
 	}
 }
 

@@ -3,6 +3,7 @@ package web
 import (
 	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -78,7 +79,11 @@ func newTestServerStore(t *testing.T, n int) (*httptest.Server, string, *store.S
 		Schedule: "* * * * *",
 	}
 	f := fetcher.New(cfg.Magma, t.TempDir(), st)
-	static := fstest.MapFS{"index.html": {Data: []byte("<html></html>")}}
+	static := fstest.MapFS{
+		"index.html":    {Data: []byte("<html></html>")},
+		"app.js":        {Data: []byte("// app\n" + strings.Repeat("console.log('padding so gzip pays off');\n", 20))},
+		"fonts/a.woff2": {Data: []byte("font")},
+	}
 	srv := httptest.NewServer(New(cfg, st, f, openNotices(t), static).Handler())
 	t.Cleanup(srv.Close)
 
@@ -490,5 +495,140 @@ func TestNotices(t *testing.T) {
 	}
 	if r, _ := send(http.MethodDelete, "/api/notices/"+n.ID, "", c); r.StatusCode != http.StatusOK || len(public()) != 0 {
 		t.Fatalf("delete: %s", r.Status)
+	}
+}
+
+// rawGet sends a request with explicit headers; setting Accept-Encoding stops
+// the client from decompressing transparently, so encodings stay visible.
+func rawGet(t *testing.T, u string, headers ...string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, u, nil)
+	req.Header.Set("Accept-Encoding", "identity")
+	for i := 0; i+1 < len(headers); i += 2 {
+		req.Header.Set(headers[i], headers[i+1])
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
+
+func TestStaticAssetsRevalidateAndCompress(t *testing.T) {
+	srv, _ := newTestServer(t, 0)
+	r := rawGet(t, srv.URL+"/")
+	etag := r.Header.Get("ETag")
+	if r.StatusCode != http.StatusOK || etag == "" || r.Header.Get("Cache-Control") != "no-cache" {
+		t.Fatalf("index: %s etag=%q cache=%q", r.Status, etag, r.Header.Get("Cache-Control"))
+	}
+	if r := rawGet(t, srv.URL+"/", "If-None-Match", etag); r.StatusCode != http.StatusNotModified {
+		t.Fatalf("revalidation: %s", r.Status)
+	}
+	r = rawGet(t, srv.URL+"/app.js", "Accept-Encoding", "gzip, br")
+	if r.Header.Get("Content-Encoding") != "gzip" || !strings.HasPrefix(r.Header.Get("Content-Type"), "text/javascript") {
+		t.Fatalf("app.js: encoding %q type %q", r.Header.Get("Content-Encoding"), r.Header.Get("Content-Type"))
+	}
+	zr, err := gzip.NewReader(r.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body, err := io.ReadAll(zr); err != nil || !strings.HasPrefix(string(body), "// app") {
+		t.Fatalf("decompressed body %q: %v", body, err)
+	}
+	gzEtag := r.Header.Get("ETag")
+	if r := rawGet(t, srv.URL+"/app.js", "Accept-Encoding", "gzip", "If-None-Match", gzEtag); r.StatusCode != http.StatusNotModified {
+		t.Fatalf("gzip revalidation: %s", r.Status)
+	}
+	for _, ae := range []string{"gzip;q=0", "gzip; q=0.000", "gzip;\tq=0", "gzip ; q = 0", "br"} {
+		if r := rawGet(t, srv.URL+"/app.js", "Accept-Encoding", ae); r.Header.Get("Content-Encoding") != "" {
+			t.Errorf("Accept-Encoding %q got gzip", ae)
+		}
+	}
+	// A multipart range reply cannot be gzip-encoded as a whole: ranges come from the plain body.
+	r = rawGet(t, srv.URL+"/app.js", "Accept-Encoding", "gzip", "Range", "bytes=0-2,5-8")
+	if r.StatusCode != http.StatusPartialContent || r.Header.Get("Content-Encoding") != "" {
+		t.Fatalf("multi-range: %s encoding %q", r.Status, r.Header.Get("Content-Encoding"))
+	}
+	req, _ := http.NewRequest(http.MethodHead, srv.URL+"/app.js", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	if resp, err := http.DefaultClient.Do(req); err != nil || resp.StatusCode != http.StatusOK || resp.Header.Get("ETag") != gzEtag {
+		t.Fatalf("HEAD: %v %v", err, resp)
+	}
+	if r := rawGet(t, srv.URL+"/fonts/a.woff2"); !strings.Contains(r.Header.Get("Cache-Control"), "max-age=2592000") {
+		t.Fatalf("font cache %q", r.Header.Get("Cache-Control"))
+	}
+	if r := rawGet(t, srv.URL+"/nope.js"); r.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing asset: %s", r.Status)
+	}
+}
+
+func TestAPIResponsesCompressed(t *testing.T) {
+	srv, _ := newTestServer(t, 3)
+	r := rawGet(t, srv.URL+"/api/overview", "Accept-Encoding", "gzip")
+	if r.Header.Get("Content-Encoding") != "gzip" {
+		t.Fatalf("overview not compressed: %v", r.Header)
+	}
+	zr, err := gzip.NewReader(r.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var o struct{ Count int }
+	if err := json.NewDecoder(zr).Decode(&o); err != nil || o.Count != 3 {
+		t.Fatalf("decoded %+v %v", o, err)
+	}
+	if r := rawGet(t, srv.URL+"/api/overview"); r.Header.Get("Content-Encoding") != "" {
+		t.Fatal("compressed for a client that did not ask")
+	}
+}
+
+func TestOverviewCacheFollowsIndex(t *testing.T) {
+	srv, _, st := newTestServerStore(t, 2)
+	count := func() int {
+		var o struct{ Count int }
+		r := get(t, srv.URL+"/api/overview?tz=UTC", nil)
+		defer r.Body.Close()
+		json.NewDecoder(r.Body).Decode(&o)
+		return o.Count
+	}
+	if n := count(); n != 2 {
+		t.Fatalf("count %d", n)
+	}
+
+	st.Import(strings.NewReader("img"), "20261021-120000_"+strings.Repeat("f", 32)+".png")
+	if n := count(); n != 3 {
+		t.Fatalf("cached overview served after a new image: count %d", n)
+	}
+}
+
+func TestImageCacheHeaders(t *testing.T) {
+	srv, _, st := newTestServerStore(t, 1)
+	os.WriteFile(filepath.Join(st.Dir(), "manual.png"), []byte("img"), 0o644)
+	st.Rescan()
+	canonical := st.All()[1].Name // the hand-dropped file sorts first by its fresh mtime
+	if r := rawGet(t, srv.URL+"/img/"+canonical); !strings.Contains(r.Header.Get("Cache-Control"), "immutable") {
+		t.Fatalf("archived image: %q", r.Header.Get("Cache-Control"))
+	}
+	if r := rawGet(t, srv.URL+"/img/manual.png"); r.Header.Get("Cache-Control") != "public, max-age=86400" {
+		t.Fatalf("hand-dropped image: %q", r.Header.Get("Cache-Control"))
+	}
+}
+
+func TestZoneAliasesNotCached(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	cfg := &config.Config{Admin: config.Admin{Username: "a", Password: "b", SessionTTL: time.Hour}}
+	s := New(cfg, st, fetcher.New(cfg.Magma, t.TempDir(), st), openNotices(t), fstest.MapFS{})
+	h := s.Handler()
+	for _, tz := range []string{"Europe/Paris", "Europe/./Paris", "Europe//Paris", "./Europe/Paris"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/overview?tz="+url.QueryEscape(tz), nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d", tz, rec.Code)
+		}
+	}
+	n := 0
+	s.zones.Range(func(k, _ any) bool { n++; return true })
+	if n != 1 {
+		t.Fatalf("%d zones cached, want only the canonical name", n)
 	}
 }

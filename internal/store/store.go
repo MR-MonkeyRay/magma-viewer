@@ -35,6 +35,9 @@ const TimeLayout = "20060102-150405"
 var (
 	ErrNotFound = errors.New("image not found")
 
+	// errUndecodable marks a source image the thumbnailer cannot read.
+	errUndecodable = errors.New("cannot decode image")
+
 	namePattern = regexp.MustCompile(`^(\d{8}-\d{6})_([0-9a-f]{32})\.[a-z]+$`)
 
 	allowedExt = map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".webp": true, ".gif": true}
@@ -66,7 +69,8 @@ type Store struct {
 	synced time.Time // when the last full rescan finished
 
 	thumbSem   chan struct{}
-	thumbLocks sync.Map // name -> *sync.Mutex
+	thumbLocks sync.Map // name -> *sync.Mutex, held while rendering
+	undecoded  sync.Map // name -> fileStamp of a source that failed to decode, so it is not retried on every request
 }
 
 func New(dir string) (*Store, error) {
@@ -361,6 +365,13 @@ func (s *Store) List(page, size int, asc bool) ([]Item, int) {
 	return out, total
 }
 
+// Generation changes whenever the index does, for callers caching derived data.
+func (s *Store) Generation() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.gen
+}
+
 func (s *Store) Count() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -465,21 +476,93 @@ func (s *Store) Ensure(name string) error {
 	if fresh(small, src) && fresh(preview, src) {
 		return nil
 	}
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	stamp := fileStamp{info.Size(), info.ModTime()}
+	if s.knownUndecodable(name, stamp) {
+		return fmt.Errorf("thumbnail %s: %w", name, errUndecodable)
+	}
 
-	l, _ := s.thumbLocks.LoadOrStore(name, &sync.Mutex{})
-	mu := l.(*sync.Mutex)
+	mu := &sync.Mutex{}
+	if l, loaded := s.thumbLocks.LoadOrStore(name, mu); loaded {
+		mu = l.(*sync.Mutex)
+	}
 	mu.Lock()
-	defer mu.Unlock()
+	defer func() {
+		mu.Unlock()
+		// Forget the lock so the map does not keep one per image ever shown;
+		// a request racing past this only repeats an idempotent render.
+		s.thumbLocks.CompareAndDelete(name, mu)
+	}()
 	if fresh(small, src) && fresh(preview, src) {
 		return nil
+	}
+	if s.knownUndecodable(name, stamp) { // decided by whoever held the lock before us
+		return fmt.Errorf("thumbnail %s: %w", name, errUndecodable)
 	}
 
 	s.thumbSem <- struct{}{}
 	defer func() { <-s.thumbSem }()
 	if err := makeThumbs(src, preview, small); err != nil {
+		if errors.Is(err, errUndecodable) {
+			s.undecoded.Store(name, stamp)
+		}
 		return fmt.Errorf("thumbnail %s: %w", name, err)
 	}
+	s.undecoded.Delete(name)
 	return nil
+}
+
+// fileStamp identifies one version of a file well enough to cache a verdict on it.
+type fileStamp struct {
+	size int64
+	mod  time.Time
+}
+
+func (s *Store) knownUndecodable(name string, stamp fileStamp) bool {
+	v, ok := s.undecoded.Load(name)
+	return ok && v.(fileStamp).size == stamp.size && v.(fileStamp).mod.Equal(stamp.mod)
+}
+
+// Cleanup removes leftovers of interrupted writes (older than an hour, so
+// nothing in progress is touched) and cached renditions whose image is gone.
+func (s *Store) Cleanup(tempDir string) {
+	cutoff := time.Now().Add(-time.Hour)
+	n := 0
+	sweep := func(dir string, match func(name string) bool) {
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			if e.IsDir() || !match(e.Name()) {
+				continue
+			}
+			if info, err := e.Info(); err == nil && info.ModTime().Before(cutoff) && os.Remove(filepath.Join(dir, e.Name())) == nil {
+				n++
+			}
+		}
+	}
+	isPart := func(name string) bool { return strings.HasSuffix(name, ".part") }
+	sweep(s.dir, isPart) // versions before .state/tmp wrote <name>.part next to the images
+	sweep(filepath.Join(s.dir, ".state"), isPart)
+	sweep(s.tmpDir, func(string) bool { return true })
+	sweep(s.thumbDir, func(name string) bool { return strings.HasPrefix(name, ".thumb-") })
+	sweep(tempDir, func(name string) bool {
+		return strings.HasPrefix(name, "magma-") && strings.HasSuffix(name, ".download")
+	})
+
+	// <image>.jpg is the thumbnail, <image>.m.jpg the preview. The source
+	// file itself decides, not the index, which may lag a manual copy.
+	exists := func(name string) bool {
+		_, err := os.Stat(filepath.Join(s.dir, name))
+		return err == nil
+	}
+	sweep(s.thumbDir, func(name string) bool {
+		return !strings.HasPrefix(name, ".") && !exists(strings.TrimSuffix(name, ".m.jpg")) && !exists(strings.TrimSuffix(name, ".jpg"))
+	})
+	if n > 0 {
+		log.Printf("store: removed %d stale temporary or orphaned cache files", n)
+	}
 }
 
 // Warm generates missing renditions one at a time at startup.
@@ -584,6 +667,32 @@ func pixelReader(img image.Image) func(x, y int) (uint8, uint8, uint8) {
 			w := 0xff - p[3]
 			return p[0] + w, p[1] + w, p[2] + w
 		}
+	case *image.NRGBA: // PNG with alpha
+		return func(x, y int) (uint8, uint8, uint8) {
+			p := m.Pix[m.PixOffset(x, y):]
+			a, w := uint32(p[3]), uint32(0xff-p[3])*0xff
+			return uint8((uint32(p[0])*a + w) / 0xff), uint8((uint32(p[1])*a + w) / 0xff), uint8((uint32(p[2])*a + w) / 0xff)
+		}
+	case *image.Paletted: // GIF and palette PNG: composite each palette entry once
+		pal := make([][3]uint8, len(m.Palette))
+		for i, c := range m.Palette {
+			r, g, b, a := c.RGBA()
+			w := 0xffff - a
+			pal[i] = [3]uint8{uint8((r + w) >> 8), uint8((g + w) >> 8), uint8((b + w) >> 8)}
+		}
+		return func(x, y int) (uint8, uint8, uint8) {
+			i := int(m.Pix[m.PixOffset(x, y)])
+			if i >= len(pal) {
+				return 0, 0, 0 // out-of-range index, as image.Paletted.At reports it
+			}
+			c := pal[i]
+			return c[0], c[1], c[2]
+		}
+	case *image.Gray:
+		return func(x, y int) (uint8, uint8, uint8) {
+			v := m.Pix[m.PixOffset(x, y)]
+			return v, v, v
+		}
 	default:
 		return func(x, y int) (uint8, uint8, uint8) {
 			r, g, b, a := m.At(x, y).RGBA()
@@ -601,7 +710,7 @@ func makeThumbs(src, previewDst, smallDst string) error {
 	img, _, err := image.Decode(f)
 	f.Close()
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", errUndecodable, err)
 	}
 	preview := scale(img, sizeEdge[Preview])
 	img = nil // let the full-size decode be collected before encoding
