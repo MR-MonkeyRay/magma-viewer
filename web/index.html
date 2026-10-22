@@ -24,7 +24,6 @@
   </defs>
   <!-- Rounded line icons: one 2.4 stroke on a 24 grid, round caps and joins. -->
   <symbol id="i-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="6.5" height="6.5" rx="2"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="2"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="2"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="2"/></symbol>
-  <symbol id="i-masonry" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="6.5" height="9.5" rx="2"/><rect x="13.5" y="4" width="6.5" height="5.5" rx="2"/><rect x="4" y="16.5" width="6.5" height="3.5" rx="1.75"/><rect x="13.5" y="12.5" width="6.5" height="7.5" rx="2"/></symbol>
   <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4.5" width="5.5" height="5.5" rx="1.75"/><rect x="4" y="14" width="5.5" height="5.5" rx="1.75"/><path d="M13 7.25h7M13 16.75h7"/></symbol>
   <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10.5M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="m5.5 12.5 4.5 4.5 8.5-9.5"/></symbol>
@@ -123,7 +122,7 @@
     <div class="now-stage">
       <div class="now-view" id="now-view">
         <button type="button" class="now-frame" id="now-open" aria-label="查看大图" data-i18n-label="now.open">
-          <img id="now-img" alt="画板画面" data-i18n-alt="now.imgAlt">
+          <img id="now-img" alt="画板画面" data-i18n-alt="now.imgAlt" fetchpriority="high">
         </button>
         <button type="button" class="now-nav prev" id="now-prev" aria-label="上一张（更早）" title="上一张（更早）" data-i18n-label="now.prev" data-i18n-title="now.prev"><svg><use href="#i-left"/></svg></button>
         <button type="button" class="now-nav next" id="now-next" aria-label="下一张（更新）" title="下一张（更新）" data-i18n-label="now.next" data-i18n-title="now.next"><svg><use href="#i-right"/></svg></button>
@@ -139,6 +138,14 @@
           <button type="button" class="reel-btn reel-play" id="reel-play" title="回放最近 24 小时（P）" aria-label="回放最近 24 小时" data-i18n-title="reel.playTip" data-i18n-label="reel.play" aria-pressed="false"><svg><use href="#i-play"/></svg></button>
           <button type="button" class="reel-btn" id="reel-live" title="回到最新" aria-label="回到最新" data-i18n-title="now.back" data-i18n-label="now.back"><svg><use href="#i-skip"/></svg></button>
           <span class="reel-pos" id="reel-pos" aria-hidden="true"></span>
+          <label class="reel-speed" title="回放清晰度" data-i18n-title="reel.quality">
+            <span class="sr-only" data-i18n="reel.quality">回放清晰度</span>
+            <select id="reel-quality">
+              <option value="thumb" data-i18n="reel.qThumb">流畅</option>
+              <option value="preview" data-i18n="reel.qPreview">高清</option>
+              <option value="original" data-i18n="reel.qOriginal">原图</option>
+            </select>
+          </label>
           <label class="reel-speed" title="回放速度（[ ]）" data-i18n-title="reel.speedTip">
             <span class="sr-only" data-i18n="reel.speed">回放速度</span>
             <select id="reel-speed">
@@ -152,7 +159,7 @@
         </div>
       </div>
     </div>
-    <aside class="now-card" aria-live="polite">
+    <aside class="now-card">
       <p class="now-state"><span class="now-badge" id="now-badge">最新</span><span class="now-ago" id="now-ago"></span></p>
       <p class="now-date" id="now-date"></p>
       <time class="now-clock" id="now-time"></time>
@@ -175,7 +182,6 @@
       <div class="controls">
         <div class="seg" role="group" aria-label="展示方式" data-i18n-label="bar.views">
           <button type="button" data-view="grid" title="网格（1）" aria-label="网格" data-i18n-title="view.gridTip" data-i18n-label="view.grid"><svg><use href="#i-grid"/></svg></button>
-          <button type="button" data-view="masonry" title="瀑布流（2）" aria-label="瀑布流" data-i18n-title="view.masonryTip" data-i18n-label="view.masonry"><svg><use href="#i-masonry"/></svg></button>
           <button type="button" data-view="list" title="列表（3）" aria-label="列表" data-i18n-title="view.listTip" data-i18n-label="view.list"><svg><use href="#i-list"/></svg></button>
         </div>
         <div class="tools" role="group" aria-label="显示选项" data-i18n-label="bar.options">
@@ -195,7 +201,7 @@
         <button type="button" class="icon-btn" id="select-mode" title="多选（S）" aria-label="多选" data-i18n-title="select.tip" data-i18n-label="select.label" aria-pressed="false"><svg><use href="#i-select"/></svg></button>
       </div>
     </div>
-    <div class="gallery" id="gallery" aria-live="polite"></div>
+    <div class="gallery" id="gallery"></div>
     <div class="empty" id="empty" hidden>
       <div class="empty-art" aria-hidden="true"><svg class="mascot"><use href="#mascot-sleep"/></svg></div>
       <p class="empty-title" data-i18n="empty.title">还没有画面</p>
@@ -224,7 +230,10 @@
   <button type="button" class="sel-icon" id="sel-clear" title="取消选择（Esc）" aria-label="取消选择" data-i18n-title="sel.clearTip" data-i18n-label="sel.clear"><svg><use href="#i-close"/></svg></button>
 </div>
 
-<div class="toast" id="toast" role="status" hidden><svg><use href="#i-info"/></svg><span></span></div>
+<div class="toast" id="toast" aria-hidden="true" hidden><svg><use href="#i-info"/></svg><span></span></div>
+<!-- Toasts and page changes are read out from these, which stay in the page so every change is announced. -->
+<div class="sr-only" id="announce" role="status" aria-live="polite"></div>
+<div class="sr-only" id="alert" role="alert" aria-live="assertive"></div>
 
 <div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="查看大图" data-i18n-label="lb.label" hidden>
   <div class="lb-top">
@@ -241,7 +250,7 @@
           <button type="button" role="menuitem" data-fmt="bb">BBCode</button>
         </span>
       </span>
-      <a class="lb-btn lb-dup" id="lb-download" href="#" title="下载原图（D）" aria-label="下载原图" data-i18n-title="lb.downloadTip" data-i18n-label="lb.download"><svg><use href="#i-download"/></svg></a>
+      <a class="lb-btn lb-dup" id="lb-download" href="#" download title="下载原图（D）" aria-label="下载原图" data-i18n-title="lb.downloadTip" data-i18n-label="lb.download"><svg><use href="#i-download"/></svg></a>
       <button type="button" class="lb-btn" id="lb-info" title="详情（I）" aria-label="详情" data-i18n-title="lb.infoTip" data-i18n-label="lb.info" aria-pressed="false" aria-controls="lb-panel"><svg><use href="#i-panel"/></svg></button>
       <button type="button" class="lb-btn lb-close" id="lb-close" aria-label="关闭（Esc）" title="关闭（Esc）" data-i18n-label="lb.close" data-i18n-title="lb.close"><svg><use href="#i-close"/></svg></button>
     </div>
@@ -260,7 +269,7 @@
       <p class="lbp-ago" id="lbp-ago"></p>
     </div>
     <div class="lbp-dl">
-      <a class="btn primary" id="lbp-download" href="#"><svg><use href="#i-download"/></svg><span data-i18n="lb.download">下载原图</span></a>
+      <a class="btn primary" id="lbp-download" href="#" download><svg><use href="#i-download"/></svg><span data-i18n="lb.download">下载原图</span></a>
       <span class="lb-menu-wrap">
         <button type="button" class="btn primary lbp-more" id="lbp-size" title="选择尺寸" aria-label="选择下载尺寸" data-i18n-title="lbp.sizeTip" data-i18n-label="lbp.sizeLabel" aria-haspopup="menu" aria-expanded="false"><svg><use href="#i-down"/></svg></button>
         <span class="menu" id="lbp-size-menu" role="menu" hidden></span>
@@ -279,6 +288,7 @@
     <div class="lbp-block">
       <p class="lbp-label" data-i18n="lbp.file">文件</p>
       <code class="lbp-name" id="lbp-name"></code>
+      <p class="lbp-zone" id="lbp-zone" hidden></p>
     </div>
   </aside>
 </div>
@@ -348,7 +358,7 @@
       </div>
       <form class="na-edit" id="na-form" novalidate>
         <p class="na-state" id="na-state"></p>
-        <label data-i18n="na.fieldTitle">标题<input name="title" maxlength="100" autocomplete="off" required></label>
+        <label data-i18n="na.fieldTitle">标题<input name="title" maxlength="100" autocomplete="off" required aria-describedby="na-error"></label>
         <label data-i18n="na.fieldBody">内容<textarea name="body" maxlength="5000" rows="9" placeholder="支持换行，网址会自动变成链接" data-i18n-placeholder="na.placeholder"></textarea></label>
         <p class="na-count" id="na-count"></p>
         <p class="form-error" id="na-error" hidden></p>
@@ -372,7 +382,7 @@
       <h3 data-i18n="keys.browse">浏览</h3>
       <dl>
         <dt><kbd>←</kbd> <kbd>→</kbd></dt><dd data-i18n="keys.pages">上一页 / 下一页</dd>
-        <dt><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></dt><dd data-i18n="keys.views">网格 / 瀑布流 / 列表</dd>
+        <dt><kbd>1</kbd> <kbd>2</kbd></dt><dd data-i18n="keys.views">网格 / 列表</dd>
         <dt><kbd>O</kbd></dt><dd data-i18n="keys.sort">切换最新 / 最早在前</dd>
         <dt><kbd>G</kbd></dt><dd data-i18n="keys.group">按日分组</dd>
         <dt><kbd>P</kbd></dt><dd data-i18n="keys.play">回放或暂停最近 24 小时</dd>

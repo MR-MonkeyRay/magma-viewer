@@ -234,17 +234,17 @@ svg.mascot { overflow: visible; }
 .sep { width: 2px; height: 20px; margin: 0 6px; border-radius: 1px; background: var(--line); }
 
 .seg {
-  --seg-i: 0;
+  --seg-i: 0; --seg-w: 32px; --seg-h: 28px;
   position: relative; display: inline-flex; margin-right: 6px;
   background: var(--raised); border: 2px solid var(--outline); border-radius: 999px; padding: 2px; box-shadow: var(--pop-sm);
 }
 .seg::before {
-  content: ""; position: absolute; top: 2px; left: 2px; width: 32px; height: 28px; border-radius: 999px;
+  content: ""; position: absolute; top: 2px; left: 2px; width: var(--seg-w); height: var(--seg-h); border-radius: 999px;
   background: var(--pigment);
-  transform: translateX(calc(var(--seg-i) * 32px)); transition: transform .35s var(--spring);
+  transform: translateX(calc(var(--seg-i) * var(--seg-w))); transition: transform .35s var(--spring);
 }
 .seg button {
-  position: relative; display: grid; place-items: center; width: 32px; height: 28px;
+  position: relative; display: grid; place-items: center; width: var(--seg-w); height: var(--seg-h);
   border: 0; background: none; border-radius: 999px; color: var(--graphite); cursor: pointer;
   transition: color .2s;
 }
@@ -409,6 +409,13 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 .reel-play { width: 36px; height: 36px; border: 2px solid var(--outline); background: var(--raised); color: var(--ink); box-shadow: var(--pop-sm); }
 .reel-play:active { transform: translate(2px, 2px); box-shadow: none; }
 .reel-play[aria-pressed="true"] { background: var(--pigment); color: var(--pigment-ink); }
+/* Waiting for the next frame: a ring turns around the play button. */
+.reel-play { position: relative; }
+.reel.buffering .reel-play::after {
+  content: ""; position: absolute; inset: -5px; border-radius: 50%; pointer-events: none;
+  border: 2px solid transparent; border-top-color: var(--pigment); border-right-color: var(--pigment);
+  animation: spin .8s linear infinite;
+}
 .reel-pos {
   flex: 1; min-width: 0; padding-left: 6px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
   font-size: var(--fs-xs); font-weight: 700; color: var(--graphite); font-variant-numeric: tabular-nums;
@@ -542,8 +549,6 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 
 .tiles { display: grid; gap: var(--gap); }
 .view-grid .tiles { grid-template-columns: repeat(auto-fill, minmax(var(--tile-min), 1fr)); }
-.view-masonry .tiles { display: flex; align-items: flex-start; gap: var(--gap); }
-.mcol { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--gap); }
 .view-list .tiles { grid-template-columns: 1fr; gap: 10px; }
 
 .tile {
@@ -559,8 +564,8 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 .animate .tile { animation: tile-in .5s var(--ease) backwards; animation-delay: calc(min(var(--d, 0), 18) * 24ms); }
 @keyframes tile-in { from { opacity: 0; transform: translate(var(--sx, 0px), 12px) scale(0.98); } }
 @media (hover: hover) {
-  .view-grid .tile:hover, .view-masonry .tile:hover { transform: translate(-2px, -2px) rotate(-.6deg); box-shadow: var(--pop-lg); }
-  .view-grid .tile:hover::after, .view-masonry .tile:hover::after { box-shadow: inset 0 0 0 3px var(--pigment); }
+  .view-grid .tile:hover { transform: translate(-2px, -2px) rotate(-.6deg); box-shadow: var(--pop-lg); }
+  .view-grid .tile:hover::after { box-shadow: inset 0 0 0 3px var(--pigment); }
 }
 .tile.is-new { animation: new-glow 2.4s var(--ease) 2; }
 @keyframes new-glow {
@@ -584,21 +589,18 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 .tile img { display: block; width: 100%; height: auto; opacity: 0; transition: opacity .45s, transform .3s var(--ease-out), border-radius .3s; }
 .tile img.loaded { opacity: 1; }
 @media (hover: hover) {
-  .view-grid .tile:hover img, .view-masonry .tile:hover img { transform: scale(1.04); }
+  .view-grid .tile:hover img { transform: scale(1.04); }
 }
 .view-grid .tile-open { aspect-ratio: var(--tile-ratio, 1.778); }
-.skeleton.view-masonry .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--tile-min), 1fr)); }
-.skeleton.view-masonry .tile-open { aspect-ratio: 16 / 9; }
 .view-grid .tile img { height: 100%; object-fit: cover; }
-.view-masonry .tile img { min-height: 80px; }
 
-/* Grid and masonry: the time stays on the picture as a small label; download appears on hover. */
+/* Grid: the time stays on the picture as a small label; download appears on hover. */
 .tile-cap { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: var(--fs-xs); }
-.view-grid .tile-cap, .view-masonry .tile-cap {
+.view-grid .tile-cap {
   position: absolute; left: 6px; right: 6px; bottom: 6px; z-index: 2; color: #fff; pointer-events: none;
 }
 /* The time is a little label stuck on the picture. */
-.view-grid .tile-cap time, .view-masonry .tile-cap time {
+.view-grid .tile-cap time {
   padding: 0 8px; border-radius: 999px; line-height: 18px; font-weight: 800;
   background: var(--raised); color: var(--ink); border: 1.5px solid var(--outline);
 }
@@ -607,13 +609,13 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
   color: inherit; text-decoration: none; pointer-events: auto;
   transition: background-color .15s, color .15s, transform .15s, opacity .2s;
 }
-.view-grid .tile-dl, .view-masonry .tile-dl {
+.view-grid .tile-dl {
   width: 28px; height: 28px; border-radius: 50%; background: var(--raised); color: var(--ink);
   border: 1.5px solid var(--outline); opacity: 0;
 }
-.view-grid .tile-dl svg, .view-masonry .tile-dl svg { width: 16px; height: 16px; }
-.view-grid .tile:hover .tile-dl, .view-masonry .tile:hover .tile-dl, .tile-dl:focus-visible { opacity: 1; }
-.view-grid .tile-dl:hover, .view-masonry .tile-dl:hover { background: var(--pigment); color: var(--pigment-ink); }
+.view-grid .tile-dl svg { width: 16px; height: 16px; }
+.view-grid .tile:hover .tile-dl, .tile-dl:focus-visible { opacity: 1; }
+.view-grid .tile-dl:hover { background: var(--pigment); color: var(--pigment-ink); }
 .tile-dl:active { transform: scale(0.9); }
 
 /* Top-right toggle, like a save button: glass when idle, filled with the accent gradient when on. */
@@ -631,7 +633,7 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 .tile.selected { background: var(--pigment-soft); }
 .tile.selected::after { box-shadow: inset 0 0 0 2px var(--pigment); }
 .tile.selected .tile-open { background: transparent; }
-.view-grid .tile.selected .tile-open img, .view-masonry .tile.selected .tile-open img { transform: scale(0.9); border-radius: 10px; }
+.view-grid .tile.selected .tile-open img { transform: scale(0.9); border-radius: 10px; }
 .tile.selected .tile-check { opacity: 1; transform: none; background: var(--accent); border-color: var(--outline); color: var(--pigment-ink); }
 .tile.selected .tile-check svg { animation: pop .35s var(--spring); }
 /* Picking a picture puffs out a little heart. */
@@ -645,7 +647,7 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
   25% { opacity: 1; transform: translate(-14px, -4px) scale(1.15); }
   100% { opacity: 0; transform: translate(-38px, 4px) scale(.8) rotate(-20deg); }
 }
-.view-grid .tile.selected .tile-cap, .view-masonry .tile.selected .tile-cap { opacity: 0 !important; }
+.view-grid .tile.selected .tile-cap { opacity: 0 !important; }
 @keyframes pop { from { transform: scale(0); } }
 .selecting .tile-open { cursor: pointer; }
 
@@ -922,6 +924,7 @@ a.linkish { text-decoration: none; }
 .chip:hover { background: rgba(255, 145, 182, 0.2); transform: translateY(-2px) rotate(-2deg); }
 .chip.done { animation: chip-done .9s var(--ease); }
 @keyframes chip-done { 15%, 60% { background: rgba(134, 223, 186, 0.45); border-color: #86dfba; } }
+.lbp-zone { margin: 6px 0 0; color: #d9b8c9; font-size: var(--fs-xs); }
 .lbp-name {
   display: block; padding: 8px 10px; border-radius: 12px; background: rgba(255, 145, 182, 0.07);
   color: #ead3de; font: 12px/1.5 var(--mono); word-break: break-all; user-select: all;
@@ -1084,7 +1087,7 @@ a.linkish { text-decoration: none; }
 /* ---------- responsive ---------- */
 /* Touch screens have no hover to reveal the download button; the lightbox has one. */
 @media (hover: none) {
-  .view-grid .tile-dl, .view-masonry .tile-dl { display: none; }
+  .view-grid .tile-dl { display: none; }
 }
 /* Below 1280px the caption card moves under the picture and lays its parts out in a row. */
 @media (max-width: 1279px) {
@@ -1129,9 +1132,7 @@ a.linkish { text-decoration: none; }
   .controls, .bar-actions { gap: 0; }
   .history-title { font-size: var(--fs-md); line-height: 28px; }
   .seg { margin-right: 2px; }
-  .seg::before { width: 30px; }
-  .seg button { width: 30px; }
-  .seg::before { transform: translateX(calc(var(--seg-i) * 30px)); }
+  .seg { --seg-w: 30px; }
   .icon-btn { width: 34px; height: 34px; }
   .field select { padding: 0 20px 0 6px; background-position: right 2px center; }
   main { padding-top: 10px; }
@@ -1155,7 +1156,8 @@ a.linkish { text-decoration: none; }
   .lightbox, .lightbox.info-open { grid-template-columns: 0 minmax(0, 1fr) 0 0; }
   .lb-top { padding-left: 14px; padding-right: 6px; }
   .lb-btn { width: 40px; height: 40px; }
-  .lb-nav { position: absolute; top: 50%; transform: translateY(-50%); background: rgba(26, 14, 24, 0.55); width: 40px; height: 40px; }
+  /* Drawn after the stage, so they stay tappable above the picture rather than under it. */
+  .lb-nav { position: absolute; top: 50%; z-index: 2; transform: translateY(-50%); background: rgba(26, 14, 24, 0.55); width: 40px; height: 40px; }
   .lb-nav.prev { left: 6px; }
   .lb-nav.next { right: 6px; }
   .lb-nav.prev:hover:not(:disabled), .lb-nav.next:hover:not(:disabled) { transform: translateY(-50%); }
@@ -1169,8 +1171,7 @@ a.linkish { text-decoration: none; }
 }
 @media (max-width: 400px) {
   .bar { padding: 8px 10px; gap: 6px; }
-  .seg button { width: 28px; }
-  .seg::before { width: 28px; transform: translateX(calc(var(--seg-i) * 28px)); }
+  .seg { --seg-w: 28px; }
   .icon-btn { width: 32px; height: 32px; }
 }
 @media (max-width: 360px) {
@@ -1178,13 +1179,26 @@ a.linkish { text-decoration: none; }
 }
 @media (max-width: 350px) {
   .bar { padding: 8px 6px; gap: 4px; }
-  .seg button { width: 26px; }
-  .seg::before { width: 26px; transform: translateX(calc(var(--seg-i) * 26px)); }
+  .seg { --seg-w: 26px; }
   .icon-btn { width: 30px; }
+}
+/* Touch: every control stays at least 40px to tap, however tight the screen; this comes after the width rules above. */
+@media (pointer: coarse) {
+  .icon-btn, .reel-btn, .reel-play, .sel-icon, .lb-btn, .now-nav { width: 40px; height: 40px; }
+  .field select { height: 40px; }
+  .seg { --seg-w: 40px; --seg-h: 40px; padding: 0; }
+  .seg::before { top: 0; left: 0; }
+  .pager button { min-width: 40px; height: 40px; }
+  /* The check keeps its size on small tiles; an invisible ring widens what a finger can hit. */
+  .tile-check::after { content: ""; position: absolute; inset: -7px; border-radius: 50%; }
+  .view-list .tile-check::after { inset: -5px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* Until the page is relabelled in the viewer's language (see i18n.js). */
+.i18n-pending body { visibility: hidden; }
 
 /* The language button names the other language, so it is text rather than an icon. */
 .lang-btn { font: 600 var(--fs-sm) var(--display); letter-spacing: .02em; }

@@ -18,10 +18,8 @@
       'bar.options': '显示选项',
       'view.grid': '网格',
       'view.gridTip': '网格（1）',
-      'view.masonry': '瀑布流',
-      'view.masonryTip': '瀑布流（2）',
       'view.list': '列表',
-      'view.listTip': '列表（3）',
+      'view.listTip': '列表（2）',
       'sort.desc': '最新在前',
       'sort.asc': '最早在前',
       'sort.tip': '{label}（O）',
@@ -66,16 +64,22 @@
       'reel.track': '最近 24 小时的画面',
       'reel.speed': '回放速度',
       'reel.speedTip': '回放速度（[ ]）',
+      'reel.quality': '回放清晰度',
+      'reel.qThumb': '流畅',
+      'reel.qPreview': '高清',
+      'reel.qOriginal': '原图',
       'reel.loop': '循环回放',
       'common.download': '下载',
+      'download.failed': '下载失败，请稍后再试',
 
       // ---- scheduled fetch (hero card, account menu, schedule dialog) ----
       'task.title': '定时抓取',
       'task.paused': '已暂停',
       'task.running': '运行中',
-      'task.lastFetched': '最近获取',
+      'task.lastFetched': '上次成功',
       'task.none': '暂无',
       'task.next': '下次抓取',
+      'task.retry': '下次重试',
 
       // ---- gallery ----
       'history.title': '历史快照',
@@ -89,8 +93,10 @@
       'load.failedLater': '哎呀加载失败啦，稍后再来试试吧～',
       'tile.select': '选择',
       'tile.view': '查看 {time}',
+      'tile.selectAt': '选择 {time}',
       'tile.download': '下载原图',
       'day.selectAll': '选择这一天',
+      'day.selectAllGuest': '选择这一天（访客最多 {n} 张）',
       'day.pageOfTotal': '本页 {n} / 共 {total} 张',
       'day.count': '{n} 张',
       'pager.label': '分页',
@@ -100,6 +106,7 @@
       'pager.nextTip': '下一页（→）',
       'pager.jump': '跳转页码',
       'pager.jumpTip': '跳转页码（回车）',
+      'pager.at': '第 {page} / {pages} 页',
       'foot.keysTip': '键盘快捷键（?）',
       'foot.keys': '键盘快捷键',
       'fresh.tip': '查看最新画面',
@@ -133,6 +140,7 @@
       'gap.seconds': '{n} 秒',
       'gap.minutes': '{n} 分钟',
       'gap.hours': '{h} 小时 {m} 分',
+      'gap.wholeHours': '{n} 小时',
       'gap.days': '{n} 天',
 
       // ---- lightbox ----
@@ -171,6 +179,7 @@
       'lbp.gap': '距上一张',
       'lbp.position': '位置',
       'lbp.unknown': '未知',
+      'lbp.zoneHint': '文件名使用 {zone} 时间',
       'copy.url': '原图链接已复制啦～',
       'copy.fmt': '已复制 {label} 啦～',
       'copy.failed': '哎呀，复制没成功，长按下载按钮就能复制链接哦',
@@ -194,8 +203,8 @@
       'status.loadingRow': '状态',
       'status.count': '存档总数',
       'status.countValue': '{n} 张',
-      'status.lastRun': '上次抓取',
-      'status.lastFetched': '最近获取',
+      'status.lastRun': '上次尝试',
+      'status.lastFetched': '上次成功',
       'status.result': '结果',
       'status.lastSaved': '最近保存',
       'status.session': '本次启动',
@@ -218,12 +227,16 @@
       'schedule.auto': '按计划自动抓取',
       'schedule.plan': '计划',
       'schedule.next': '下次抓取',
-      'schedule.lastFetched': '最近获取',
+      'schedule.lastFetched': '上次成功',
       'schedule.paused': '已暂停',
       'schedule.pausedHint': '已暂停，仍可在「运行状态」中立即抓取',
       'schedule.activeHint': '画板有变化时自动保存',
       'schedule.pausedToast': '定时抓取已暂停啦～',
       'schedule.resumedToast': '定时抓取又开工啦～',
+      'cron.everyMinute': '每分钟',
+      'cron.every': '每 {gap}',
+      'cron.hourlyAt': '每小时第 {m} 分',
+      'cron.dailyAt': '每天 {time}',
 
       // ---- notices ----
       'notice.title': '公告',
@@ -251,7 +264,7 @@
       'na.stateNew': '新公告',
       'na.statePublished': '{time} 发布，修改后访客不会再次收到提醒',
       'na.stateDraft': '访客看不到，编辑于 {time}',
-      'na.discard': '放弃未保存的修改？',
+      'na.discard': '有未保存的修改，再操作一次即可放弃',
       'na.titleRequired': '请填写标题',
       'na.updated': '公告更新好啦～',
       'na.published': '公告发布啦！📢',
@@ -263,7 +276,7 @@
       'keys.title': '键盘快捷键',
       'keys.browse': '浏览',
       'keys.pages': '上一页 / 下一页',
-      'keys.views': '网格 / 瀑布流 / 列表',
+      'keys.views': '网格 / 列表',
       'keys.sort': '切换最新 / 最早在前',
       'keys.group': '按日分组',
       'keys.play': '回放或暂停最近 24 小时',
@@ -284,7 +297,7 @@
       'keys.info': '显示或隐藏详情',
       'keys.copy': '复制链接',
       'keys.download': '下载原图',
-      'keys.close': '关闭',
+      'keys.close': '还原缩放 / 收起详情 / 关闭',
 
       // ---- network ----
       'net.offline': '网络断开啦，恢复后会自动刷新哦～',
@@ -302,6 +315,14 @@
       'err.title_too_long': '标题最多 100 字',
       'err.body_too_long': '内容最多 5000 字',
       'err.too_many_notices': '最多保留 200 条公告，请先删除旧公告',
+      'err.image_not_found': '图片不存在，可能已被删除',
+      'err.no_images': '还没有可下载的画面',
+      'err.no_selection': '没有选择画面',
+      'err.guest_zip_limit': '访客一次最多打包下载 {n} 张',
+      'err.cross_origin': '请求来自其他网站，已拒绝',
+      'err.invalid_cookie': 'Cookie 格式不正确',
+      'err.cookie_save_failed': '保存 Cookie 失败',
+      'err.notify_disabled': '未配置通知 webhook',
     },
     en: {
       'app.title': 'Magma Board Archive',
@@ -316,10 +337,8 @@
       'bar.options': 'Display options',
       'view.grid': 'Grid',
       'view.gridTip': 'Grid (1)',
-      'view.masonry': 'Masonry',
-      'view.masonryTip': 'Masonry (2)',
       'view.list': 'List',
-      'view.listTip': 'List (3)',
+      'view.listTip': 'List (2)',
       'sort.desc': 'Newest first',
       'sort.asc': 'Oldest first',
       'sort.tip': '{label} (O)',
@@ -364,16 +383,22 @@
       'reel.track': 'Images from the last 24 h',
       'reel.speed': 'Playback speed',
       'reel.speedTip': 'Playback speed ([ ])',
+      'reel.quality': 'Playback quality',
+      'reel.qThumb': 'Smooth',
+      'reel.qPreview': 'HD',
+      'reel.qOriginal': 'Original',
       'reel.loop': 'Loop playback',
       'common.download': 'Download',
+      'download.failed': 'Download failed. Please try again later.',
 
       // ---- scheduled fetch (hero card, account menu, schedule dialog) ----
       'task.title': 'Scheduled fetch',
       'task.paused': 'Paused',
       'task.running': 'Running',
-      'task.lastFetched': 'Last fetched',
+      'task.lastFetched': 'Last success',
       'task.none': 'Not yet',
       'task.next': 'Next fetch',
+      'task.retry': 'Next retry',
 
       // ---- gallery ----
       'history.title': 'History',
@@ -387,8 +412,10 @@
       'load.failedLater': 'Oops! Couldn’t load. Please try again a bit later~',
       'tile.select': 'Select',
       'tile.view': 'View {time}',
+      'tile.selectAt': 'Select {time}',
       'tile.download': 'Download original',
       'day.selectAll': 'Select this day',
+      'day.selectAllGuest': 'Select this day (visitors: up to {n} image)|Select this day (visitors: up to {n} images)',
       'day.pageOfTotal': '{n} of {total} on this page',
       'day.count': '{n} image|{n} images',
       'pager.label': 'Pagination',
@@ -398,6 +425,7 @@
       'pager.nextTip': 'Next page (→)',
       'pager.jump': 'Go to page',
       'pager.jumpTip': 'Go to page (Enter)',
+      'pager.at': 'Page {page} of {pages}',
       'foot.keysTip': 'Keyboard shortcuts (?)',
       'foot.keys': 'Keyboard shortcuts',
       'fresh.tip': 'View latest image',
@@ -431,6 +459,7 @@
       'gap.seconds': '{n} s',
       'gap.minutes': '{n} min',
       'gap.hours': '{h} h {m} min',
+      'gap.wholeHours': '{n} h',
       'gap.days': '{n} day|{n} days',
 
       // ---- lightbox ----
@@ -469,6 +498,7 @@
       'lbp.gap': 'Since previous',
       'lbp.position': 'Position',
       'lbp.unknown': 'Unknown',
+      'lbp.zoneHint': 'File name uses {zone} time',
       'copy.url': 'Original link copied, yay~',
       'copy.fmt': 'Copied {label}, yay~',
       'copy.failed': 'Oops, copy didn’t work. Long-press the download button to copy the link~',
@@ -492,8 +522,8 @@
       'status.loadingRow': 'Status',
       'status.count': 'Total archived',
       'status.countValue': '{n} image|{n} images',
-      'status.lastRun': 'Last fetch',
-      'status.lastFetched': 'Last fetched',
+      'status.lastRun': 'Last attempt',
+      'status.lastFetched': 'Last success',
       'status.result': 'Result',
       'status.lastSaved': 'Last saved',
       'status.session': 'This session',
@@ -516,12 +546,16 @@
       'schedule.auto': 'Fetch automatically on schedule',
       'schedule.plan': 'Schedule',
       'schedule.next': 'Next fetch',
-      'schedule.lastFetched': 'Last fetched',
+      'schedule.lastFetched': 'Last success',
       'schedule.paused': 'Paused',
       'schedule.pausedHint': 'Paused. You can still fetch now in “Status”.',
       'schedule.activeHint': 'Saves automatically when the board changes',
       'schedule.pausedToast': 'Scheduled fetch paused~',
       'schedule.resumedToast': 'Yay, scheduled fetch is back on!',
+      'cron.everyMinute': 'Every minute',
+      'cron.every': 'Every {gap}',
+      'cron.hourlyAt': 'Hourly at :{m}',
+      'cron.dailyAt': 'Daily at {time}',
 
       // ---- notices ----
       'notice.title': 'Notices',
@@ -549,7 +583,7 @@
       'na.stateNew': 'New notice',
       'na.statePublished': 'Published {time}. Visitors won\'t be notified again after edits.',
       'na.stateDraft': 'Not visible to visitors. Edited {time}.',
-      'na.discard': 'Discard unsaved changes?',
+      'na.discard': 'You have unsaved changes. Do that again to discard them.',
       'na.titleRequired': 'Title is required',
       'na.updated': 'Notice updated~',
       'na.published': 'Notice published! 📢',
@@ -561,7 +595,7 @@
       'keys.title': 'Keyboard shortcuts',
       'keys.browse': 'Browse',
       'keys.pages': 'Previous / next page',
-      'keys.views': 'Grid / Masonry / List',
+      'keys.views': 'Grid / List',
       'keys.sort': 'Toggle newest / oldest first',
       'keys.group': 'Group by day',
       'keys.play': 'Play back or pause the last 24 h',
@@ -582,7 +616,7 @@
       'keys.info': 'Show or hide details',
       'keys.copy': 'Copy link',
       'keys.download': 'Download original',
-      'keys.close': 'Close',
+      'keys.close': 'Reset zoom / hide details / close',
 
       // ---- network ----
       'net.offline': 'Oops, you’re offline. Will refresh automatically when you reconnect~',
@@ -600,6 +634,14 @@
       'err.title_too_long': 'Title can be up to 100 characters',
       'err.body_too_long': 'Content can be up to 5000 characters',
       'err.too_many_notices': 'Up to 200 notices allowed. Delete old ones first.',
+      'err.image_not_found': 'This image no longer exists.',
+      'err.no_images': 'There are no images to download yet.',
+      'err.no_selection': 'No images selected.',
+      'err.guest_zip_limit': 'Visitors can download up to {n} image at once|Visitors can download up to {n} images at once',
+      'err.cross_origin': 'Request refused: it came from another site.',
+      'err.invalid_cookie': 'The cookie format is invalid.',
+      'err.cookie_save_failed': 'Couldn\'t save the cookie.',
+      'err.notify_disabled': 'No notification webhook is configured.',
     },
   };
   const LOCALES = { zh: 'zh-CN', en: 'en' };
@@ -644,6 +686,7 @@
       root.querySelectorAll(sel).forEach((n) => n.setAttribute(attr, t(n.dataset[key])));
     }
     applyRoot();
+    document.documentElement.classList.remove('i18n-pending');
   }
 
   function applyRoot() {
@@ -658,6 +701,12 @@
   }
 
   applyRoot();
+  // The page is written in Chinese; in any other language it stays hidden until apply() relabels it, so it does not
+  // flash Chinese first. Should app.js never run, the page still shows once parsed.
+  if (lang !== 'zh') {
+    document.documentElement.classList.add('i18n-pending');
+    document.addEventListener('DOMContentLoaded', () => document.documentElement.classList.remove('i18n-pending'));
+  }
   window.i18n = {
     t, apply, set,
     get lang() { return lang; },

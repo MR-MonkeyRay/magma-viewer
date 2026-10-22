@@ -759,7 +759,12 @@ func TestSetCookie(t *testing.T) {
 
 func postZip(t *testing.T, base, form string, c *http.Cookie) *http.Response {
 	t.Helper()
-	req, _ := http.NewRequest(http.MethodPost, base+"/download/zip", strings.NewReader(form))
+	return postForm(t, base+"/download/zip", form, c)
+}
+
+func postForm(t *testing.T, u, form string, c *http.Cookie) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, u, strings.NewReader(form))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	if c != nil {
@@ -783,6 +788,32 @@ func TestZipFormPost(t *testing.T) {
 	}
 	if r := postZip(t, srv.URL, all11, login(t, srv.URL)); r.StatusCode != http.StatusOK || zipCount(t, r) != 11 {
 		t.Fatalf("admin 11: %s", r.Status)
+	}
+}
+
+func TestZipCheck(t *testing.T) {
+	srv, all11 := newTestServer(t, 11)
+	ten := all11[:strings.LastIndex(all11, "&")]
+	if r := get(t, srv.URL+"/download/zip?check=1&"+ten, nil); r.StatusCode != http.StatusNoContent || r.Header.Get("Content-Disposition") != "" {
+		t.Fatalf("guest 10: %s", r.Status)
+	}
+	if r := get(t, srv.URL+"/download/zip?check=1&"+all11, nil); r.StatusCode != http.StatusBadRequest || decode(t, r)["code"] != "guest_zip_limit" {
+		t.Fatalf("guest 11: %s", r.Status)
+	}
+	if r := postForm(t, srv.URL+"/download/zip?check=1", "f=missing.png", nil); r.StatusCode != http.StatusNotFound || decode(t, r)["code"] != "image_not_found" {
+		t.Fatalf("missing: %s", r.Status)
+	}
+	if r := postForm(t, srv.URL+"/download/zip?check=1", ten, nil); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("post 10: %s", r.Status)
+	}
+	c := login(t, srv.URL)
+	if r := get(t, srv.URL+"/download/all?check=1", c); r.StatusCode != http.StatusNoContent {
+		t.Fatalf("admin all: %s", r.Status)
+	}
+
+	empty, _ := newTestServer(t, 0)
+	if r := get(t, empty.URL+"/download/all?check=1", login(t, empty.URL)); r.StatusCode != http.StatusNotFound || decode(t, r)["code"] != "no_images" {
+		t.Fatalf("empty all: %s", r.Status)
 	}
 }
 

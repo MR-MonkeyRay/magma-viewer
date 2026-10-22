@@ -16,13 +16,13 @@
     const sprite = document.getElementById('sprite');
     if (reduced()) { sprite.pauseAnimations(); sprite.setCurrentTime(0); } else sprite.unpauseAnimations();
   }
-  const VIEWS = ['grid', 'masonry', 'list'];
+  const VIEWS = ['grid', 'list'];
 
   const state = {
     page: 1,
     size: Number(store.get('size', 48)),
     sort: store.get('sort', 'desc'),
-    view: store.get('view', 'grid'),
+    view: VIEWS.includes(store.get('view')) ? store.get('view') : 'grid', // masonry was dropped
     group: store.get('group', '1') === '1',
     items: [],
     total: 0,
@@ -39,20 +39,20 @@
 
   const el = {
     bar: $('#bar'), main: $('#main'), toTop: $('#to-top'),
-    historyBar: $('#history-bar'), gallery: $('#gallery'), summary: $('#summary'), empty: $('#empty'), pager: $('#pager'),
+    history: $('#history'), historyBar: $('#history-bar'), gallery: $('#gallery'), summary: $('#summary'), empty: $('#empty'), pager: $('#pager'),
     now: $('#now'), nowImg: $('#now-img'), nowTime: $('#now-time'), nowAgo: $('#now-ago'), nowDate: $('#now-date'), nowFacts: $('#now-facts'), nowDl: $('#now-dl'),
     nowBadge: $('#now-badge'), nowView: $('#now-view'), nowPrev: $('#now-prev'), nowNext: $('#now-next'), nowBack: $('#now-back'), reel: $('#reel'), reelTrack: $('#reel-track'),
     reelHeat: $('#reel-heat'), reelFill: $('#reel-fill'), reelHead: $('#reel-head'), reelTip: $('#reel-tip'), reelPlay: $('#reel-play'),
-    reelLive: $('#reel-live'), reelPos: $('#reel-pos'), reelSpeed: $('#reel-speed'), reelLoop: $('#reel-loop'),
+    reelLive: $('#reel-live'), reelPos: $('#reel-pos'), reelSpeed: $('#reel-speed'), reelQuality: $('#reel-quality'), reelLoop: $('#reel-loop'),
     seg: $('.seg'), sort: $('#sort'), size: $('#size'), group: $('#group'), selectMode: $('#select-mode'),
     theme: $('#theme'), lang: $('#lang'), account: $('#account'), acctMenu: $('#acct-menu'), noticeBtn: $('#notice-btn'), foot: $('.foot'), version: $('#version'),
     selbar: $('#selbar'), selCount: $('#sel-count'), fresh: $('#fresh'),
-    toast: $('#toast'), toastText: $('#toast span'), toastIcon: $('#toast use'),
+    toast: $('#toast'), toastText: $('#toast span'), toastIcon: $('#toast use'), announce: $('#announce'), alert: $('#alert'),
     lb: $('#lightbox'), lbStage: $('#lb-stage'), lbImg: $('#lb-img'), lbTime: $('#lb-time'), lbSub: $('#lb-sub'),
     lbCount: $('#lb-count'), lbPrev: $('#lb-prev'), lbNext: $('#lb-next'), lbDownload: $('#lb-download'),
     lbSelect: $('#lb-select'), lbZoom: $('#lb-zoom'), lbLink: $('#lb-link'), lbMenu: $('#lb-menu'), lbInfo: $('#lb-info'),
     lbpDate: $('#lbp-date'), lbpTime: $('#lbp-time'), lbpAgo: $('#lbp-ago'), lbpDownload: $('#lbp-download'),
-    lbpSize: $('#lbp-size'), lbpSizeMenu: $('#lbp-size-menu'), lbpGrid: $('#lbp-grid'), lbpName: $('#lbp-name'),
+    lbpSize: $('#lbp-size'), lbpSizeMenu: $('#lbp-size-menu'), lbpGrid: $('#lbp-grid'), lbpName: $('#lbp-name'), lbpZone: $('#lbp-zone'),
     loginDialog: $('#login-dialog'), loginForm: $('#login-form'), loginError: $('#login-error'), loginSubmit: $('#login-submit'),
     statusDialog: $('#status-dialog'), adminStats: $('#admin-stats'), fetchNow: $('#fetch-now'),
     scheduleDialog: $('#schedule-dialog'), scheduleStats: $('#schedule-stats'), toggleSchedule: $('#toggle-schedule'), scheduleHint: $('#schedule-hint'),
@@ -70,8 +70,10 @@
   const fmtShort = (d) => `${fmtDate(d)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   const fmtHM = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   const sameDay = (a, b) => fmtDate(a) === fmtDate(b);
+  // Compact: the clock today, month/day before it.
+  const fmtStamp = (d) => (sameDay(d, new Date()) ? fmtHM(d) : `${d.getMonth() + 1}/${d.getDate()} ${fmtHM(d)}`);
   // Tile labels drop the date when it is today; the date header or tooltip has the full time.
-  const fmtTile = (d) => (state.group || sameDay(d, new Date()) ? fmtHM(d) : `${d.getMonth() + 1}/${d.getDate()} ${fmtHM(d)}`);
+  const fmtTile = (d) => (state.group ? fmtHM(d) : fmtStamp(d));
   function fmtDay(d) {
     const today = new Date();
     const yest = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
@@ -83,10 +85,11 @@
     const year = d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric';
     return d.toLocaleDateString(i18n.locale, { year, month: i18n.lang === 'zh' ? 'long' : 'short', day: 'numeric' });
   }
+  const fmtNum = (n, digits = 0) => Number(n).toLocaleString(i18n.locale, { minimumFractionDigits: digits, maximumFractionDigits: digits });
   function fmtSize(b) {
-    if (b < 1024) return b + ' B';
-    if (b < 1024 * 1024) return (b / 1024).toFixed(0) + ' KB';
-    return (b / 1024 / 1024).toFixed(b < 10 * 1024 * 1024 ? 2 : 1) + ' MB';
+    if (b < 1024) return fmtNum(b) + ' B';
+    if (b < 1024 * 1024) return fmtNum(b / 1024) + ' KB';
+    return fmtNum(b / 1024 / 1024, b < 10 * 1024 * 1024 ? 2 : 1) + ' MB';
   }
   function fmtAgo(d, saved = true) {
     const s = Math.max(0, (Date.now() - d.getTime()) / 1000);
@@ -110,7 +113,7 @@
     if (s < 60) return t('gap.seconds', { n: s });
     const m = Math.round(s / 60);
     if (m < 60) return t('gap.minutes', { n: m });
-    if (m < 1440) return t('gap.hours', { h: Math.floor(m / 60), m: m % 60 });
+    if (m < 1440) return m % 60 ? t('gap.hours', { h: Math.floor(m / 60), m: m % 60 }) : t('gap.wholeHours', { n: m / 60 });
     return t('gap.days', { n: Math.floor(m / 1440) });
   }
   const extOf = (name) => ((/\.([a-z0-9]+)$/i.exec(name) || [])[1] || '').toUpperCase().replace('JPEG', 'JPG');
@@ -202,9 +205,25 @@
     window.scrollTo({ top: 0, behavior: reduced() ? 'auto' : 'smooth' });
   }
 
+  // Screen readers hear changes through two regions that are always in the page: a region inserted or unhidden
+  // together with its text is often not announced. Clearing first lets the same message be announced again.
+  // An open modal dialog makes the rest of the page inert, so each dialog carries a pair of its own.
+  document.querySelectorAll('dialog.modal').forEach((d) => {
+    d.insertAdjacentHTML('beforeend', '<div class="sr-only" role="status" aria-live="polite" data-announce></div><div class="sr-only" role="alert" aria-live="assertive" data-alert></div>');
+  });
+  const announceTimers = new Map();
+  function announce(msg, urgent = false) {
+    const d = document.querySelector('dialog.modal[open]:not(.closing)');
+    const node = d ? d.querySelector(urgent ? '[data-alert]' : '[data-announce]') : urgent ? el.alert : el.announce;
+    node.textContent = '';
+    clearTimeout(announceTimers.get(node));
+    announceTimers.set(node, setTimeout(() => { node.textContent = msg; }, 60));
+  }
+
   const TOAST_ICON = { info: '#i-info', ok: '#i-ok', error: '#i-alert' };
   let toastTimer;
   function toast(msg, kind = 'info') {
+    announce(msg, kind === 'error');
     const visible = !el.toast.hidden && !el.toast.classList.contains('leaving');
     el.toast.className = 'toast ' + kind;
     el.toastText.textContent = msg;
@@ -225,16 +244,52 @@
   // The server's message is Chinese; known codes are shown in the page's language instead.
   function errorText(body) {
     const key = 'err.' + body.code;
-    return body.code && t(key) !== key ? t(key) : body.error;
+    return body.code && t(key) !== key ? t(key, { n: state.guestLimit }) : body.error;
   }
 
-  function download(href) {
+  function download(href, filename = '') {
     const a = document.createElement('a');
     a.href = href;
-    a.download = '';
+    a.download = filename;
+    a.dataset.checked = ''; // already checked; the click below must not be checked again
     document.body.appendChild(a);
     a.click();
     a.remove();
+  }
+
+  // A file that is gone, or an archive the server refuses, would leave the browser saving the error as a file.
+  // Downloads ask first: HEAD for a single file, ?check for an archive, which validates without streaming it.
+  async function preflight(url, opts) {
+    try {
+      const res = await fetch(url, Object.assign({ credentials: 'same-origin' }, opts));
+      if (res.ok) return true;
+      if (res.status === 401) { handleAuthError(res); return false; }
+      const body = await res.json().catch(() => ({}));
+      toast(errorText(body) || t(res.status === 404 ? 'err.image_not_found' : 'download.failed'), 'error');
+    } catch (e) {
+      toast(t('download.failed'), 'error');
+    }
+    return false;
+  }
+
+  async function downloadFile(href, filename) {
+    const ok = await preflight(href, { method: 'HEAD' });
+    if (ok) download(href, filename);
+    return ok;
+  }
+
+  // Posted as a form, since a large selection outgrows a URL; the attachment downloads without leaving the page.
+  async function downloadZip(names) {
+    if (!(await preflight('/download/zip?check=1', { method: 'POST', body: new URLSearchParams(names.map((n) => ['f', n])) }))) return false;
+    const form = document.createElement('form');
+    form.method = 'post';
+    form.action = '/download/zip';
+    form.hidden = true;
+    for (const n of names) form.append(Object.assign(document.createElement('input'), { type: 'hidden', name: 'f', value: n }));
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
+    return true;
   }
 
   // navigator.clipboard needs a secure context; plain-http deployments fall back to execCommand.
@@ -283,7 +338,9 @@
   let loadSeq = 0;
   // silent reloads come from polling: no skeleton, no progress bar, new tiles are highlighted.
   // Resolves true once the page is shown, false when the request failed or was superseded.
-  async function load({ scroll = false, silent = false } = {}) {
+  // around names a picture whose page to show instead of state.page; guard, when given, must still hold when the
+  // answer arrives or nothing is shown.
+  async function load({ scroll = false, silent = false, around = '', guard = null } = {}) {
     const seq = ++loadSeq;
     if (!silent) {
       if (!state.items.length) renderSkeleton();
@@ -294,14 +351,21 @@
     const viewing = state.lbIndex >= 0 && state.items[state.lbIndex] ? state.items[state.lbIndex].name : null;
     const anchor = state.lastIndex !== null && state.items[state.lastIndex] ? state.items[state.lastIndex].name : null;
     try {
-      const d = await api(`/api/images?page=${state.page}&size=${state.size}&sort=${state.sort}`);
-      if (seq !== loadSeq) return false;
+      const d = await api(`/api/images?page=${state.page}&size=${state.size}&sort=${state.sort}${around ? `&around=${enc(around)}` : ''}`);
+      if (seq !== loadSeq || (guard && !guard())) return false;
       Object.assign(state, { items: d.items, total: d.total, page: d.page, size: d.size, pages: d.pages, admin: d.admin, guestLimit: d.guest_limit, task: d.task });
       checkNotices(d.notice);
       if (d.version) { el.version.textContent = 'v' + d.version; show(el.version); }
       // New pictures shift indexes; keep the shift-click anchor on the same picture.
       if (anchor) { const j = state.items.findIndex((it) => it.name === anchor); state.lastIndex = j >= 0 ? j : null; }
-      if (onFirstPage()) { state.latest = d.items[0] || null; hide(el.fresh); }
+      if (onFirstPage()) {
+        const top = d.items[0] || null;
+        // Polling refreshes the overview itself; a newer picture found any other way (fetch now, a reload) must too.
+        const newer = state.latest !== undefined && (top && top.name) !== (state.latest && state.latest.name);
+        state.latest = top;
+        hide(el.fresh);
+        if (newer) loadOverview();
+      }
       writeHash();
       // Keep an open lightbox on the same picture even though indexes shifted.
       let lost = false;
@@ -336,6 +400,12 @@
     return load({ scroll: true });
   }
 
+  // The newest pictures: page one, newest first.
+  function goNewest() {
+    if (state.sort !== 'desc') { state.sort = 'desc'; store.set('sort', 'desc'); }
+    return go(1);
+  }
+
   // ---------- rendering ----------
   function renderSkeleton() {
     el.gallery.className = `gallery view-${state.view} skeleton`;
@@ -350,7 +420,11 @@
       <p>${esc(t('load.failed', { msg: e.message }))}</p>
       <button type="button" class="btn primary" data-retry><svg><use href="#i-refresh"/></svg>${t('load.retry')}</button></div>`;
     el.summary.textContent = '';
+    const active = document.activeElement;
+    const lost = !active || active === document.body || el.pager.contains(active);
     el.pager.innerHTML = '';
+    announce(t('load.failed', { msg: e.message }), true);
+    if (lost) el.gallery.querySelector('[data-retry]').focus({ preventScroll: true });
     // A hero that never got a picture must not keep shimmering above the error.
     if (!el.now.dataset.name) { el.now.classList.remove('pending'); el.now.hidden = true; }
   }
@@ -361,7 +435,7 @@
     const name = esc(it.name);
     const list = state.view === 'list';
     return `<figure class="tile${sel ? ' selected' : ''}" data-i="${i}" style="--d:${i}">
-      <button type="button" class="tile-check" aria-label="${t('tile.select')}" aria-pressed="${sel}"><svg><use href="#i-check"/></svg></button>
+      <button type="button" class="tile-check" aria-label="${esc(t('tile.selectAt', { time: fmtFull(d) }))}" aria-pressed="${sel}"><svg><use href="#i-check"/></svg></button>
       <button type="button" class="tile-open" aria-label="${esc(t('tile.view', { time: fmtFull(d) }))}" title="${esc(fmtFull(d))}"><img loading="lazy" decoding="async" src="/thumb/${enc(it.name)}"${it.w ? ` width="${it.w}" height="${it.h}"` : ''} alt=""></button>
       <figcaption class="tile-cap">
         <time datetime="${esc(it.time)}">${list ? fmtFull(d) : fmtTile(d)}</time>
@@ -371,32 +445,13 @@
     </figure>`;
   }
 
-  // Masonry fills the shortest column, keeping left-to-right, newest-first order.
-  // Columns follow the same --tile-min as the grid, so both views widen their tiles on large screens.
-  function masonryCols() {
-    const root = getComputedStyle(document.documentElement);
-    const gap = parseFloat(root.getPropertyValue('--gap')) || 4;
-    const MASONRY_COL = parseFloat(root.getPropertyValue('--tile-min')) || 220;
-    const w = el.gallery.clientWidth || window.innerWidth;
-    return Math.max(2, Math.floor((w + gap) / (MASONRY_COL + gap)));
-  }
-
-  function tilesHTML(entries) {
-    if (state.view !== 'masonry') return `<div class="tiles">${entries.map(([it, i]) => tileHTML(it, i)).join('')}</div>`;
-    const n = masonryCols();
-    const cols = Array.from({ length: n }, () => ({ h: 0, html: [] }));
-    for (const [it, i] of entries) {
-      const col = cols.reduce((a, b) => (b.h < a.h ? b : a));
-      col.h += (it.w ? it.h / it.w : 1) + 0.05; // gap relative to column width
-      col.html.push(tileHTML(it, i));
-    }
-    return `<div class="tiles" data-cols="${n}">${cols.map((c) => `<div class="mcol">${c.html.join('')}</div>`).join('')}</div>`;
-  }
+  const tilesHTML = (entries) => `<div class="tiles">${entries.map(([it, i]) => tileHTML(it, i)).join('')}</div>`;
 
   // The hero follows state.latest, which polling keeps current even when the gallery below is not reloaded.
   // While the reel is scrubbed it shows reel.at instead; leaving the reel returns to the newest picture.
   function renderNow() {
     const latest = onFirstPage() ? state.latest : null;
+    if (latest === undefined) return; // the first page has not arrived: keep the placeholder
     el.now.classList.remove('pending');
     el.now.hidden = !latest;
     if (!latest) { if (reel.playing) reelStop(); return; }
@@ -421,16 +476,30 @@
       <div><dt>${t('now.recent')}</dt><dd>${overview.recent === null ? '—' : t('now.recentCount', { n: overview.recent })}</dd></div>`;
     el.nowDl.href = `/download/${enc(shown.name)}`;
     renderReelHead();
-    // Playback shows thumbnails only; the picture it stopped on still needs its preview.
+    // Playback shows frames of the chosen quality, which reelTick has already loaded and decoded. A quality change or a
+    // thumbnail fallback swaps the frame of the same picture too.
+    if (reel.playing && el.now.dataset.name) {
+      const frame = reelSrc(shown);
+      if (el.now.dataset.name === shown.name && el.nowImg.getAttribute('src') === frame) return;
+      nowVer++; // drops a preview still loading from before playback
+      el.now.dataset.name = shown.name;
+      if (shown.w) { el.nowImg.width = shown.w; el.nowImg.height = shown.h; }
+      el.nowImg.src = frame;
+      if (frame.startsWith('/thumb/')) el.now.dataset.thumb = shown.name; else delete el.now.dataset.thumb;
+      return;
+    }
+    // A thumbnail shown by scrubbing or smooth playback is replaced by the preview once the picture holds still.
     const upgrade = !reel.playing && el.now.dataset.thumb === shown.name;
     if (el.now.dataset.name === shown.name && !upgrade) return;
+    // Every change of picture gets a version; a preview that finishes loading after a later change is dropped.
+    const ver = ++nowVer;
     const first = !el.now.dataset.name;
     const scrubbing = reel.at >= 0 || reel.playing;
     el.now.dataset.name = shown.name;
     // Scrubbing swaps small thumbnails instantly; the preview replaces them once it has loaded.
     const src = `/preview/${enc(shown.name)}`;
     const swap = () => {
-      if (el.now.dataset.name !== shown.name) return;
+      if (ver !== nowVer) return;
       if (shown.w) { el.nowImg.width = shown.w; el.nowImg.height = shown.h; }
       el.nowImg.src = src;
       if (first || scrubbing || upgrade || !live) { markCached(el.now); return; }
@@ -440,9 +509,7 @@
       }
     };
     if (first) return swap();
-    if (scrubbing && !upgrade) { el.nowImg.src = `/thumb/${enc(shown.name)}`; }
-    // At 4× a frame lasts 35 ms; starting a preview download for each would only queue up requests.
-    if (reel.playing) { el.now.dataset.thumb = shown.name; return; }
+    if (scrubbing && !upgrade) el.nowImg.src = `/thumb/${enc(shown.name)}`;
     delete el.now.dataset.thumb;
     const pre = new Image();
     pre.src = src;
@@ -451,18 +518,29 @@
 
   // ---------- reel: the last 24 hours as a heat strip, oldest on the left ----------
   const overview = { recent: null, first: '', days: new Map() }; // days: YYYY-MM-DD -> { count }
+  let nowVer = 0; // see renderNow
   const REEL_SPEEDS = [0.5, 1, 2, 4];
   const REEL_FRAME = 140; // ms per picture at 1×
+  // Playback quality: the 480px thumbnail, the 1600px preview (default) or the original file. Larger frames take
+  // longer to arrive, so more of them are loaded ahead.
+  const REEL_QUALITY = { thumb: { path: '/thumb/', ahead: 3 }, preview: { path: '/preview/', ahead: 6 }, original: { path: '/img/', ahead: 4 } };
   const reel = {
     items: [], times: [], heat: [], at: -1, playing: false, timer: 0, dragging: false, resume: false, from: 0, to: 0,
     speed: REEL_SPEEDS.includes(+store.get('reelSpeed')) ? +store.get('reelSpeed') : 1,
+    quality: store.get('reelQuality', 'preview') in REEL_QUALITY ? store.get('reelQuality', 'preview') : 'preview',
     loop: store.get('reelLoop') === '1',
+    run: 0, // bumped whenever playback stops or restarts, so a frame still loading cannot advance an old run
+    frames: new Map(), // src -> promise settled once that frame is decoded or failed
+    failed: new Set(), // frame URLs that did not load; playback shows that picture's thumbnail instead
   };
+  let overviewSeq = 0;
   async function loadOverview() {
+    const seq = ++overviewSeq;
     try {
       let tz = '';
       try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { /* server time then */ }
       const o = await api(`/api/overview${tz ? `?tz=${enc(tz)}` : ''}`);
+      if (seq !== overviewSeq) return; // a later request is on its way; an older answer must not overwrite it
       // A rolling 24 hours (the reel's window) rather than since midnight, so the count does not drop to zero
       // overnight; the server's heat counts are not capped like the recent pictures.
       overview.recent = o.heat ? o.heat.reduce((a, b) => a + b, 0) : o.recent.length;
@@ -481,13 +559,11 @@
       reel.to = o.recent.length ? new Date(o.last).getTime() : 0;
       reel.from = reel.to - 864e5;
       renderReel();
-      // Day counts feed the gallery's headers and summary; before the first page arrives only the hero needs them.
-      if (state.items.length) render(); else renderNow();
+      renderOverview();
     } catch (e) { /* the reel is optional */ }
   }
   const reelX = (ms) => (ms - reel.from) / (reel.to - reel.from);
   const reelPct = (ms) => `${(Math.max(0, Math.min(1, reelX(ms))) * 100).toFixed(3)}%`;
-  const reelLabel = (d) => (sameDay(d, new Date()) ? fmtHM(d) : `${d.getMonth() + 1}/${d.getDate()} ${fmtHM(d)}`);
   function renderReel() {
     el.reel.hidden = reel.items.length < 2;
     // A refresh can leave too few pictures to replay; playback must not carry on behind the hidden bar.
@@ -502,6 +578,7 @@
       return `${color} ${(i * w).toFixed(3)}% ${((i + 1) * w).toFixed(3)}%`;
     }).join(', ')})`;
     el.reelSpeed.value = String(reel.speed);
+    el.reelQuality.value = reel.quality;
     el.reelLoop.setAttribute('aria-pressed', String(reel.loop));
   }
   function renderReelHead() {
@@ -514,7 +591,7 @@
     const x = reelPct(reel.times[i]);
     el.reelHead.style.left = x;
     el.reelFill.style.width = x;
-    el.reelPos.textContent = `${reelLabel(new Date(it.time))} · ${i + 1}/${reel.items.length}`;
+    el.reelPos.textContent = `${fmtStamp(new Date(it.time))} · ${i + 1}/${reel.items.length}`;
     el.reelTrack.setAttribute('aria-valuenow', i);
     el.reelTrack.setAttribute('aria-valuetext', fmtFull(new Date(it.time)));
   }
@@ -532,24 +609,114 @@
   }
   function reelStop() {
     clearTimeout(reel.timer);
+    reel.run++;
+    setReelBuffering(false);
+    reelForget();
     reel.playing = false;
     el.reelPlay.setAttribute('aria-pressed', 'false');
     el.reelPlay.querySelector('use').setAttribute('href', '#i-play');
   }
-  // Each step warms the next few thumbnails so fast speeds do not stall on the network. The next step is read from
-  // reel.at when the timer fires, so a refreshed window or a speed change applies to it.
+  // Failures are kept per URL, so one at another quality never downgrades the frame chosen now.
+  function reelSrc(it) {
+    const src = REEL_QUALITY[reel.quality].path + enc(it.name);
+    return reel.failed.has(src) ? `/thumb/${enc(it.name)}` : src;
+  }
+
+  // Loads and decodes the frame of picture it once. The promise settles either way: a failed frame falls back to the
+  // thumbnail, unless its load was cancelled meanwhile (see reelForget), which ends it there.
+  function reelFrame(it) {
+    if (!it) return Promise.resolve();
+    const src = reelSrc(it);
+    let entry = reel.frames.get(src);
+    if (!entry) {
+      const img = new Image();
+      img.src = src;
+      entry = { img };
+      const own = entry;
+      entry.done = img.decode().catch(() => {
+        if (reel.frames.get(src) !== own || src.startsWith('/thumb/')) return undefined;
+        reel.failed.add(src);
+        return reelFrame(it);
+      });
+      reel.frames.set(src, entry);
+    }
+    return entry.done;
+  }
+
+  // Cancels the loads of frames not in keep (all of them without it): removing src aborts the download.
+  function reelForget(keep) {
+    for (const [src, entry] of reel.frames) {
+      if (keep && keep.has(src)) continue;
+      reel.frames.delete(src);
+      entry.img.removeAttribute('src');
+    }
+  }
+
+  // Keeps the frames from i to i + ahead loading (wrapping round when looping) and cancels the rest, so the requests
+  // in flight and the decoded images held stay few even for originals.
+  function reelWarm(i) {
+    const n = reel.items.length;
+    const keep = new Set();
+    for (let k = 0; k <= REEL_QUALITY[reel.quality].ahead; k++) {
+      const j = reel.loop ? (i + k) % n : i + k;
+      if (j >= n) break;
+      keep.add(reelSrc(reel.items[j]));
+      reelFrame(reel.items[j]);
+    }
+    reelForget(keep);
+  }
+
+  let reelBufferTimer = 0;
+  function setReelBuffering(on) {
+    clearTimeout(reelBufferTimer);
+    el.reel.classList.toggle('buffering', on);
+    if (on) el.reelPlay.setAttribute('aria-busy', 'true'); else el.reelPlay.removeAttribute('aria-busy');
+  }
+
+  // Slow networks pause playback (showing the buffering ring) instead of skipping frames: a frame's time starts once
+  // it has been decoded, and the next frame shows only when its time is up and it has been decoded as well. The step
+  // after is read from reel.at when it is due, so a refreshed window or a speed change applies to it.
   function reelTick(i) {
     if (!reel.playing) return;
     reelSeek(i);
-    for (let j = i + 1; j <= i + 3 && j < reel.items.length; j++) new Image().src = `/thumb/${enc(reel.items[j].name)}`;
+    reelWarm(reel.at);
     const last = reel.items.length - 1;
-    if (reel.at < last) { reel.timer = setTimeout(() => reelTick(reel.at + 1), REEL_FRAME / reel.speed); return; }
-    if (!reel.loop) { reelPause(); return; }
+    if (reel.at >= last && !reel.loop) { reelPause(); return; }
+    const run = reel.run;
+    const live = () => run === reel.run && reel.playing;
     // Linger on the newest picture before starting over.
-    reel.timer = setTimeout(() => reelTick(0), 1200);
+    const wait = reel.at < last ? REEL_FRAME / reel.speed : 1200;
+    // Only a step clearly longer than its frame time shows the ring, so it does not flicker on fast connections.
+    clearTimeout(reelBufferTimer);
+    reelBufferTimer = setTimeout(() => { if (live()) setReelBuffering(true); }, wait + 200);
+    const cur = reel.items[reel.at];
+    reelFrame(cur).then(() => {
+      if (!live()) return;
+      // A refresh that dropped this picture moved reel.at to another one, which has to be waited for in turn.
+      if (reel.items[reel.at]?.name !== cur.name) { reelTick(reel.at); return; }
+      renderNow(); // shows the thumbnail if the frame fell back to it
+      const due = new Promise((resolve) => { reel.timer = setTimeout(resolve, wait); });
+      const n = reel.items.length;
+      reelAdvance(reel.items[reel.at < n - 1 ? reel.at + 1 : 0], due, live);
+    });
+  }
+
+  // Shows target once it has been decoded and due has passed. An overview refresh can drop target from the window
+  // meanwhile; the picture now after the current one is then waited for in its place.
+  function reelAdvance(target, due, live) {
+    if (!target) return;
+    Promise.all([due, reelFrame(target)]).then(() => {
+      if (!live()) return;
+      const j = reel.items.findIndex((it) => it.name === target.name);
+      if (j >= 0) { setReelBuffering(false); reelTick(j); return; }
+      const n = reel.items.length;
+      reelAdvance(reel.items[reel.at < n - 1 ? reel.at + 1 : 0], due, live);
+    });
   }
   function reelStart(from) {
     clearTimeout(reel.timer);
+    reel.run++;
+    setReelBuffering(false);
     reel.playing = true;
     el.reelPlay.setAttribute('aria-pressed', 'true');
     el.reelPlay.querySelector('use').setAttribute('href', '#i-pause');
@@ -583,6 +750,15 @@
     el.reelSpeed.value = String(v);
     store.set('reelSpeed', v);
   }
+  // A new quality applies from the next frame; playback that is running warms the new frames from where it stands.
+  function setReelQuality(v) {
+    if (!(v in REEL_QUALITY)) return;
+    reel.quality = v;
+    el.reelQuality.value = v;
+    store.set('reelQuality', v);
+    reelForget();
+    if (reel.playing) reelStart(reel.at >= 0 ? reel.at : 0);
+  }
   function stepReelSpeed(d) {
     const i = REEL_SPEEDS.indexOf(reel.speed) + d;
     if (i >= 0 && i < REEL_SPEEDS.length) setReelSpeed(REEL_SPEEDS[i]);
@@ -596,7 +772,7 @@
     if (img.getAttribute('src') !== src) img.src = src;
     const time = el.reelTip.querySelector('time');
     time.dateTime = it.time;
-    time.textContent = reelLabel(new Date(it.time));
+    time.textContent = fmtStamp(new Date(it.time));
     el.reelTip.hidden = false;
     // Near either end the tip slides inward instead of hanging past the strip.
     const w = el.reelTrack.clientWidth;
@@ -647,6 +823,7 @@
   el.reelPlay.addEventListener('click', reelPlay);
   el.reelLive.addEventListener('click', reelToLatest);
   el.reelSpeed.addEventListener('change', () => setReelSpeed(+el.reelSpeed.value));
+  el.reelQuality.addEventListener('change', () => setReelQuality(el.reelQuality.value));
   el.reelLoop.addEventListener('click', () => {
     reel.loop = !reel.loop;
     el.reelLoop.setAttribute('aria-pressed', String(reel.loop));
@@ -677,10 +854,47 @@
     if (!task) return;
     const at = validTime(task.last_fetched) ? new Date(task.last_fetched) : null;
     const next = !task.paused && validTime(task.next_run) ? task.next_run : '';
+    const retry = !task.paused && backingOff(task) ? task.retry_at : '';
     el.task.classList.toggle('paused', task.paused);
     el.task.innerHTML = `<dt>${t('task.title')}</dt><dd><span class="task-state"><span class="task-dot" aria-hidden="true"></span>${t(task.paused ? 'task.paused' : 'task.running')}</span></dd>
       <dt>${t('task.lastFetched')}</dt><dd title="${at ? esc(fmtFull(at)) : t('task.none')}">${at ? `<span data-ago="${esc(task.last_fetched)}">${fmtAgo(at, false)}</span>` : t('task.none')}</dd>
-      ${next ? `<dt>${t('task.next')}</dt><dd title="${esc(fmtFull(new Date(next)))}"><span data-until="${esc(next)}">${fmtUntil(new Date(next))}</span></dd>` : ''}`;
+      ${retry ? `<dt>${t('task.retry')}</dt><dd title="${esc(fmtFull(new Date(retry)))}"><span data-until="${esc(retry)}">${fmtUntil(new Date(retry))}</span></dd>`
+    : next ? `<dt>${t('task.next')}</dt><dd title="${esc(fmtFull(new Date(next)))}"><span data-until="${esc(next)}">${fmtUntil(new Date(next))}</span></dd>` : ''}`;
+  }
+
+  // After repeated failures scheduled runs before retry_at are skipped (the server allows 2 s of slack), so the next
+  // scheduled run is not the next attempt.
+  function backingOff(task) {
+    return validTime(task.retry_at) && validTime(task.next_run) && new Date(task.retry_at) - 2000 > new Date(task.next_run);
+  }
+
+  function renderSummary() {
+    el.empty.hidden = state.total > 0;
+    el.summary.hidden = state.total === 0;
+    const from = (state.page - 1) * state.size + 1;
+    const to = from + state.items.length - 1;
+    const since = overview.first ? new Date(overview.first) : null;
+    el.summary.innerHTML = state.total
+      ? `<strong>${fmtNum(state.total)}</strong> ${t('summary.images', { n: state.total })}${since ? `<span>${t('summary.since', { date: fmtMonthDay(since) })}</span>` : ''}${state.pages > 1 ? `<span>${t('summary.range', { from: fmtNum(from), to: fmtNum(to) })}</span>` : ''}`
+      : '';
+  }
+
+  // A day can run across pages: the header gives the whole day's count and this page's share of it.
+  function dayCount(key, n) {
+    const total = (overview.days.get(key) || { count: 0 }).count;
+    return total > n ? t('day.pageOfTotal', { n: fmtNum(n), total: fmtNum(total) }) : t('day.count', { n: fmtNum(n) });
+  }
+
+  // New overview data only changes the hero, the summary and the day headers; the tiles stay as they are.
+  function renderOverview() {
+    renderNow();
+    if (!state.items.length || el.gallery.matches('.skeleton') || el.gallery.querySelector('.load-error')) return;
+    renderSummary();
+    el.gallery.querySelectorAll('.group-title').forEach((h) => {
+      const c = h.querySelector('.gt-count');
+      const text = dayCount(h.dataset.date, Number(h.dataset.to) - Number(h.dataset.from) + 1);
+      if (c.textContent !== text) c.textContent = text;
+    });
   }
 
   // slide is the direction a new page arrives from; view and grouping changes animate in place.
@@ -688,14 +902,7 @@
     el.gallery.style.setProperty('--sx', `${slide * 28}px`);
     renderTask();
     renderNow();
-    el.empty.hidden = state.total > 0;
-    el.summary.hidden = state.total === 0;
-    const from = (state.page - 1) * state.size + 1;
-    const to = from + state.items.length - 1;
-    const since = overview.first ? new Date(overview.first) : null;
-    el.summary.innerHTML = state.total
-      ? `<strong>${state.total}</strong> ${t('summary.images', { n: state.total })}${since ? `<span>${t('summary.since', { date: fmtMonthDay(since) })}</span>` : ''}${state.pages > 1 ? `<span>${t('summary.range', { from, to })}</span>` : ''}`
-      : '';
+    renderSummary();
 
     el.gallery.className = `gallery view-${state.view}${state.selectMode ? ' selecting' : ''}${animate ? ' animate' : ''}`;
     // Grid tiles follow the page's typical aspect ratio (magma canvases are 16:9).
@@ -715,14 +922,14 @@
       el.gallery.innerHTML = groups.map((g) => {
         const first = g.entries[0][1];
         const last = g.entries[g.entries.length - 1][1];
-        // A day can run across pages: the header gives the whole day's count and this page's share of it.
-        const total = (overview.days.get(g.key) || { count: 0 }).count;
         const n = g.entries.length;
         const t0 = fmtHM(new Date(g.entries[0][0].time));
         const t1 = fmtHM(new Date(g.entries[n - 1][0].time));
+        // Visitors may pick only part of a long day; the tooltip says so up front.
+        const pick = esc(state.admin ? t('day.selectAll') : t('day.selectAllGuest', { n: state.guestLimit }));
         return `<h2 class="group-title" data-from="${first}" data-to="${last}" data-date="${g.key}">
-          <button type="button" class="group-check" aria-label="${t('day.selectAll')}" title="${t('day.selectAll')}"><svg><use href="#i-check"/></svg></button>
-          <span class="gt-day">${fmtDay(g.d)}</span><span class="gt-count">${total > n ? t('day.pageOfTotal', { n, total }) : t('day.count', { n })}</span><span class="gt-range">${n > 1 ? `${state.sort === 'desc' ? t1 : t0}–${state.sort === 'desc' ? t0 : t1}` : t0}</span></h2>${tilesHTML(g.entries)}`;
+          <button type="button" class="group-check" aria-label="${pick}" title="${pick}"><svg><use href="#i-check"/></svg></button>
+          <span class="gt-day">${fmtDay(g.d)}</span><span class="gt-count">${dayCount(g.key, n)}</span><span class="gt-range">${n > 1 ? `${state.sort === 'desc' ? t1 : t0}–${state.sort === 'desc' ? t0 : t1}` : t0}</span></h2>${tilesHTML(g.entries)}`;
       }).join('');
     }
     markCached(el.gallery);
@@ -752,11 +959,11 @@
     if (state.pages <= 1) { el.pager.innerHTML = ''; return; }
     const btn = (p, label, extra = '') => `<button type="button" data-page="${p}" ${extra}>${label}</button>`;
     el.pager.innerHTML =
-      btn(state.page - 1, '<svg><use href="#i-left"/></svg>', `class="step" aria-label="${t('pager.prev')}" title="${t('pager.prevTip')}"${state.page <= 1 ? ' disabled' : ''}`) +
+      btn(state.page - 1, '<svg><use href="#i-left"/></svg>', `class="step prev" aria-label="${t('pager.prev')}" title="${t('pager.prevTip')}"${state.page <= 1 ? ' disabled' : ''}`) +
       pageList(state.page, state.pages).map((p) => p === null
         ? '<span class="gap">…</span>'
         : btn(p, p, p === state.page ? 'aria-current="page"' : '')).join('') +
-      btn(state.page + 1, '<svg><use href="#i-right"/></svg>', `class="step" aria-label="${t('pager.next')}" title="${t('pager.nextTip')}"${state.page >= state.pages ? ' disabled' : ''}`) +
+      btn(state.page + 1, '<svg><use href="#i-right"/></svg>', `class="step next" aria-label="${t('pager.next')}" title="${t('pager.nextTip')}"${state.page >= state.pages ? ' disabled' : ''}`) +
       `<label class="jump" title="${t('pager.jumpTip')}"><input type="number" min="1" max="${state.pages}" placeholder="${state.page}" aria-label="${t('pager.jump')}"><span>/ ${state.pages}</span></label>`;
   }
 
@@ -783,6 +990,10 @@
     }
     el.account.querySelector('use').setAttribute('href', state.admin ? '#i-shield' : '#i-user');
     el.account.classList.toggle('is-admin', state.admin);
+  }
+
+  // Reading computed styles forces a style pass, so the theme is read only when it may have changed, not per render.
+  function renderTheme() {
     const root = getComputedStyle(document.documentElement);
     el.theme.querySelector('use').setAttribute('href', root.colorScheme === 'dark' ? '#i-sun' : '#i-moon');
     const board = root.getPropertyValue('--board').trim();
@@ -814,7 +1025,7 @@
     const apply = () => {
       document.documentElement.dataset.theme = dark ? 'light' : 'dark';
       store.set('theme', document.documentElement.dataset.theme);
-      renderControls();
+      renderTheme();
     };
     if (!document.startViewTransition || reduced()) return apply();
     // Reveal the new theme as a circle growing from the toggle button.
@@ -951,9 +1162,11 @@
   function updateLightboxMeta() {
     const i = state.lbIndex;
     const it = state.items[i];
-    el.lbTime.textContent = fmtFull(new Date(it.time));
+    // Phones have room for a short time only; the detail panel and the tooltip keep the full one.
+    el.lbTime.textContent = narrow.matches ? fmtStamp(new Date(it.time)) : fmtFull(new Date(it.time));
+    el.lbTime.title = fmtFull(new Date(it.time));
     el.lbSub.textContent = `${it.w ? `${it.w}×${it.h} · ` : ''}${fmtSize(it.size)}`;
-    el.lbCount.textContent = `${(state.page - 1) * state.size + i + 1} / ${state.total}`;
+    el.lbCount.textContent = `${fmtNum((state.page - 1) * state.size + i + 1)} / ${fmtNum(state.total)}`;
     el.lbDownload.href = `/download/${enc(it.name)}`;
     el.lbPrev.disabled = i === 0 && state.page === 1;
     el.lbNext.disabled = i === state.items.length - 1 && state.page === state.pages;
@@ -966,6 +1179,9 @@
     el.lbpAgo.textContent = fmtAgo(d);
     el.lbpDownload.href = `/download/${enc(it.name)}`;
     el.lbpName.textContent = it.name;
+    const zone = nameZone(it);
+    el.lbpZone.hidden = !zone;
+    el.lbpZone.textContent = zone ? t('lbp.zoneHint', { zone }) : '';
     renderGrid(i);
     // Sizes the server already keeps, both JPEG: the 1600px preview, and the 480px thumbnail scaled down from it.
     // GIFs are served as-is for the preview, so only the thumbnail is offered.
@@ -983,6 +1199,18 @@
     }
     el.lbpSizeMenu.innerHTML = sizes.map(([href, label, sub, file]) =>
       `<a role="menuitem" href="${href}" download="${esc(file)}"><strong>${label}</strong><span>${esc(sub)}</span></a>`).join('');
+  }
+
+  // File names carry the archive's clock time. When this browser's clock differs, the panel names the zone the file
+  // name uses, so a name that reads 08:00 beside a picture taken at 09:00 does not look wrong. '' when they agree.
+  function nameZone(it) {
+    const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})_/.exec(it.name);
+    if (!m) return '';
+    const at = new Date(it.time);
+    const off = Math.round((Date.UTC(m[1], m[2] - 1, m[3], m[4], m[5], m[6]) - at.getTime()) / 60000);
+    if (Number.isNaN(off) || off === -at.getTimezoneOffset()) return '';
+    const a = Math.abs(off);
+    return `UTC${off < 0 ? '−' : '+'}${Math.floor(a / 60)}${a % 60 ? ':' + pad(a % 60) : ''}`;
   }
 
   function renderGrid(i) {
@@ -1019,6 +1247,9 @@
   }
 
   const wideScreen = window.matchMedia('(min-width: 1100px)');
+  const narrow = window.matchMedia('(max-width: 640px)');
+  const sheet = window.matchMedia('(max-width: 900px)'); // the detail panel covers the picture as a bottom sheet
+  narrow.addEventListener('change', () => { if (state.lbIndex >= 0) updateLightboxMeta(); });
   function setInfo(on, save) {
     closeMenu();
     el.lb.classList.toggle('info-open', on);
@@ -1137,24 +1368,60 @@
     }
   }
 
+  // Pictures saved since this page loaded shift every page boundary, so stepping off the page looks up the neighbour
+  // of the current picture by name, then shows the page holding that neighbour (around=) and opens it by name;
+  // stepping by position would skip a picture or show one twice. Resolves to the neighbour's name, null when there
+  // is none, or undefined when it could not be found (the caller then falls back to the next page).
+  async function neighbour(name, delta) {
+    const list = (q) => api(`/api/images?${q}&size=${state.size}&sort=${state.sort}`);
+    try {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const d = await list(`around=${enc(name)}`);
+        const j = d.focus === name ? d.items.findIndex((it) => it.name === name) : -1;
+        if (j < 0) return undefined;
+        if (d.items[j + delta]) return d.items[j + delta].name;
+        const page = d.page + delta;
+        if (page < 1 || page > d.pages) return null;
+        const e = await list(`page=${page}`);
+        if (e.page !== page) return undefined;
+        // A picture saved between the two requests can bring the current one onto this page as well.
+        const k = e.items.findIndex((it) => it.name === name);
+        if (k >= 0) { const it = e.items[k + delta]; if (it) return it.name; continue; }
+        // Otherwise the edge of this page is the neighbour only if nothing was saved or removed in between.
+        if (e.total === d.total) { const it = e.items[delta > 0 ? 0 : e.items.length - 1]; return it ? it.name : undefined; }
+      }
+    } catch (e) { /* fall back below */ }
+    return undefined;
+  }
+
   let stepping = false;
   async function step(delta) {
     if (state.lbIndex < 0 || stepping) return;
     const i = state.lbIndex + delta;
     if (i >= 0 && i < state.items.length) return openLightbox(i, delta);
-    const page = state.page + delta;
-    if (page < 1 || page > state.pages) return;
+    if (state.page + delta < 1 || state.page + delta > state.pages) return;
     stepping = true;
     const from = state.page;
+    // Closing or reopening the lightbox meanwhile bumps lbSeq; this step then leaves the new view alone.
+    const seq = lbSeq;
+    const current = () => seq === lbSeq && state.lbIndex >= 0;
     try {
-      if (await go(page)) {
-        if (state.lbIndex >= 0) openLightbox(delta < 0 ? state.items.length - 1 : 0, delta);
+      const name = await neighbour(state.items[state.lbIndex].name, delta);
+      if (name === null || !current()) return;
+      // With the neighbour's name its page is found by around=; without it, the next page is the best guess.
+      const page = name ? state.page : state.page + delta;
+      slideDir = delta;
+      state.page = page;
+      state.lastIndex = null;
+      // The guard keeps a page that arrives after the lightbox was closed or reopened from replacing the gallery.
+      if (await load({ scroll: true, around: name || '', guard: current })) {
+        const k = name ? state.items.findIndex((it) => it.name === name) : delta < 0 ? state.items.length - 1 : 0;
+        if (k >= 0) openLightbox(k, delta);
       } else if (state.page === page) {
-        // Still showing the old page's pictures: put the gallery back under them.
+        // Nothing new was shown: put the page back under the pictures still on screen.
         state.page = from;
         writeHash();
-        render();
-        toast(t('load.failedLater'), 'error');
+        if (current()) { render(); toast(t('load.failedLater'), 'error'); }
       }
     } finally {
       stepping = false;
@@ -1275,7 +1542,7 @@
   // ---------- admin ----------
   // The avatar opens a menu of admin sections; each section is its own dialog.
   function renderAcct() {
-    $('#acct-sub').textContent = t('acct.archived', { n: state.total });
+    $('#acct-sub').textContent = t('acct.archived', { n: fmtNum(state.total) });
     const task = state.task;
     const sch = $('#acct-schedule');
     sch.textContent = task ? t(task.paused ? 'task.paused' : 'task.running') : '';
@@ -1316,15 +1583,16 @@
     const at = (v) => (validTime(v) ? fmtFull(new Date(v)) : t('status.none'));
     const result = { saved: `<span class="ok">${t('status.saved')}</span>`, unchanged: t('status.unchanged'), error: `<span class="bad">${t('status.error')}</span>` }[f.result] || t('status.never');
     el.adminStats.innerHTML = `
-      <dt>${t('status.count')}</dt><dd>${t('status.countValue', { n: s.count })}</dd>
+      <dt>${t('status.count')}</dt><dd>${t('status.countValue', { n: fmtNum(s.count) })}</dd>
       <dt>${t('status.lastRun')}</dt><dd>${at(f.last_run)}</dd>
       <dt>${t('status.lastFetched')}</dt><dd>${at(f.last_fetched)}</dd>
       <dt>${t('status.result')}</dt><dd>${result}${f.message ? `<br><span class="bad">${esc(f.message)}</span>` : ''}</dd>
       <dt>${t('status.lastSaved')}</dt><dd>${at(f.last_saved)}</dd>
       <dt>${t('status.session')}</dt><dd>${t('status.sessionValue', { runs: f.runs, saved: f.saved })}</dd>${tokenRow(s.token)}`;
     const next = !f.paused && validTime(s.next_run) ? s.next_run : '';
+    const plan = describeSchedule(s.schedule);
     el.scheduleStats.innerHTML = `
-      <dt>${t('schedule.plan')}</dt><dd><code>${esc(s.schedule)}</code></dd>
+      <dt>${t('schedule.plan')}</dt><dd>${plan ? `${esc(plan)} ` : ''}<code>${esc(s.schedule)}</code></dd>
       <dt>${t('schedule.next')}</dt><dd>${next ? `<span data-until="${esc(next)}">${fmtUntil(new Date(next))}</span>` : f.paused ? t('schedule.paused') : '—'}</dd>
       <dt>${t('schedule.lastFetched')}</dt><dd>${at(f.last_fetched)}</dd>`;
     el.toggleSchedule.disabled = false;
@@ -1333,10 +1601,44 @@
     const res = $('#acct-result');
     res.textContent = f.result === 'error' ? t('status.error') : '';
     res.className = f.result === 'error' ? 'bad' : '';
-    state.task = { paused: f.paused, last_fetched: f.last_fetched, next_run: s.next_run };
+    state.task = Object.assign({}, state.task, {
+      paused: f.paused, last_fetched: f.last_fetched, next_run: s.next_run, last_run: f.last_run,
+      result: f.result, code: f.code || '', failures: f.failures || 0, retry_at: f.retry_at || '',
+    });
     renderTask();
     renderAcct();
     schedulePoll();
+  }
+
+  // Common schedules in words beside the expression; '' for the rest. Times of day follow the server's clock.
+  function describeSchedule(spec) {
+    spec = String(spec).trim();
+    const every = /^@every\s+(\S+)$/.exec(spec);
+    if (every) {
+      const sec = goDuration(every[1]);
+      return sec >= 1 ? t('cron.every', { gap: fmtGap(sec) }) : '';
+    }
+    if (spec === '@hourly') return t('cron.hourlyAt', { m: '00' });
+    if (spec === '@daily' || spec === '@midnight') return t('cron.dailyAt', { time: '00:00' });
+    const f = spec.split(/\s+/);
+    if (f.length !== 5 || f.slice(2).some((x) => x !== '*')) return '';
+    const [m, h] = f;
+    const num = (x, max) => /^\d+$/.test(x) && Number(x) <= max;
+    const step = /^\*\/(\d+)$/.exec(m);
+    if (h === '*' && m === '*') return t('cron.everyMinute');
+    // */N restarts at each full hour, so only a divisor of 60 gives an even interval.
+    if (h === '*' && step && Number(step[1]) >= 1 && 60 % Number(step[1]) === 0) return t('cron.every', { gap: fmtGap(step[1] * 60) });
+    if (h === '*' && num(m, 59)) return t('cron.hourlyAt', { m: pad(Number(m)) });
+    if (num(h, 23) && num(m, 59)) return t('cron.dailyAt', { time: `${pad(Number(h))}:${pad(Number(m))}` });
+    return '';
+  }
+
+  // Seconds in a Go duration such as 90s, 5m or 1h30m; NaN when it is not one.
+  function goDuration(v) {
+    const units = { h: 3600, m: 60, s: 1, ms: 1e-3 };
+    let sec = 0;
+    const rest = v.replace(/(\d+(?:\.\d+)?)(ms|h|m|s)/g, (_, n, u) => { sec += n * units[u]; return ''; });
+    return rest === '' && v !== '' ? sec : NaN;
   }
 
   function tokenRow(tok) {
@@ -1442,11 +1744,17 @@
   }
 
   // ---------- notice editor (admin) ----------
-  const na = { items: [], id: null, base: { title: '', body: '' }, delTimer: 0 };
+  const na = { items: [], id: null, base: { title: '', body: '' }, delTimer: 0, discardUntil: 0 };
   const naFields = () => el.naForm.elements;
   const naCurrent = () => na.items.find((n) => n.id === na.id) || null;
   const naDirty = () => naFields().title.value !== na.base.title || naFields().body.value !== na.base.body;
-  const naDiscard = () => !naDirty() || confirm(t('na.discard'));
+  // Leaving unsaved edits takes a second try within 4 seconds; the first one explains why nothing happened.
+  function naDiscard() {
+    if (!naDirty() || Date.now() < na.discardUntil) { na.discardUntil = 0; return true; }
+    na.discardUntil = Date.now() + 4000;
+    showNaError(t('na.discard'));
+    return false;
+  }
   el.naDialog.beforeClose = naDiscard;
 
   async function openNoticeAdmin() {
@@ -1466,7 +1774,7 @@
     na.base = { title: n ? n.title : '', body: n ? n.body : '' };
     naFields().title.value = na.base.title;
     naFields().body.value = na.base.body;
-    el.naError.hidden = true;
+    clearNaError();
     resetDelete();
     renderNaForm();
     renderNaList();
@@ -1499,9 +1807,17 @@
     el.naCount.classList.toggle('near', len > 4500);
   }
 
-  function showNaError(msg) {
+  function showNaError(msg, field) {
     el.naError.innerHTML = `<svg><use href="#i-alert"/></svg>${esc(msg)}`;
     el.naError.hidden = false;
+    if (field) field.setAttribute('aria-invalid', 'true');
+    announce(msg, true);
+  }
+
+  function clearNaError() {
+    el.naError.hidden = true;
+    na.discardUntil = 0;
+    naFields().title.removeAttribute('aria-invalid');
   }
 
   function resetDelete() {
@@ -1513,7 +1829,7 @@
   async function saveNotice(publish) {
     const f = naFields();
     if (!f.title.value.trim()) {
-      showNaError(t('na.titleRequired'));
+      showNaError(t('na.titleRequired'), f.title);
       f.title.focus();
       return;
     }
@@ -1588,8 +1904,7 @@
   });
   $('#brand').addEventListener('click', (e) => {
     e.preventDefault();
-    if (state.sort !== 'desc') { state.sort = 'desc'; store.set('sort', 'desc'); }
-    go(1);
+    goNewest();
   });
 
   el.gallery.addEventListener('click', (e) => {
@@ -1637,14 +1952,26 @@
   $('#now-open').addEventListener('click', openLatest);
   $('#now-zoom').addEventListener('click', openLatest);
 
+  // Paging redraws the pager; focus returns to the same control so Enter keeps paging, and the new page is announced.
+  // focus names that control: 'prev', 'next', 'jump', 'current', or null when paging started elsewhere.
+  async function turnPage(page, focus = null) {
+    if (!(await go(page))) return;
+    announce(t('pager.at', { page: fmtNum(state.page), pages: fmtNum(state.pages) }));
+    const active = document.activeElement;
+    if (!focus || (active && active !== document.body && !el.pager.contains(active))) return;
+    const target = focus === 'jump' ? el.pager.querySelector('.jump input')
+      : focus === 'current' ? null : el.pager.querySelector(`.step.${focus}:not(:disabled)`);
+    const node = target && target.offsetParent ? target : el.pager.querySelector('[aria-current="page"]');
+    if (node) node.focus({ preventScroll: true });
+  }
   el.pager.addEventListener('click', (e) => {
     const b = e.target.closest('button[data-page]');
-    if (b && !b.disabled) go(Number(b.dataset.page));
+    if (!b || b.disabled) return;
+    turnPage(Number(b.dataset.page), b.classList.contains('prev') ? 'prev' : b.classList.contains('next') ? 'next' : 'current');
   });
   el.pager.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' || !e.target.matches('.jump input')) return;
-    const p = Math.min(Math.max(1, Number(e.target.value) || 1), state.pages);
-    go(p);
+    turnPage(Math.min(Math.max(1, Number(e.target.value) || 1), state.pages), 'jump');
   });
 
   $('#sel-clear').addEventListener('click', clearSelection);
@@ -1654,12 +1981,20 @@
     }
     renderSelection();
   });
-  $('#sel-zip').addEventListener('click', () => {
+  $('#sel-zip').addEventListener('click', async () => {
     const names = [...state.selected];
     if (!names.length) return;
-    if (names.length === 1) download(`/download/${enc(names[0])}`);
-    else download('/download/zip?' + names.map((n) => 'f=' + enc(n)).join('&'));
-    toast(t('sel.started', { n: names.length }), 'ok');
+    if (await (names.length === 1 ? downloadFile(`/download/${enc(names[0])}`) : downloadZip(names))) toast(t('sel.started', { n: names.length }), 'ok');
+  });
+  // Every download link is checked first, the smaller sizes in the detail panel included; clicks with a modifier keep
+  // the browser's own handling (new tab, save as).
+  document.addEventListener('click', (e) => {
+    const a = e.target.closest('a[href^="/download/"]:not([data-checked]), a[download]:is([href^="/preview/"], [href^="/thumb/"]):not([data-checked])');
+    if (!a || e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    const href = a.getAttribute('href');
+    if (href === '/download/all') preflight('/download/all?check=1').then((ok) => ok && download(href));
+    else downloadFile(href, a.getAttribute('download') || '');
   });
 
   // ---------- events: lightbox ----------
@@ -1833,7 +2168,15 @@
     const pan = { ArrowLeft: [80, 0], ArrowRight: [-80, 0], ArrowUp: [0, 80], ArrowDown: [0, -80] }[e.key];
     const k = e.key.toLowerCase();
     if (pan && zoom.on) panBy(...pan);
-    else if (e.key === 'Escape') { if (zoom.on) resetZoom(); else closeLightbox(); }
+    // Esc undoes one layer at a time: the zoom, then a detail sheet covering the picture, then the lightbox.
+    else if (e.key === 'Escape') {
+      if (zoom.on) resetZoom();
+      else if (sheet.matches && el.lb.classList.contains('info-open')) {
+        const inside = $('#lb-panel').contains(document.activeElement);
+        setInfo(false);
+        if (inside) el.lbInfo.focus();
+      } else closeLightbox();
+    }
     else if (e.key === 'ArrowLeft') step(-1);
     else if (e.key === 'ArrowRight') step(1);
     else if (k === 'z') toggleZoom();
@@ -1851,9 +2194,9 @@
     if (menuBtn && menuKey(e)) return;
     if (document.querySelector('dialog[open]') || (e.target instanceof Element && e.target.closest('input, select, textarea, [contenteditable]'))) return;
     const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-    if (k === 'ArrowLeft' && state.page > 1) go(state.page - 1);
-    else if (k === 'ArrowRight' && state.page < state.pages) go(state.page + 1);
-    else if (k === '1' || k === '2' || k === '3') setView(VIEWS[k - 1]);
+    if (k === 'ArrowLeft' && state.page > 1) turnPage(state.page - 1);
+    else if (k === 'ArrowRight' && state.page < state.pages) turnPage(state.page + 1);
+    else if (k === '1' || k === '2') setView(VIEWS[k - 1]);
     else if (k === 's') setSelectMode(!state.selectMode);
     else if (k === 't') toggleTheme();
     else if (k === 'l') toggleLang();
@@ -1916,6 +2259,7 @@
     } catch (err) {
       el.loginError.innerHTML = `<svg><use href="#i-alert"/></svg>${esc(err.message)}`;
       el.loginError.hidden = false;
+      announce(err.message, true);
       replay(el.loginForm, 'shake');
       el.loginForm.elements.password.select();
     } finally {
@@ -1947,6 +2291,8 @@
     if (e.key === 'Enter') { e.preventDefault(); naFields().body.focus(); }
   });
   naFields().body.addEventListener('input', renderNaCount);
+  // Typing answers whatever the message asked for.
+  el.naForm.addEventListener('input', () => { if (!el.naError.hidden) clearNaError(); });
   el.naDraft.addEventListener('click', () => saveNotice(false));
   el.naDelete.addEventListener('click', deleteNotice);
 
@@ -1966,7 +2312,7 @@
     try {
       const s = await api('/api/fetch', { method: 'POST' });
       renderStats(s);
-      if (s.fetch.result === 'saved') { toast(t('fetch.saved'), 'ok'); state.page = 1; await load(); }
+      if (s.fetch.result === 'saved') { toast(t('fetch.saved'), 'ok'); await goNewest(); }
       else if (s.fetch.result === 'unchanged') toast(t('fetch.unchanged'));
       else toast(t('fetch.failed', { msg: s.fetch.message }), 'error');
     } catch (e) {
@@ -2015,7 +2361,7 @@
       awaitRun = '';
       awaitUntil = 0;
       const t = state.task;
-      if (t && !t.paused && validTime(t.next_run)) {
+      if (t && !t.paused && validTime(t.next_run) && !backingOff(t)) {
         const wait = new Date(t.next_run) - Date.now() + 5000;
         if (wait <= 65000) { delay = Math.max(wait, 5000); awaitRun = t.next_run; }
       }
@@ -2023,21 +2369,26 @@
     pollTimer = setTimeout(poll, delay);
   }
 
+  let pollSeq = 0;
   async function poll() {
     clearTimeout(pollTimer);
     if (document.hidden) return; // resumed by visibilitychange
     lastPoll = Date.now();
+    const seq = ++pollSeq;
     let again = false;
     try {
       const d = await api('/api/images?page=1&size=12&sort=desc');
+      // Polls overlap when the network comes back mid-tick; only the newest one applies and reschedules.
+      if (seq !== pollSeq) return;
       checkNotices(d.notice);
       const t = d.task;
       state.task = t;
       renderTask();
-      // last_fetched is the start time of the last successful download, so an older value means
-      // the expected run has not finished (or failed); give it up to 45 s.
-      const finished = validTime(t.last_fetched) && new Date(t.last_fetched) >= new Date(awaitRun) - 1000;
-      if (awaitRun && !t.paused && !finished) {
+      // last_fetched is the start time of the last successful download, so an older value means the expected run has
+      // not finished, or failed (last_run then reaches it with an error); give it up to 45 s. Backoff skips it.
+      const since = (v) => validTime(v) && new Date(v) >= new Date(awaitRun) - 1000;
+      const finished = since(t.last_fetched) || (since(t.last_run) && t.result === 'error');
+      if (awaitRun && !t.paused && !finished && !backingOff(t)) {
         if (!awaitUntil) awaitUntil = Date.now() + 45000;
         again = Date.now() < awaitUntil;
       }
@@ -2050,8 +2401,9 @@
         loadOverview();
         if (onFirstPage()) {
           renderNow();
+          // Re-rendering would drop keyboard focus anywhere in the history section, the toolbar and pager included.
           const idle = state.lbIndex < 0 && window.scrollY < 400 && !document.querySelector('dialog[open]') &&
-            !el.gallery.contains(document.activeElement); // re-rendering would drop keyboard focus
+            !el.history.contains(document.activeElement);
           if (idle) { await load({ silent: true }); return; } // load reschedules
         }
         show(el.fresh);
@@ -2070,7 +2422,7 @@
   setInterval(() => { if (!document.hidden) tickTimes(); }, 1000);
   loadOverview();
 
-  $('#fresh-btn').addEventListener('click', () => { hide(el.fresh); state.sort = 'desc'; store.set('sort', 'desc'); go(1); });
+  $('#fresh-btn').addEventListener('click', () => { hide(el.fresh); goNewest(); });
 
   // ---------- layout ----------
   let scrollQueued = false;
@@ -2113,8 +2465,6 @@
   window.addEventListener('resize', () => {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
-      const t = el.gallery.querySelector('.tiles[data-cols]');
-      if (t && Number(t.dataset.cols) !== masonryCols()) render();
       if (state.lbIndex >= 0) fitImage();
       if (zoom.on) { clampPan(); applyZoom(); }
     }, 150);
@@ -2124,13 +2474,14 @@
     readHash();
     if (state.page !== before) load({ scroll: true });
   });
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', renderControls);
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', renderTheme);
   motion.addEventListener('change', stillMascots);
 
   i18n.apply();
   stillMascots();
   readHash();
   renderControls();
+  renderTheme();
   onScroll();
   load();
 })();

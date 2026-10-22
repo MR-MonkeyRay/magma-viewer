@@ -615,6 +615,9 @@ func (s *Server) handleZipSelected(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "guest_zip_limit", "访客一次最多打包下载 "+strconv.Itoa(GuestZipLimit)+" 张")
 		return
 	}
+	if checkOnly(w, r) {
+		return
+	}
 	s.writeZip(w, r, "magma-selected-"+time.Now().Format(store.TimeLayout)+".zip", items)
 }
 
@@ -624,7 +627,21 @@ func (s *Server) handleZipAll(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no_images", "暂无图片")
 		return
 	}
+	if checkOnly(w, r) {
+		return
+	}
 	s.writeZip(w, r, "magma-all-"+time.Now().Format(store.TimeLayout)+".zip", items)
+}
+
+// checkOnly answers a ?check request once the archive would be served: the
+// page asks first, so a refusal shows as a message instead of the browser
+// saving the error as a file.
+func checkOnly(w http.ResponseWriter, r *http.Request) bool {
+	if !r.URL.Query().Has("check") {
+		return false
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return true
 }
 
 // writeZip streams the archive with uncompressed entries; images are already
