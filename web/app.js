@@ -42,7 +42,8 @@
     historyBar: $('#history-bar'), gallery: $('#gallery'), summary: $('#summary'), empty: $('#empty'), pager: $('#pager'),
     now: $('#now'), nowImg: $('#now-img'), nowTime: $('#now-time'), nowAgo: $('#now-ago'), nowDate: $('#now-date'), nowFacts: $('#now-facts'), nowDl: $('#now-dl'),
     nowBadge: $('#now-badge'), nowView: $('#now-view'), nowPrev: $('#now-prev'), nowNext: $('#now-next'), nowBack: $('#now-back'), reel: $('#reel'), reelTrack: $('#reel-track'),
-    reelTicks: $('#reel-ticks'), reelHead: $('#reel-head'), reelAxis: $('#reel-axis'), reelPlay: $('#reel-play'),
+    reelHeat: $('#reel-heat'), reelFill: $('#reel-fill'), reelHead: $('#reel-head'), reelTip: $('#reel-tip'), reelPlay: $('#reel-play'),
+    reelLive: $('#reel-live'), reelPos: $('#reel-pos'), reelSpeed: $('#reel-speed'), reelLoop: $('#reel-loop'),
     seg: $('.seg'), sort: $('#sort'), size: $('#size'), group: $('#group'), selectMode: $('#select-mode'),
     theme: $('#theme'), lang: $('#lang'), account: $('#account'), acctMenu: $('#acct-menu'), noticeBtn: $('#notice-btn'), foot: $('.foot'), version: $('#version'),
     selbar: $('#selbar'), selCount: $('#sel-count'), fresh: $('#fresh'),
@@ -398,7 +399,7 @@
     const latest = onFirstPage() ? state.latest : null;
     el.now.classList.remove('pending');
     el.now.hidden = !latest;
-    if (!latest) return;
+    if (!latest) { if (reel.playing) reelStop(); return; }
     const shown = (reel.at >= 0 && reel.items[reel.at]) || latest;
     const live = shown.name === latest.name;
     const d = new Date(shown.time);
@@ -417,10 +418,12 @@
       <div><dt>${t('now.gap')}</dt><dd>${prev ? fmtGap((new Date(shown.time) - new Date(prev.time)) / 1000) : '—'}</dd></div>
       <div><dt>${t('now.dims')}</dt><dd>${shown.w ? `${shown.w}×${shown.h}` : '—'}</dd></div>
       <div><dt>${t('now.size')}</dt><dd>${fmtSize(shown.size)}</dd></div>
-      <div><dt>${t('now.today')}</dt><dd>${overview.today === null ? '—' : t('now.todayCount', { n: overview.today })}</dd></div>`;
+      <div><dt>${t('now.recent')}</dt><dd>${overview.recent === null ? '—' : t('now.recentCount', { n: overview.recent })}</dd></div>`;
     el.nowDl.href = `/download/${enc(shown.name)}`;
     renderReelHead();
-    if (el.now.dataset.name === shown.name) return;
+    // Playback shows thumbnails only; the picture it stopped on still needs its preview.
+    const upgrade = !reel.playing && el.now.dataset.thumb === shown.name;
+    if (el.now.dataset.name === shown.name && !upgrade) return;
     const first = !el.now.dataset.name;
     const scrubbing = reel.at >= 0 || reel.playing;
     el.now.dataset.name = shown.name;
@@ -430,33 +433,51 @@
       if (el.now.dataset.name !== shown.name) return;
       if (shown.w) { el.nowImg.width = shown.w; el.nowImg.height = shown.h; }
       el.nowImg.src = src;
-      if (first || scrubbing || !live) { markCached(el.now); return; }
+      if (first || scrubbing || upgrade || !live) { markCached(el.now); return; }
       replay(el.now, 'updated');
       if (!reduced()) {
         el.nowImg.animate([{ opacity: 0.3, filter: 'blur(8px)' }, { opacity: 1, filter: 'blur(0)' }], { duration: 700, easing: 'ease-out' });
       }
     };
     if (first) return swap();
-    if (scrubbing) { el.nowImg.src = `/thumb/${enc(shown.name)}`; }
+    if (scrubbing && !upgrade) { el.nowImg.src = `/thumb/${enc(shown.name)}`; }
+    // At 4× a frame lasts 35 ms; starting a preview download for each would only queue up requests.
+    if (reel.playing) { el.now.dataset.thumb = shown.name; return; }
+    delete el.now.dataset.thumb;
     const pre = new Image();
     pre.src = src;
     pre.decode().then(swap, swap);
   }
 
-  // ---------- reel: the last 24 hours as a strip of ticks, oldest on the left ----------
-  const overview = { today: null, first: '', days: new Map() }; // days: YYYY-MM-DD -> { count }
-  const reel = { items: [], at: -1, playing: 0, dragging: false, from: 0, to: 0 };
+  // ---------- reel: the last 24 hours as a heat strip, oldest on the left ----------
+  const overview = { recent: null, first: '', days: new Map() }; // days: YYYY-MM-DD -> { count }
+  const REEL_SPEEDS = [0.5, 1, 2, 4];
+  const REEL_FRAME = 140; // ms per picture at 1×
+  const reel = {
+    items: [], times: [], heat: [], at: -1, playing: false, timer: 0, dragging: false, resume: false, from: 0, to: 0,
+    speed: REEL_SPEEDS.includes(+store.get('reelSpeed')) ? +store.get('reelSpeed') : 1,
+    loop: store.get('reelLoop') === '1',
+  };
   async function loadOverview() {
     try {
       let tz = '';
       try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { /* server time then */ }
       const o = await api(`/api/overview${tz ? `?tz=${enc(tz)}` : ''}`);
-      const today = fmtDate(new Date());
-      // Counted from the 24-hour window in the viewer's time zone; today's pictures always fall inside it.
-      overview.today = o.recent.filter((it) => fmtDate(new Date(it.time)) === today).length;
+      // A rolling 24 hours (the reel's window) rather than since midnight, so the count does not drop to zero
+      // overnight; the server's heat counts are not capped like the recent pictures.
+      overview.recent = o.heat ? o.heat.reduce((a, b) => a + b, 0) : o.recent.length;
       overview.first = validTime(o.first) ? o.first : '';
       overview.days = new Map(o.days.map((x) => [x.date, x]));
+      // The window slides as pictures arrive, so a held or playing position is found again by name.
+      const held = reel.at >= 0 ? reel.items[reel.at].name : '';
       reel.items = o.recent.slice().reverse();
+      reel.times = reel.items.map((it) => new Date(it.time).getTime());
+      // Saves per slice of the whole 24 hours, counted by the server past the cap on recent pictures.
+      reel.heat = o.heat || [];
+      if (held) {
+        reel.at = reel.items.findIndex((it) => it.name === held);
+        if (reel.at < 0 && reel.playing) reel.at = 0;
+      }
       reel.to = o.recent.length ? new Date(o.last).getTime() : 0;
       reel.from = reel.to - 864e5;
       renderReel();
@@ -464,32 +485,38 @@
       if (state.items.length) render(); else renderNow();
     } catch (e) { /* the reel is optional */ }
   }
-  const reelX = (t) => (new Date(t).getTime() - reel.from) / (reel.to - reel.from);
+  const reelX = (ms) => (ms - reel.from) / (reel.to - reel.from);
+  const reelPct = (ms) => `${(Math.max(0, Math.min(1, reelX(ms))) * 100).toFixed(3)}%`;
+  const reelLabel = (d) => (sameDay(d, new Date()) ? fmtHM(d) : `${d.getMonth() + 1}/${d.getDate()} ${fmtHM(d)}`);
   function renderReel() {
     el.reel.hidden = reel.items.length < 2;
-    if (el.reel.hidden) return;
+    // A refresh can leave too few pictures to replay; playback must not carry on behind the hidden bar.
+    if (el.reel.hidden) { reelStop(); reel.at = -1; return; }
     el.reelTrack.setAttribute('aria-valuemax', reel.items.length - 1);
-    el.reelTicks.innerHTML = reel.items.map((it, i) => `<i style="left:${(reelX(it.time) * 100).toFixed(3)}%" data-i="${i}"></i>`).join('');
-    const marks = [];
-    const start = new Date(reel.from);
-    start.setMinutes(0, 0, 0);
-    for (let t = start.getTime() + 36e5; t < reel.to; t += 36e5) {
-      const h = new Date(t).getHours();
-      if (h % 6 === 0) marks.push(`<span style="left:${(reelX(t) * 100).toFixed(3)}%">${h === 0 ? `${new Date(t).getMonth() + 1}/${new Date(t).getDate()}` : pad(h) + ':00'}</span>`);
-    }
-    el.reelAxis.innerHTML = marks.join('') + `<span class="end">${Date.now() - reel.to < 36e5 ? t('reel.now') : fmtHM(new Date(reel.to))}</span>`;
+    // One hard-edged gradient stop per slice; the square root keeps a lone save visible beside a busy hour.
+    const counts = reel.heat;
+    const peak = Math.max(1, ...counts);
+    const w = 100 / counts.length;
+    el.reelHeat.style.backgroundImage = !counts.length ? '' : `linear-gradient(to right, ${counts.map((c, i) => {
+      const color = c ? `color-mix(in srgb, var(--pigment) ${Math.round(25 + 75 * Math.sqrt(c / peak))}%, transparent)` : 'transparent';
+      return `${color} ${(i * w).toFixed(3)}% ${((i + 1) * w).toFixed(3)}%`;
+    }).join(', ')})`;
+    el.reelSpeed.value = String(reel.speed);
+    el.reelLoop.setAttribute('aria-pressed', String(reel.loop));
   }
   function renderReelHead() {
     const i = reel.at >= 0 ? reel.at : reel.items.length - 1;
     const it = reel.items[i];
     el.nowPrev.disabled = !it || i <= 0;
     el.nowNext.disabled = !it || i >= reel.items.length - 1;
+    el.reelLive.disabled = reel.at < 0 && !reel.playing;
     if (!it) return;
-    el.reelHead.style.left = `${(reelX(it.time) * 100).toFixed(3)}%`;
+    const x = reelPct(reel.times[i]);
+    el.reelHead.style.left = x;
+    el.reelFill.style.width = x;
+    el.reelPos.textContent = `${reelLabel(new Date(it.time))} · ${i + 1}/${reel.items.length}`;
     el.reelTrack.setAttribute('aria-valuenow', i);
     el.reelTrack.setAttribute('aria-valuetext', fmtFull(new Date(it.time)));
-    el.reelTicks.querySelector('.on')?.classList.remove('on');
-    el.reelTicks.children[i]?.classList.add('on');
   }
   function reelSeek(i) {
     i = Math.max(0, Math.min(reel.items.length - 1, i));
@@ -498,40 +525,117 @@
   }
   function reelNearest(clientX) {
     const r = el.reelTrack.getBoundingClientRect();
-    const t = reel.from + ((clientX - r.left) / r.width) * (reel.to - reel.from);
+    const ms = reel.from + ((clientX - r.left) / r.width) * (reel.to - reel.from);
     let best = 0;
-    reel.items.forEach((it, i) => { if (Math.abs(new Date(it.time) - t) < Math.abs(new Date(reel.items[best].time) - t)) best = i; });
+    reel.times.forEach((t, i) => { if (Math.abs(t - ms) < Math.abs(reel.times[best] - ms)) best = i; });
     return best;
   }
   function reelStop() {
-    clearInterval(reel.playing);
-    reel.playing = 0;
+    clearTimeout(reel.timer);
+    reel.playing = false;
     el.reelPlay.setAttribute('aria-pressed', 'false');
     el.reelPlay.querySelector('use').setAttribute('href', '#i-play');
   }
-  function reelPlay() {
-    if (reel.playing) { reelStop(); return; }
+  // Each step warms the next few thumbnails so fast speeds do not stall on the network. The next step is read from
+  // reel.at when the timer fires, so a refreshed window or a speed change applies to it.
+  function reelTick(i) {
+    if (!reel.playing) return;
+    reelSeek(i);
+    for (let j = i + 1; j <= i + 3 && j < reel.items.length; j++) new Image().src = `/thumb/${enc(reel.items[j].name)}`;
+    const last = reel.items.length - 1;
+    if (reel.at < last) { reel.timer = setTimeout(() => reelTick(reel.at + 1), REEL_FRAME / reel.speed); return; }
+    if (!reel.loop) { reelPause(); return; }
+    // Linger on the newest picture before starting over.
+    reel.timer = setTimeout(() => reelTick(0), 1200);
+  }
+  function reelStart(from) {
+    clearTimeout(reel.timer);
+    reel.playing = true;
     el.reelPlay.setAttribute('aria-pressed', 'true');
     el.reelPlay.querySelector('use').setAttribute('href', '#i-pause');
-    let i = reel.at >= 0 && reel.at < reel.items.length - 1 ? reel.at : 0;
-    reel.playing = setInterval(() => {
-      reelSeek(i++);
-      if (i >= reel.items.length) { reelStop(); reelSeek(reel.items.length - 1); }
-    }, 140);
+    reelTick(from);
   }
-  // Only a press moves the picture: click a tick, or hold and drag along the strip. Hovering changes nothing.
+  // Stopping on the newest picture counts as being back at the latest.
+  function reelPause() {
+    reelStop();
+    reelSeek(reel.at >= 0 ? reel.at : reel.items.length - 1);
+  }
+  // From the newest picture playback starts over; elsewhere it carries on from where it stands.
+  const reelFrom = () => (reel.at >= 0 && reel.at < reel.items.length - 1 ? reel.at : 0);
+  function reelPlay() {
+    // During a drag the press only decides whether playback carries on after the release.
+    if (reel.dragging) { reel.resume = !reel.resume; return; }
+    if (reel.playing) reelPause(); else reelStart(reelFrom());
+  }
+  function reelToLatest() {
+    reelStop();
+    reelSeek(reel.items.length - 1);
+  }
+  // Keyboard changes happen while the bar may be hidden; show it for a moment so the change is visible.
+  let reelWakeTimer = 0;
+  function reelWake() {
+    el.reel.classList.add('awake');
+    clearTimeout(reelWakeTimer);
+    reelWakeTimer = setTimeout(() => el.reel.classList.remove('awake'), 1500);
+  }
+  function setReelSpeed(v) {
+    reel.speed = v;
+    el.reelSpeed.value = String(v);
+    store.set('reelSpeed', v);
+  }
+  function stepReelSpeed(d) {
+    const i = REEL_SPEEDS.indexOf(reel.speed) + d;
+    if (i >= 0 && i < REEL_SPEEDS.length) setReelSpeed(REEL_SPEEDS[i]);
+    reelWake();
+  }
+  // The tip previews any point of the strip without moving the big picture.
+  function reelTip(i) {
+    const it = reel.items[i];
+    const img = el.reelTip.querySelector('img');
+    const src = `/thumb/${enc(it.name)}`;
+    if (img.getAttribute('src') !== src) img.src = src;
+    const time = el.reelTip.querySelector('time');
+    time.dateTime = it.time;
+    time.textContent = reelLabel(new Date(it.time));
+    el.reelTip.hidden = false;
+    // Near either end the tip slides inward instead of hanging past the strip.
+    const w = el.reelTrack.clientWidth;
+    const half = el.reelTip.offsetWidth / 2;
+    el.reelTip.style.left = `${Math.max(half, Math.min(w - half, reelX(reel.times[i]) * w))}px`;
+  }
+  const hideReelTip = () => { el.reelTip.hidden = true; };
+  // Only a press moves the picture: click a point, or hold and drag along the strip. Hovering only previews.
   el.reelTrack.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
+    reel.resume = reel.playing;
     reelStop();
     reel.dragging = true;
+    el.reel.classList.add('dragging');
     el.reelTrack.setPointerCapture(e.pointerId);
-    reelSeek(reelNearest(e.clientX));
+    const i = reelNearest(e.clientX);
+    reelSeek(i);
+    reelTip(i);
   });
-  el.reelTrack.addEventListener('pointermove', (e) => { if (reel.dragging) reelSeek(reelNearest(e.clientX)); });
-  const endReelDrag = () => { reel.dragging = false; };
-  el.reelTrack.addEventListener('pointerup', endReelDrag);
-  el.reelTrack.addEventListener('pointercancel', endReelDrag);
+  el.reelTrack.addEventListener('pointermove', (e) => {
+    if (!reel.dragging && e.pointerType !== 'mouse') return;
+    const i = reelNearest(e.clientX);
+    if (reel.dragging) reelSeek(i);
+    reelTip(i);
+  });
+  // Releasing a drag that interrupted playback carries on from the new spot; at the newest picture only a loop
+  // starts over.
+  const endReelDrag = (e) => {
+    if (!reel.dragging) return;
+    reel.dragging = false;
+    el.reel.classList.remove('dragging');
+    if (e.pointerType !== 'mouse') hideReelTip();
+    if (reel.resume && (reel.at >= 0 || reel.loop)) reelStart(reelFrom());
+  };
+  // A capture can also end without a pointerup, for example when the reel is hidden mid-drag.
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) el.reelTrack.addEventListener(type, endReelDrag);
+  el.reelTrack.addEventListener('pointerleave', () => { if (!reel.dragging) hideReelTip(); });
   el.reelTrack.addEventListener('keydown', (e) => {
+    if (e.key === ' ') { e.preventDefault(); e.stopPropagation(); reelPlay(); return; }
     const cur = reel.at >= 0 ? reel.at : reel.items.length - 1;
     const step = { ArrowLeft: -1, ArrowRight: 1, Home: -cur, End: reel.items.length }[e.key];
     if (step === undefined) return;
@@ -541,6 +645,13 @@
     reelSeek(cur + step);
   });
   el.reelPlay.addEventListener('click', reelPlay);
+  el.reelLive.addEventListener('click', reelToLatest);
+  el.reelSpeed.addEventListener('change', () => setReelSpeed(+el.reelSpeed.value));
+  el.reelLoop.addEventListener('click', () => {
+    reel.loop = !reel.loop;
+    el.reelLoop.setAttribute('aria-pressed', String(reel.loop));
+    store.set('reelLoop', reel.loop ? '1' : '0');
+  });
   // Side buttons step through the same 24 hours as the reel; the newest picture is the last step.
   function nowStep(d) {
     if (reel.items.length < 2) return;
@@ -558,7 +669,7 @@
     el.nowView.classList.toggle('near-next', r.right - e.clientX < zone);
   });
   el.nowView.addEventListener('pointerleave', () => el.nowView.classList.remove('near-prev', 'near-next'));
-  el.nowBack.addEventListener('click', () => { reelStop(); reelSeek(reel.items.length - 1); });
+  el.nowBack.addEventListener('click', reelToLatest);
 
   function renderTask() {
     const task = state.task;
@@ -1749,6 +1860,8 @@
     else if (k === 'o') toggleSort();
     else if (k === 'g') toggleGroup();
     else if (k === 'p' && !el.reel.hidden && !el.now.hidden) reelPlay();
+    else if ((k === ',' || k === '.') && !el.reel.hidden && !el.now.hidden) { nowStep(k === ',' ? -1 : 1); reelWake(); }
+    else if ((k === '[' || k === ']') && !el.reel.hidden && !el.now.hidden) stepReelSpeed(k === '[' ? -1 : 1);
     else if (k === '?') openDialog(el.keysDialog);
     else if (k === 'n') openNotices();
     else if (k === 'Escape' && (state.selectMode || state.selected.size)) clearSelection();

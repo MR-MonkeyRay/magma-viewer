@@ -182,7 +182,8 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 			loc = l
 		}
 	}
-	writeJSON(w, http.StatusOK, s.store.Overview(24*time.Hour, 400, loc))
+	// 96 quarter hours feed the reel's heat strip; playback is capped at the newest 400 pictures.
+	writeJSON(w, http.StatusOK, s.store.Overview(24*time.Hour, 96, 400, loc))
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {

@@ -376,41 +376,63 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 }
 .now.pending .now-card > * { visibility: hidden; }
 
-/* Reel: one tick per saved picture over the last 24 hours; hovering previews, a click holds the picture. */
-.reel { display: grid; grid-template-columns: 36px minmax(0, 1fr); column-gap: 8px; align-items: center; padding: 6px 4px 0; }
-.reel-play {
-  grid-row: 1; display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 2px solid var(--outline); border-radius: 50%;
-  background: var(--raised); color: var(--ink); cursor: pointer; box-shadow: var(--pop-sm);
-  transition: background-color .15s, color .15s, transform .15s, box-shadow .15s;
+/* Reel: a heat strip of the last 24 hours (deeper = more saves) over a progress line whose star marks the picture shown. */
+.reel { display: flex; flex-direction: column; gap: 2px; padding: 6px 4px 4px; }
+.reel-track { position: relative; height: 30px; cursor: pointer; touch-action: pan-y; border-radius: var(--r-xs); }
+.reel-heat { position: absolute; left: 0; right: 0; top: 4px; height: 10px; border-radius: 3px; background-color: color-mix(in srgb, var(--line) 45%, transparent); }
+.reel-line { position: absolute; left: 0; right: 0; top: 19px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.reel-fill { display: block; height: 100%; width: 0; background: var(--pigment); transition: width .12s var(--ease-out); }
+.reel-head {
+  position: absolute; top: 12px; width: 18px; height: 18px; margin-left: -9px; pointer-events: none;
+  background: var(--star) center / contain no-repeat; transition: left .12s var(--ease-out), transform .15s var(--spring);
 }
-.reel-play:hover { background: var(--pigment-soft); color: var(--pigment); }
+.reel-track:hover .reel-head, .reel-track:focus-visible .reel-head { transform: scale(1.2); }
+.reel.dragging .reel-head, .reel.dragging .reel-fill { transition: none; }
+/* The tip previews whatever is under the pointer; it never changes the big picture. */
+.reel-tip {
+  position: absolute; bottom: calc(100% + 6px); z-index: 4; width: 132px; padding: 4px; transform: translateX(-50%); pointer-events: none;
+  border: 2px solid var(--outline); border-radius: var(--r-sm); background: var(--raised); box-shadow: var(--pop-sm);
+}
+.reel-tip img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; background: var(--placeholder); }
+.reel-tip time { display: block; padding-top: 3px; text-align: center; font-size: var(--fs-xs); font-weight: 700; font-variant-numeric: tabular-nums; }
+.reel-tip[hidden] { display: none; }
+.reel-bar { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.reel-btn {
+  display: grid; place-items: center; flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%;
+  background: transparent; color: var(--graphite); cursor: pointer; transition: background-color .15s, color .15s, transform .15s;
+}
+.reel-btn:hover { background: var(--pigment-soft); color: var(--pigment); }
+.reel-btn:active { transform: scale(0.92); }
+.reel-btn:disabled { opacity: .35; pointer-events: none; }
+.reel-btn svg { width: 16px; height: 16px; }
+.reel-btn[aria-pressed="true"] { color: var(--pigment); background: var(--pigment-soft); }
+.reel-play { width: 36px; height: 36px; border: 2px solid var(--outline); background: var(--raised); color: var(--ink); box-shadow: var(--pop-sm); }
 .reel-play:active { transform: translate(2px, 2px); box-shadow: none; }
 .reel-play[aria-pressed="true"] { background: var(--pigment); color: var(--pigment-ink); }
-.reel-play svg { width: 16px; height: 16px; }
-.reel-track { position: relative; height: 36px; cursor: pointer; touch-action: pan-y; border-radius: var(--r-xs); }
-.reel-track::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 4px; margin-top: -2px; border-radius: 2px; background: var(--line); }
-.reel-ticks i {
-  position: absolute; top: 9px; bottom: 9px; width: 2px; margin-left: -1px; border-radius: 1px;
-  background: color-mix(in srgb, var(--graphite) 30%, transparent); transition: background-color .15s, top .15s, bottom .15s;
+.reel-pos {
+  flex: 1; min-width: 0; padding-left: 6px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font-size: var(--fs-xs); font-weight: 700; color: var(--graphite); font-variant-numeric: tabular-nums;
 }
-/* Each saved picture also gets a dot on the axis; the ring keeps dots apart where saves bunch up. */
-.reel-ticks i::after {
-  content: ""; position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; border-radius: 50%;
-  background: var(--pigment); box-shadow: 0 0 0 2px var(--raised); transform: translate(-50%, -50%);
-  transition: width .15s, height .15s, background-color .15s;
+.reel-speed select {
+  height: 28px; padding: 0 22px 0 10px; border: 0; border-radius: 999px; appearance: none; cursor: pointer;
+  font: 700 var(--fs-xs) var(--font); color: var(--graphite); font-variant-numeric: tabular-nums;
+  background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23b07a96' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E") no-repeat right 4px center / 14px;
+  transition: background-color .15s, color .15s;
 }
-.reel-ticks i:hover::after { width: 11px; height: 11px; }
-.reel-ticks i.on { top: 4px; bottom: 4px; background: var(--mark); z-index: 1; }
-/* The picture being looked at is a little star on the axis. */
-.reel-ticks i.on::after { width: 18px; height: 18px; border-radius: 0; background: var(--star) center / contain no-repeat; box-shadow: none; }
-.reel-head {
-  position: absolute; top: 0; bottom: 0; width: 0; pointer-events: none;
-  border-left: 2px solid var(--mark); margin-left: -1px; transition: left .12s var(--ease-out);
+.reel-speed select:hover { background-color: var(--pigment-soft); color: var(--ink); }
+.reel-speed option { background: var(--surface); color: var(--ink); }
+/* With a mouse the reel floats over the bottom of the picture like a video player's bar and shows on hover or focus. */
+@media (hover: hover) {
+  .now-stage { position: relative; padding-bottom: 10px; }
+  .reel {
+    position: absolute; left: 22px; right: 22px; bottom: 22px; z-index: 3; padding: 4px 12px 6px;
+    border: 2px solid var(--outline); border-radius: var(--r-md); background: var(--glass); box-shadow: var(--pop-sm);
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+    opacity: 0; transform: translateY(8px); pointer-events: none; transition: opacity .2s, transform .25s var(--ease-out);
+  }
+  /* Keyboard focus keeps it up; a mouse click must not, or the bar would stay after the pointer leaves. */
+  .now-stage:hover .reel, .reel:has(:focus-visible), .reel.awake, .reel.dragging { opacity: 1; transform: none; pointer-events: auto; }
 }
-.now:not(.past) .reel-head { opacity: 0; }
-.reel-axis { grid-column: 2; position: relative; height: 18px; font-size: var(--fs-xs); color: var(--faint); }
-.reel-axis span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
-.reel-axis .end { right: 0; transform: none; }
 
 .now-card { display: flex; flex-direction: column; gap: 16px; padding: 20px; min-width: 0; }
 .now-state { display: flex; align-items: center; gap: 10px; margin: 0; font-size: var(--fs-xs); color: var(--graphite); }
@@ -1120,7 +1142,6 @@ a.linkish { text-decoration: none; }
   .now-clock { font-size: 28px; }
   .now-actions .btn { height: 36px; padding: 0 10px; }
   .now-actions .btn svg { display: none; }
-  .reel-axis span:not(.end):nth-child(even) { display: none; }
   .now-task { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
   .now-task dd { text-align: right; margin-right: 0; }
   .view-grid .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }

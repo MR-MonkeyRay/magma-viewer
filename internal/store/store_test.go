@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -150,7 +151,7 @@ func TestOverview(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	o := s.Overview(24*time.Hour, 10, time.Local)
+	o := s.Overview(24*time.Hour, 4, 10, time.Local)
 	if o.Count != 4 || o.Bytes != 4 {
 		t.Fatalf("count, bytes = %d, %d", o.Count, o.Bytes)
 	}
@@ -170,19 +171,26 @@ func TestOverview(t *testing.T) {
 	if len(o.Recent) != 3 || o.Recent[2].Time.Format(TimeLayout) != "20261020-080000" {
 		t.Fatalf("recent = %v", o.Recent)
 	}
-	if got := s.Overview(24*time.Hour, 1, time.Local).Recent; len(got) != 1 {
+	if got := s.Overview(24*time.Hour, 0, 1, time.Local).Recent; len(got) != 1 {
 		t.Fatalf("recent cap ignored: %d", len(got))
+	}
+	// Six-hour slices from 20th 07:00: 08:00 falls in the first, 20:00 in the third, and the newest closes the last.
+	// The recent cap leaves the heat counts alone.
+	for _, limit := range []int{10, 1} {
+		if h := s.Overview(24*time.Hour, 4, limit, time.Local).Heat; fmt.Sprint(h) != "[1 0 1 1]" {
+			t.Fatalf("heat (cap %d) = %v", limit, h)
+		}
 	}
 	// Days follow the viewer's zone: seven hours east, late pictures move to the next day.
 	_, off := time.Date(2026, 10, 19, 23, 0, 0, 0, time.Local).Zone()
 	east := time.FixedZone("east", off+7*3600)
 	// 19th 23:00 -> 20th 06:00, 20th 08:00 -> 15:00, 20th 20:00 -> 21st 03:00, 21st 07:00 -> 14:00.
-	if d := s.Overview(time.Hour, 0, east).Days; len(d) != 2 || d[0] != (DayCount{"2026-10-21", 2}) || d[1] != (DayCount{"2026-10-20", 2}) {
+	if d := s.Overview(time.Hour, 0, 0, east).Days; len(d) != 2 || d[0] != (DayCount{"2026-10-21", 2}) || d[1] != (DayCount{"2026-10-20", 2}) {
 		t.Fatalf("shifted days = %v", d)
 	}
 
 	empty, _ := New(t.TempDir())
-	if o := empty.Overview(time.Hour, 10, time.Local); o.Count != 0 || o.Days == nil || o.Recent == nil {
+	if o := empty.Overview(time.Hour, 4, 10, time.Local); o.Count != 0 || o.Days == nil || o.Recent == nil || len(o.Heat) != 4 {
 		t.Fatalf("empty overview = %+v", o)
 	}
 }

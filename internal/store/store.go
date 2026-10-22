@@ -519,7 +519,9 @@ type DayCount struct {
 }
 
 // Overview summarises the archive: per-day counts in loc (newest first),
-// total bytes, the time span, and the items saved within window of the newest one.
+// total bytes, the time span, the items saved within window of the newest one
+// (at most maxRecent), and how many were saved in each of heat equal slices of
+// that window, oldest first, counted without the maxRecent cap.
 type Overview struct {
 	Count  int        `json:"count"`
 	Bytes  int64      `json:"bytes"`
@@ -527,12 +529,13 @@ type Overview struct {
 	Last   time.Time  `json:"last"`
 	Days   []DayCount `json:"days"`
 	Recent []Item     `json:"recent"`
+	Heat   []int      `json:"heat"`
 }
 
-func (s *Store) Overview(window time.Duration, maxRecent int, loc *time.Location) Overview {
+func (s *Store) Overview(window time.Duration, heat, maxRecent int, loc *time.Location) Overview {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	o := Overview{Count: len(s.items), Days: []DayCount{}, Recent: []Item{}}
+	o := Overview{Count: len(s.items), Days: []DayCount{}, Recent: []Item{}, Heat: make([]int, heat)}
 	if len(s.items) == 0 {
 		return o
 	}
@@ -546,8 +549,15 @@ func (s *Store) Overview(window time.Duration, maxRecent int, loc *time.Location
 		} else {
 			o.Days = append(o.Days, DayCount{Date: day, Count: 1})
 		}
-		if len(o.Recent) < maxRecent && !it.Time.Before(since) {
+		if it.Time.Before(since) {
+			continue
+		}
+		if len(o.Recent) < maxRecent {
 			o.Recent = append(o.Recent, it)
+		}
+		if heat > 0 {
+			// The newest item sits exactly on the window's end; it belongs to the last slice.
+			o.Heat[min(int(it.Time.Sub(since)*time.Duration(heat)/window), heat-1)]++
 		}
 	}
 	return o
