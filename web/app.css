@@ -924,7 +924,46 @@ a.linkish { text-decoration: none; }
 .lb-nav.next:hover:not(:disabled) { transform: translateX(3px); }
 .lb-nav:disabled { opacity: .15; cursor: default; }
 .lb-nav svg { width: 24px; height: 24px; }
-.lb-foot { grid-column: 1 / 4; grid-row: 3; display: flex; justify-content: center; padding: 4px 16px max(14px, env(safe-area-inset-bottom)); }
+.lb-foot { grid-column: 1 / 4; grid-row: 3; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 12px; padding: 4px 16px max(14px, env(safe-area-inset-bottom)); }
+/* Compare: the older picture lies over the newer one, cut at --pos; in difference mode a canvas replaces both. */
+.lb-cmp { position: absolute; overflow: hidden; border-radius: 14px; touch-action: none; cursor: ew-resize; --pos: 50%; }
+.lb-stage .lb-cmp img {
+  position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; object-fit: contain;
+  border-radius: 0; box-shadow: none; background: transparent; transition: none; cursor: inherit;
+  clip-path: inset(0 calc(100% - var(--pos)) 0 0);
+}
+.lb-cmp canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: none; }
+.lb-cmp.diff { cursor: default; }
+.lb-cmp.diff canvas { display: block; }
+.lb-cmp.diff img, .lb-cmp.diff .cmp-line, .lb-cmp.diff .cmp-tag.old { display: none; }
+/* Which side is which: the older time bottom left, the newer bottom right. */
+.cmp-tag {
+  position: absolute; bottom: 8px; padding: 2px 8px; border-radius: 999px; pointer-events: none;
+  background: rgba(0, 0, 0, 0.55); color: #fff; font: 600 var(--fs-xs) var(--font); font-variant-numeric: tabular-nums;
+}
+.cmp-tag.old { left: 8px; }
+.cmp-tag.new { right: 8px; }
+.cmp-line {
+  position: absolute; top: 0; bottom: 0; left: var(--pos); width: 2px; margin-left: -1px;
+  background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35); outline: none;
+}
+.cmp-knob {
+  position: absolute; top: 50%; left: 50%; display: grid; place-items: center; width: 36px; height: 36px;
+  transform: translate(-50%, -50%); border-radius: 50%; background: #fff; color: #7a3d5c;
+  box-shadow: 0 6px 18px -6px rgba(0, 0, 0, 0.6); font: 700 14px/1 var(--font); letter-spacing: 2px;
+}
+.cmp-knob::before { content: "◂▸"; }
+.cmp-line:focus-visible .cmp-knob { box-shadow: 0 0 0 3px var(--pigment), 0 6px 18px -6px rgba(0, 0, 0, 0.6); }
+.lb-cmpbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px 10px; }
+.lb-seg { display: inline-flex; padding: 2px; border-radius: 999px; background: rgba(255, 145, 182, 0.14); }
+.lb-seg button {
+  height: 28px; padding: 0 12px; border: 0; border-radius: 999px; background: none; color: #f3d5e2;
+  font: 600 var(--fs-sm) var(--font); cursor: pointer; transition: background-color .15s, color .15s;
+}
+.lb-seg button:hover { color: #fff; }
+.lb-seg button[aria-pressed="true"] { background: rgba(255, 145, 182, 0.4); color: #fff; }
+.cmp-note { color: #f3d5e2; font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.lb-btn:disabled { opacity: .4; cursor: default; }
 .lb-count { padding: 1px 12px; border-radius: 999px; background: rgba(255, 145, 182, 0.14); color: #f3d5e2; font: 600 var(--fs-sm) var(--display); letter-spacing: .03em; }
 
 /* Detail panel: a glass card beside the picture on wide screens, a bottom sheet on phones. */
@@ -1004,6 +1043,21 @@ a.linkish { text-decoration: none; }
 .form-error { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--bad); font-size: var(--fs-sm); animation: fade-up .25s var(--ease); }
 .shake { animation: shake .4s var(--ease); }
 @keyframes shake { 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }
+.video-range { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; border: 0; }
+.video-range legend { margin-bottom: 8px; padding: 0; font-size: var(--fs-sm); font-weight: 600; }
+.modal label.radio { flex-direction: row; align-items: center; gap: 10px; font-weight: 500; cursor: pointer; }
+.modal .radio input { width: 18px; height: 18px; margin: 0; padding: 0; flex: none; accent-color: var(--pigment); }
+.modal .radio input:disabled + span { opacity: .5; }
+.video-opts { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 16px; }
+.video-opts select {
+  height: 40px; padding: 0 34px 0 14px; border: 2px solid var(--line); border-radius: 999px; appearance: none; cursor: pointer;
+  font-weight: 600; background: var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23b07a96' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E") no-repeat right 10px center / 16px;
+}
+.video-opts select:focus { outline: none; border-color: var(--pigment); box-shadow: 0 0 0 4px var(--pigment-soft); }
+.video-est { padding-bottom: 10px; color: var(--graphite); font-size: var(--fs-sm); font-weight: 600; }
+.video-range[inert], .video-opts[inert] { opacity: .55; }
+.video-progress { display: flex; align-items: center; gap: 10px; font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.video-progress progress { flex: 1; height: 10px; accent-color: var(--pigment); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
 .modal-actions.spread { justify-content: space-between; flex-wrap: wrap; }
 .modal-actions .row { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
@@ -1187,6 +1241,9 @@ a.linkish { text-decoration: none; }
   .lbp-time { font-size: var(--fs-2xl); }
 }
 @media (max-width: 640px) {
+  /* Too many reel controls for one row: the position gets a line of its own above them. */
+  .reel-bar { flex-wrap: wrap; justify-content: space-between; row-gap: 2px; }
+  .reel-pos { order: -1; flex-basis: 100%; padding: 0 2px; }
   :root { --pad: 12px; --gap: 10px; }
   .bar { padding: 8px 12px; gap: 8px; }
   .brand { gap: 6px; }

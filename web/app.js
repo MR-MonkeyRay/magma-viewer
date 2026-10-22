@@ -56,6 +56,10 @@
     loginDialog: $('#login-dialog'), loginForm: $('#login-form'), loginError: $('#login-error'), loginSubmit: $('#login-submit'),
     statusDialog: $('#status-dialog'), adminStats: $('#admin-stats'), fetchNow: $('#fetch-now'),
     adminRuns: $('#admin-runs'), runsList: $('#runs-list'), notifyTest: $('#notify-test'),
+    lbCompare: $('#lb-compare'), cmp: $('#lb-cmp'), cmpOld: $('#cmp-old'), cmpDiff: $('#cmp-diff'), cmpLine: $('#cmp-line'),
+    cmpBar: $('#lb-cmpbar'), cmpNote: $('#cmp-note'), selCompare: $('#sel-compare'), selVideo: $('#sel-video'), reelVideo: $('#reel-video'),
+    videoDialog: $('#video-dialog'), videoForm: $('#video-form'), videoFrame: $('#video-frame'), videoEst: $('#video-est'),
+    videoProgress: $('#video-progress'), videoBar: $('#video-bar'), videoStep: $('#video-step'), videoError: $('#video-error'), videoStart: $('#video-start'),
     cookieDialog: $('#cookie-dialog'), cookieForm: $('#cookie-form'), cookieState: $('#cookie-state'), cookieError: $('#cookie-error'), cookieSave: $('#cookie-save'),
     scheduleDialog: $('#schedule-dialog'), scheduleStats: $('#schedule-stats'), toggleSchedule: $('#toggle-schedule'), scheduleHint: $('#schedule-hint'),
     noticeDialog: $('#notice-dialog'), noticeList: $('#notice-list'), noticeActions: $('#notice-actions'),
@@ -338,10 +342,11 @@
     return { img, date };
   }
   const imgHash = (name) => `#img=${encodeURIComponent(name)}`;
-  // Shows what the address names; on start-up and when retrying a failed load.
-  function followHash() {
+  // Shows what the address names; on start-up and when retrying a failed load. A retried picture link that failed
+  // while being restored is restored again, so its entry is kept rather than doubled.
+  function followHash(retry = false) {
     const link = readHash();
-    if (link.img) openLinked(link.img);
+    if (link.img) openLinked(link.img, retry && linkFailedRestore);
     else if (link.date) goDate(link.date, false);
     else load();
   }
@@ -359,14 +364,16 @@
   const onFirstPage = () => state.sort === 'desc' && state.page === 1;
 
   let loadSeq = 0;
+  let foreground = 0; // non-silent loads in flight; polling must not supersede one (a link being looked up, a page turn)
   // silent reloads come from polling: no skeleton, no progress bar, new tiles are highlighted.
-  // Resolves true once the page is shown, false when the request failed or was superseded.
+  // Resolves true once the page is shown, false when the request failed, null when it was superseded.
   // around names a picture whose page to show instead of state.page; guard, when given, must still hold when the
   // answer arrives or nothing is shown.
   // date (YYYY-MM-DD in the viewer's zone) does the same for the first picture of a day.
   async function load({ scroll = false, silent = false, around = '', date = '', guard = null } = {}) {
     const seq = ++loadSeq;
     if (!silent) {
+      foreground++;
       if (!state.items.length) renderSkeleton();
       else el.gallery.classList.add('stale');
       busy(true);
@@ -377,7 +384,7 @@
     try {
       const at = around ? `&around=${enc(around)}` : date ? `&date=${date}&tz=${enc(viewerZone())}` : '';
       const d = await api(`/api/images?page=${state.page}&size=${state.size}&sort=${state.sort}${at}`);
-      if (seq !== loadSeq || (guard && !guard())) return false;
+      if (seq !== loadSeq || (guard && !guard())) return null;
       Object.assign(state, { items: d.items, total: d.total, page: d.page, size: d.size, pages: d.pages, admin: d.admin, guestLimit: d.guest_limit, task: d.task });
       if (date) state.date = { key: date, page: d.page, focus: d.focus || '' };
       // A refresh that pushed the day off this page ends the day's address; the page number takes over.
@@ -395,14 +402,15 @@
         if (newer) loadOverview();
       }
       writeHash();
+      olderItems.clear();
+      olderGen++;
       // Keep an open lightbox on the same picture even though indexes shifted.
       let lost = false;
       if (viewing && state.lbIndex >= 0) {
         const i = state.items.findIndex((it) => it.name === viewing);
-        if (i >= 0) { state.lbIndex = i; updateLightboxMeta(); }
+        if (i >= 0) { state.lbIndex = i; updateLightboxMeta(); renderCmp(); } // its older neighbour may have changed
         else { state.lbIndex = Math.max(0, Math.min(state.lbIndex, state.items.length - 1)); lost = true; }
       }
-      olderTimes.clear();
       render({ animate: !silent, slide: silent ? 0 : slideDir });
       slideDir = 0;
       if (before && before.size) markNew(before);
@@ -411,10 +419,11 @@
       if (lost && !stepping) { if (state.items.length) openLightbox(state.lbIndex); else closeLightbox(); }
       return true;
     } catch (e) {
-      if (seq === loadSeq && !silent && (!guard || guard())) renderError(e);
+      if (seq !== loadSeq || (guard && !guard())) return null;
+      if (!silent) renderError(e);
       return false;
     } finally {
-      if (!silent) busy(false);
+      if (!silent) { busy(false); foreground--; }
       if (seq === loadSeq) el.gallery.classList.remove('stale');
       schedulePoll();
     }
@@ -434,6 +443,8 @@
   // Every change of route bumps this, so a day or picture still being looked up is dropped once the viewer moved on.
   let routeSeq = 0;
   let lbRestore = 0; // the routeSeq of the picture link being restored into the current entry, 0 for none
+  let linking = false; // openLinked is opening the lightbox, as opposed to a click
+  let linkFailedRestore = false; // the last picture link failed to load while being restored
   function leaveRoute() {
     ++routeSeq;
     if (state.lbIndex < 0) { lbHistory = false; lbRestore = 0; } // a link still being restored no longer owns the entry
@@ -445,7 +456,10 @@
     const seq = routeSeq;
     if (push) history.pushState(null, '', `#date=${key}`);
     state.lastIndex = null;
-    if (!(await load({ date: key, guard: () => seq === routeSeq }))) return false;
+    const ok = await load({ date: key, guard: () => seq === routeSeq });
+    // Another load on the same route (signing in or out) replaced it: show the day again.
+    if (ok === null && seq === routeSeq) return goDate(key, false);
+    if (!ok) return false;
     const focus = state.date && state.date.focus;
     const node = el.gallery.querySelector(`.group-title[data-date="${key}"]`)
       || (focus && el.gallery.querySelector(`.tile[data-i="${state.items.findIndex((it) => it.name === focus)}"]`));
@@ -469,6 +483,9 @@
     const release = () => { if (lbRestore === seq) { lbRestore = 0; if (state.lbIndex < 0) lbHistory = false; } };
     const ok = await load({ around: name, guard: () => seq === routeSeq });
     if (seq !== routeSeq) { release(); return; }
+    // Another load on the same route (signing in or out) replaced the lookup: look the picture up again.
+    if (ok === null) return openLinked(name, restore);
+    linkFailedRestore = restore && !ok;
     const i = ok ? state.items.findIndex((it) => it.name === name) : -1;
     if (i < 0) {
       release();
@@ -477,7 +494,8 @@
       return;
     }
     if (lbRestore === seq) lbRestore = 0;
-    openLightbox(i, 0, el.gallery.querySelector(`.tile[data-i="${i}"] .tile-open img`));
+    linking = true;
+    try { openLightbox(i, 0, el.gallery.querySelector(`.tile[data-i="${i}"] .tile-open img`)); } finally { linking = false; }
   }
 
   // The newest pictures: page one, newest first.
@@ -1095,6 +1113,8 @@
     el.account.querySelector('use').setAttribute('href', state.admin ? '#i-shield' : '#i-user');
     el.account.classList.toggle('is-admin', state.admin);
     renderFail(state.task); // admins see the reason, guests only that the picture may be stale
+    el.reelVideo.hidden = !state.admin;
+    if (!state.admin && el.videoDialog.open) { stopVideo(); closeDialog(el.videoDialog, true); }
   }
 
   // Reading computed styles forces a style pass, so the theme is read only when it may have changed, not per render.
@@ -1155,11 +1175,12 @@
     renderBell();
     renderAcct();
     tickTimes();
-    if (state.lbIndex >= 0) { updateLightboxMeta(); applyZoom(); renderSelection(); }
+    if (state.lbIndex >= 0) { updateLightboxMeta(); applyZoom(); renderSelection(); renderCmp(); }
     setPasswordVisible(el.loginForm.elements.password.type === 'text');
     if (el.noticeDialog.open) renderNotices();
     if (el.naDialog.open) { resetDelete(); renderNaForm(); renderNaList(); }
     if (el.statusDialog.open || el.scheduleDialog.open) refreshStatus();
+    if (el.videoDialog.open) renderVideoText();
     const res = $('#acct-result');
     if (res.textContent) res.textContent = t('status.error');
   }
@@ -1197,6 +1218,8 @@
     if (Number(el.selCount.dataset.n || 0) !== n) replay(el.selCount, 'bump');
     el.selCount.dataset.n = n;
     $('#sel-zip').disabled = n === 0;
+    el.selCompare.hidden = n !== 2;
+    el.selVideo.hidden = !state.admin || n < 2;
     el.gallery.querySelectorAll('.tile[data-i]').forEach((t) => {
       const it = state.items[t.dataset.i];
       const on = state.selected.has(it.name);
@@ -1250,13 +1273,17 @@
   function fitImage() {
     const it = state.items[state.lbIndex];
     const img = el.lbImg;
-    if (!it || !it.w) { img.style.width = img.style.height = ''; return; }
-    const cs = getComputedStyle(el.lbStage);
-    const aw = el.lbStage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-    const ah = el.lbStage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
-    const s = Math.min(aw / it.w, ah / it.h, 1);
-    img.style.width = Math.round(it.w * s) + 'px';
-    img.style.height = Math.round(it.h * s) + 'px';
+    if (!it || !it.w) {
+      img.style.width = img.style.height = '';
+    } else {
+      const cs = getComputedStyle(el.lbStage);
+      const aw = el.lbStage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      const ah = el.lbStage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+      const s = Math.min(aw / it.w, ah / it.h, 1);
+      img.style.width = Math.round(it.w * s) + 'px';
+      img.style.height = Math.round(it.h * s) + 'px';
+    }
+    if (cmp.on) placeCmp();
   }
 
   // The 1600px preview covers most screens; HiDPI displays and deep zoom get the original.
@@ -1321,35 +1348,162 @@
 
   function renderGrid(i) {
     const it = state.items[i];
-    const older = olderTime(i);
+    const prior = olderItem(i);
+    const older = prior && prior.time;
     const gap = older ? (new Date(it.time) - new Date(older)) / 1000 : 0;
     el.lbpGrid.innerHTML = [
       [t('lbp.dims'), it.w ? `${it.w} × ${it.h}` : t('lbp.unknown')], [t('lbp.size'), fmtSize(it.size)], [t('lbp.format'), extOf(it.name) || '—'],
-      [t('lbp.ratio'), it.w ? ratioOf(it.w, it.h) : '—'], [t('lbp.gap'), older === undefined ? '…' : gap > 0 ? fmtGap(gap) : '—'],
+      [t('lbp.ratio'), it.w ? ratioOf(it.w, it.h) : '—'], [t('lbp.gap'), prior === undefined ? '…' : gap > 0 ? fmtGap(gap) : '—'],
       [t('lbp.position'), el.lbCount.textContent],
     ].map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('');
   }
 
-  // The picture before the oldest one on a page sits on the neighbouring page: fetch just that one, once.
-  // Returns its time, null when there is none, or undefined while it is being fetched.
-  const olderTimes = new Map();
-  function olderTime(i) {
+  // The picture before the oldest one on a page sits on the neighbouring page: it is looked up by name, as when
+  // stepping, since pictures saved meanwhile shift every position. Returns it, null when there is none, or undefined
+  // while it is being looked up. Every load starts a new generation; an answer from an older one is dropped.
+  const olderItems = new Map();
+  let olderGen = 0;
+  function olderItem(i) {
     const older = state.items[state.sort === 'desc' ? i + 1 : i - 1];
-    if (older) return older.time;
-    const it = state.items[i];
-    if (olderTimes.has(it.name)) return olderTimes.get(it.name);
-    const g = (state.page - 1) * state.size + i + (state.sort === 'desc' ? 1 : -1);
-    if (g < 0 || g >= state.total) return null;
-    const n = 12; // the server's smallest page size
-    const page = Math.floor(g / n) + 1;
-    olderTimes.set(it.name, undefined);
-    api(`/api/images?page=${page}&size=${n}&sort=${state.sort}`).then((d) => {
-      const o = d.page === page ? d.items[g % n] : null;
-      olderTimes.set(it.name, o ? o.time : null);
-    }, () => olderTimes.delete(it.name)).then(() => {
-      if (state.items[state.lbIndex] === it) renderGrid(state.lbIndex);
-    });
+    if (older) return older;
+    const { name } = state.items[i];
+    if (olderItems.has(name)) return olderItems.get(name);
+    const gen = olderGen;
+    olderItems.set(name, undefined);
+    neighbour(name, state.sort === 'desc' ? 1 : -1).then((n) => (n ? findItem(n) : n)).then((o) => {
+      if (gen !== olderGen) return;
+      // A failure is not redrawn, which would ask again at once; the next view of this picture does.
+      if (o === undefined) { olderItems.delete(name); return; }
+      olderItems.set(name, o);
+      const shown = state.items[state.lbIndex];
+      if (shown && shown.name === name) { renderGrid(state.lbIndex); renderCmp(); }
+    }, () => { if (gen === olderGen) olderItems.delete(name); });
     return undefined;
+  }
+
+  // ---------- compare ----------
+  // The picture shown is compared with the one before it, or with the other of two picked pictures: the older one
+  // lies over it, cut at the slider, or the difference is drawn with the changed pixels marked.
+  const cmp = { on: false, mode: 'slide', pos: 50, pin: null, seq: 0, diff: null };
+  const cmpBase = (i) => (cmp.pin && cmp.pin.for === state.items[i].name ? cmp.pin.item : olderItem(i));
+
+  // The overlay covers the picture exactly.
+  function placeCmp() {
+    const img = el.lbImg;
+    Object.assign(el.cmp.style, { left: img.offsetLeft + 'px', top: img.offsetTop + 'px', width: img.offsetWidth + 'px', height: img.offsetHeight + 'px' });
+  }
+
+  function setCmpPos(p) {
+    cmp.pos = Math.min(100, Math.max(0, p));
+    el.cmp.style.setProperty('--pos', cmp.pos + '%');
+    el.cmpLine.setAttribute('aria-valuenow', String(Math.round(cmp.pos)));
+  }
+
+  const decoded = (src) => { const img = new Image(); img.src = src; return img.decode().then(() => img); };
+
+  // The newer picture dimmed with the changed pixels in pink, worked out at most DIFF_EDGE wide; also the share of
+  // pixels that changed. The last pair is kept, so switching modes back and forth does not redo it.
+  const DIFF_EDGE = 800;
+  async function diffOf(older, newer) {
+    const key = older + '|' + newer;
+    if (cmp.diff && cmp.diff.key === key) return cmp.diff;
+    const [a, b] = await Promise.all([older, newer].map((n) => decoded(`/preview/${enc(n)}`)));
+    const s = Math.min(1, DIFF_EDGE / Math.max(b.naturalWidth, b.naturalHeight));
+    const w = Math.max(1, Math.round(b.naturalWidth * s));
+    const h = Math.max(1, Math.round(b.naturalHeight * s));
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const g = c.getContext('2d', { willReadFrequently: true });
+    g.drawImage(a, 0, 0, w, h);
+    const pa = g.getImageData(0, 0, w, h).data;
+    g.drawImage(b, 0, 0, w, h);
+    const out = g.getImageData(0, 0, w, h);
+    const pb = out.data;
+    let changed = 0;
+    for (let p = 0; p < pb.length; p += 4) {
+      // JPEG previews differ a little even where nothing changed.
+      if (Math.max(Math.abs(pa[p] - pb[p]), Math.abs(pa[p + 1] - pb[p + 1]), Math.abs(pa[p + 2] - pb[p + 2])) > 40) {
+        changed++;
+        pb[p] = 255; pb[p + 1] = 46; pb[p + 2] = 110;
+      } else {
+        pb[p] *= 0.3; pb[p + 1] *= 0.3; pb[p + 2] *= 0.3;
+      }
+    }
+    g.putImageData(out, 0, 0);
+    cmp.diff = { key, canvas: c, ratio: changed / (w * h) };
+    return cmp.diff;
+  }
+
+  function renderCmp() {
+    const on = cmp.on && state.lbIndex >= 0;
+    const seq = ++cmp.seq;
+    const base = on ? cmpBase(state.lbIndex) : null;
+    el.lb.classList.toggle('comparing', on);
+    el.lbCompare.setAttribute('aria-pressed', String(on));
+    el.lbZoom.disabled = on;
+    el.cmpBar.hidden = !on;
+    el.cmp.hidden = !base;
+    if (!on) return;
+    for (const b of el.cmpBar.querySelectorAll('[data-mode]')) b.setAttribute('aria-pressed', String(b.dataset.mode === cmp.mode));
+    if (!base) { el.cmpNote.textContent = t(base === null ? 'cmp.none' : 'cmp.loading'); return; }
+    const label = t('cmp.with', { time: fmtStamp(new Date(base.time)) });
+    $('#cmp-tag-old').textContent = fmtStamp(new Date(base.time));
+    $('#cmp-tag-new').textContent = fmtStamp(new Date(state.items[state.lbIndex].time));
+    placeCmp();
+    setCmpPos(cmp.pos);
+    const src = `/preview/${enc(base.name)}`;
+    if (el.cmpOld.getAttribute('src') !== src) el.cmpOld.src = src;
+    el.cmpOld.alt = t('cmp.old', { time: fmtFull(new Date(base.time)) });
+    const diff = cmp.mode === 'diff';
+    el.cmp.classList.toggle('diff', diff);
+    el.cmpNote.textContent = diff ? `${label} · ${t('cmp.working')}` : label;
+    if (!diff) return;
+    el.cmpDiff.width = 0; // the previous pair's difference must not show meanwhile
+    diffOf(base.name, state.items[state.lbIndex].name).then((d) => {
+      if (seq !== cmp.seq) return;
+      el.cmpDiff.width = d.canvas.width;
+      el.cmpDiff.height = d.canvas.height;
+      el.cmpDiff.getContext('2d').drawImage(d.canvas, 0, 0);
+      el.cmpNote.textContent = `${label} · ${t('cmp.changed', { pct: fmtNum(d.ratio * 100, 1) + '%' })}`;
+    }, () => { if (seq === cmp.seq) el.cmpNote.textContent = `${label} · ${t('cmp.failed')}`; });
+  }
+
+  // A picture by name: from this page, or from the page around it.
+  async function findItem(name) {
+    const here = state.items.find((it) => it.name === name);
+    if (here) return here;
+    const d = await api(`/api/images?around=${enc(name)}&size=12&sort=${state.sort}`);
+    return (d.focus === name && d.items.find((it) => it.name === name)) || null;
+  }
+
+  // Two picked pictures: the newer one opens, compared with the older one.
+  async function comparePicked() {
+    if (state.selected.size !== 2) return;
+    // Moving on (another page, a picture opened, a different selection) while the pair is looked up drops it.
+    let seq = routeSeq;
+    const names = [...state.selected];
+    const current = () => seq === routeSeq && state.selected.size === 2 && names.every((n) => state.selected.has(n));
+    let pair;
+    try { pair = await Promise.all(names.map(findItem)); } catch (e) { if (current()) toast(t('load.failedLater'), 'error'); return; }
+    if (!current()) return;
+    if (pair.includes(null)) { toast(t('err.image_not_found'), 'error'); return; }
+    const [older, newer] = pair.sort((a, b) => new Date(a.time) - new Date(b.time));
+    let i = state.items.findIndex((it) => it.name === newer.name);
+    if (i < 0) {
+      // Its page is shown first, as when a link is opened; the same checks keep a stale pair from showing it. A day
+      // being shown stays until that page arrives, which ends it unless the day is on the page.
+      leaveRoute();
+      seq = routeSeq;
+      if (!(await load({ around: newer.name, guard: current }))) return;
+      i = state.items.findIndex((it) => it.name === newer.name);
+      if (i < 0) return;
+    }
+    openLightbox(i, 0, imgFor(i));
+    cmp.pin = { for: newer.name, item: older };
+    cmp.on = true;
+    resetZoom();
+    renderCmp();
   }
 
   const wideScreen = window.matchMedia('(min-width: 1100px)');
@@ -1413,7 +1567,11 @@
       setInert(true);
       document.body.style.overflow = 'hidden';
       document.documentElement.classList.add('lb-open');
-      if (!lbHistory) { lbBase = location.hash; history.pushState({ lightbox: true }, '', imgHash(it.name)); lbHistory = true; }
+      // A picture opened by hand ends any link still being looked up. Its entry is the one being restored, if any;
+      // otherwise the address is put back to the page (a link given up on may still be in it) and a new entry pushed.
+      if (!linking) { ++routeSeq; lbRestore = 0; }
+      if (lbHistory) history.replaceState(history.state, '', imgHash(it.name));
+      else { writeHash(); lbBase = location.hash; history.pushState({ lightbox: true }, '', imgHash(it.name)); lbHistory = true; }
       $('#lb-close').focus({ preventScroll: true });
     } else if (lbHistory) {
       history.replaceState(history.state, '', imgHash(it.name)); // the address follows the picture shown
@@ -1443,6 +1601,7 @@
     pre.decode().then(done, done);
     for (const n of [state.items[i + 1], state.items[i - 1]]) if (n) new Image().src = `/preview/${enc(n.name)}`;
     renderSelection();
+    renderCmp();
   }
 
   function closeLightbox(fromHistory = false) {
@@ -1453,6 +1612,9 @@
     const back = lbReturn && lbReturn.isConnected ? lbReturn : shown && shown.closest('button');
     ++lbSeq;
     state.lbIndex = -1;
+    cmp.on = false;
+    cmp.pin = null;
+    renderCmp();
     closeMenu();
     resetZoom();
     setInert(false);
@@ -1559,7 +1721,7 @@
   // Scales to s while keeping the point (cx, cy) under the pointer.
   function zoomTo(s, cx, cy) {
     const img = el.lbImg;
-    if (state.lbIndex < 0 || !img.offsetWidth) return;
+    if (state.lbIndex < 0 || cmp.on || !img.offsetWidth) return;
     s = Math.min(MAX_ZOOM, Math.max(1, s));
     if (s < 1.02) return resetZoom();
     const r = img.getBoundingClientRect();
@@ -1578,7 +1740,7 @@
   }
 
   function toggleZoom(cx, cy) {
-    if (state.lbIndex < 0) return;
+    if (state.lbIndex < 0 || cmp.on) return;
     if (zoom.on) return resetZoom();
     const it = state.items[state.lbIndex];
     const img = el.lbImg;
@@ -1844,13 +2006,228 @@
     if (e.status === 401) {
       state.admin = false;
       closeMenu();
-      [el.statusDialog, el.scheduleDialog, el.naDialog, el.cookieDialog].forEach((d) => closeDialog(d, true));
+      [el.statusDialog, el.scheduleDialog, el.naDialog, el.cookieDialog, el.videoDialog].forEach((d) => closeDialog(d, true));
       renderControls();
       toast(t('login.expired'), 'error');
     } else {
       toast(e.message, 'error');
     }
   }
+
+  // ---------- timelapse video ----------
+  // Recorded in the browser, for admins only: each picture is drawn on a canvas whose stream a MediaRecorder encodes,
+  // so recording takes as long as the video lasts.
+  const FRAME_MS = [100, 200, 500, 1000];
+  let videoJob = null; // { stop, wake } while recording
+  const videoType = () => (window.MediaRecorder && HTMLCanvasElement.prototype.captureStream
+    && ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4'].find((m) => MediaRecorder.isTypeSupported(m))) || '';
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // Oldest first: the last 24 hours, or the picked pictures. File names start with the time they were saved, so
+  // sorting the names sorts by time; a picture known from a page or the reel also brings its time and size.
+  function videoFrames(range) {
+    if (range === 'recent') return reel.items.slice();
+    const known = new Map([...reel.items, ...state.items].map((it) => [it.name, it]));
+    return [...state.selected].sort().map((name) => known.get(name) || { name });
+  }
+
+  // The archive's clock time a file name carries, for a picture whose saved time is not known here.
+  function nameClock(name) {
+    const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/.exec(name);
+    return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}` : name;
+  }
+
+  function drawFrame(g, img, f) {
+    const { width: W, height: H } = g.canvas;
+    g.fillStyle = '#000';
+    g.fillRect(0, 0, W, H);
+    const s = Math.min(W / img.naturalWidth, H / img.naturalHeight);
+    const w = img.naturalWidth * s;
+    const h = img.naturalHeight * s;
+    g.drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
+    // The time in the corner, on a dark plate so it reads over any picture.
+    const label = f.time ? fmtFull(new Date(f.time)) : nameClock(f.name);
+    const fs = Math.max(12, Math.round(H / 28));
+    const pad = Math.round(fs / 2);
+    g.font = `600 ${fs}px system-ui, sans-serif`;
+    g.fillStyle = 'rgba(0, 0, 0, 0.55)';
+    g.fillRect(pad, H - fs - pad * 3, g.measureText(label).width + pad * 2, fs + pad * 2);
+    g.fillStyle = '#fff';
+    g.textBaseline = 'middle';
+    g.fillText(label, pad * 2, H - pad * 2 - fs / 2);
+  }
+
+  // Resolves the video, or null when stopped. Pictures load a few ahead; one that is late holds the one before it
+  // longer rather than being skipped, and one that fails to load is left out.
+  async function recordVideo(frames, size, frameMs, job, progress) {
+    const type = videoType();
+    // Every wait gives way to Cancel or to the recorder failing, so a picture that never finishes loading cannot hold
+    // the recording open. A wait listens only while it lasts: one raced against a promise that stays pending would keep
+    // every decoded picture alive until the end.
+    let failure = null;
+    const until = (p) => new Promise((resolve, reject) => {
+      if (failure) { reject(failure); return; }
+      if (job.stop) { resolve(undefined); return; }
+      const wake = (err) => (err ? reject(err) : resolve(undefined));
+      job.wake.add(wake);
+      p.then(resolve, reject).finally(() => job.wake.delete(wake));
+    });
+    const fail = (err) => { failure = err; for (const wake of job.wake) wake(err); };
+    const loads = new Map();
+    const get = (k) => {
+      if (!loads.has(k)) loads.set(k, decoded(`/${size}/${enc(frames[k].name)}`).catch(() => null));
+      return loads.get(k);
+    };
+    // The first picture that loads sets the size; encoders want even sides.
+    let first = null;
+    for (let k = 0; k < frames.length && !first && !job.stop; k++) first = await until(get(k));
+    if (job.stop) return null;
+    if (!first) throw new Error(t('video.empty'));
+    const c = document.createElement('canvas');
+    c.width = Math.max(2, first.naturalWidth & ~1);
+    c.height = Math.max(2, first.naturalHeight & ~1);
+    const g = c.getContext('2d');
+    const stream = c.captureStream(30);
+    const chunks = [];
+    let skipped = 0;
+    try {
+      const rec = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: size === 'preview' ? 8e6 : 3e6 });
+      rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+      let ending = false;
+      const stopped = new Promise((resolve, reject) => {
+        // Stopping before it was asked to means it failed.
+        rec.onstop = () => { if (!ending) fail(new Error('MediaRecorder stopped')); resolve(); };
+        rec.onerror = (e) => { const err = e.error || new Error('MediaRecorder'); fail(err); reject(err); };
+      });
+      stopped.catch(() => {}); // awaited below; an early error must not be reported as unhandled meanwhile
+      rec.start(1000);
+      let last = null;
+      try {
+        for (let k = 0; k < frames.length && !job.stop; k++) {
+          for (let j = k + 1; j < Math.min(frames.length, k + 4); j++) get(j);
+          const img = await until(get(k));
+          loads.delete(k);
+          if (job.stop) break;
+          progress(k + 1, frames.length);
+          if (!img) { skipped++; continue; }
+          drawFrame(g, img, frames[k]);
+          last = [img, frames[k]];
+          await until(sleep(frameMs));
+        }
+        // Drawn once more, so the last picture is held for its full time instead of ending the video at once.
+        if (last && !job.stop) { drawFrame(g, ...last); await sleep(100); }
+      } finally {
+        ending = true;
+        if (rec.state !== 'inactive') rec.stop();
+      }
+      await stopped;
+      if (failure) throw failure;
+    } finally {
+      stream.getTracks().forEach((tr) => tr.stop());
+    }
+    if (job.stop) return null;
+    return { blob: new Blob(chunks, { type: type.split(';')[0] }), ext: type.startsWith('video/mp4') ? 'mp4' : 'webm', skipped };
+  }
+
+  function saveBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+
+  function renderVideoEst() {
+    const f = el.videoForm.elements;
+    const s = (videoFrames(f.range.value).length * Number(f.frame.value)) / 1000;
+    // Short videos keep a tenth of a second, which fmtGap would round away.
+    const dur = s < 60 ? t('video.sec', { n: fmtNum(s, s < 10 && s % 1 ? 1 : 0) }) : fmtGap(s);
+    el.videoEst.textContent = t('video.est', { dur });
+  }
+
+  function showVideoError(msg) {
+    el.videoError.hidden = !msg;
+    el.videoError.textContent = msg;
+    if (msg) announce(msg, true);
+  }
+
+  function setVideoBusy(on) {
+    el.videoProgress.hidden = !on;
+    el.videoStart.classList.toggle('loading', on);
+    el.videoStart.disabled = on || !videoType();
+    for (const n of el.videoForm.querySelectorAll('.video-range, .video-opts')) n.inert = on;
+    if (on) { el.videoBar.value = 0; el.videoStep.textContent = ''; }
+  }
+
+  // The dialog's text that depends on the language or the counts.
+  function renderVideoText() {
+    const frame = el.videoFrame.value || '200';
+    el.videoFrame.innerHTML = FRAME_MS.map((ms) => `<option value="${ms}">${esc(t('video.sec', { n: ms / 1000 }))}</option>`).join('');
+    el.videoFrame.value = frame;
+    $('#video-recent').textContent = t('video.recent', { n: reel.items.length });
+    $('#video-picked').textContent = t('video.picked', { n: state.selected.size });
+    renderVideoEst();
+  }
+
+  function openVideo(range) {
+    if (!state.admin || videoJob) return;
+    const f = el.videoForm.elements;
+    renderVideoText();
+    const recent = reel.items.length;
+    const picked = state.selected.size;
+    f.range[0].disabled = recent < 2;
+    f.range[1].disabled = picked < 2;
+    f.range.value = (range === 'picked' && picked >= 2) || recent < 2 ? 'picked' : 'recent';
+    setVideoBusy(false);
+    showVideoError(!videoType() ? t('video.unsupported') : recent < 2 && picked < 2 ? t('video.empty') : '');
+    if (recent < 2 && picked < 2) el.videoStart.disabled = true;
+    renderVideoEst();
+    openDialog(el.videoDialog);
+    if (!el.videoStart.disabled) el.videoStart.focus();
+  }
+
+  el.videoForm.addEventListener('change', renderVideoEst);
+  el.videoForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (videoJob || !state.admin) return;
+    const f = el.videoForm.elements;
+    const frames = videoFrames(f.range.value);
+    if (frames.length < 2) { showVideoError(t('video.empty')); return; }
+    showVideoError('');
+    const job = { stop: false, wake: new Set() }; // wake: the waits Cancel ends early
+    videoJob = job;
+    setVideoBusy(true);
+    try {
+      const out = await recordVideo(frames, f.quality.value, Number(f.frame.value), job, (k, n) => {
+        el.videoBar.value = k / n;
+        el.videoStep.textContent = k < n ? t('video.progress', { k: fmtNum(k), n: fmtNum(n) }) : t('video.finishing');
+      });
+      if (!out || job.stop) return;
+      const stamp = (fr) => (/^\d{8}-\d{4}/.exec(fr.name) || ['video'])[0];
+      saveBlob(out.blob, `magma-${stamp(frames[0])}_${stamp(frames[frames.length - 1])}.${out.ext}`);
+      toast(out.skipped ? t('video.doneSkipped', { n: out.skipped }) : t('video.done'), 'ok');
+      closeDialog(el.videoDialog, true);
+    } catch (err) {
+      if (!job.stop) showVideoError(t('video.failed', { msg: err.message }));
+    } finally {
+      if (videoJob === job) videoJob = null;
+      setVideoBusy(false);
+    }
+  });
+  // Closing the dialog (Cancel, Esc, signing out) stops the recording at once, not when the closing animation ends,
+  // so a recording finishing meanwhile is not saved.
+  function stopVideo() {
+    if (videoJob) { videoJob.stop = true; for (const wake of videoJob.wake) wake(); }
+    return true;
+  }
+  el.videoDialog.beforeClose = stopVideo;
+  el.videoDialog.addEventListener('close', stopVideo);
+  el.reelVideo.addEventListener('click', () => openVideo('recent'));
+  el.selVideo.addEventListener('click', () => openVideo('picked'));
+  el.selCompare.addEventListener('click', comparePicked);
 
   // ---------- notices ----------
   // Visitors only see published notices. The bell glows while one is newer than the last
@@ -2114,7 +2491,7 @@
   });
 
   el.gallery.addEventListener('click', (e) => {
-    if (e.target.closest('[data-retry]')) { followHash(); return; }
+    if (e.target.closest('[data-retry]')) { followHash(true); return; }
     const head = e.target.closest('.group-check');
     if (head) {
       const h = head.closest('.group-title');
@@ -2181,13 +2558,39 @@
   // The hero may already show a newer picture than the gallery holds; catch the gallery up first.
   async function openLatest() {
     const name = el.now.dataset.name;
+    if (!name) return;
     reelStop();
     let i = state.items.findIndex((it) => it.name === name);
+    // A picture entry being restored (or whose restore failed) is taken over rather than a new one added.
+    const takeover = state.lbIndex < 0 && (lbHistory || (linkFailedRestore && location.hash.startsWith('#img=')));
+    if (i >= 0 && takeover) lbHistory = true; // openLightbox renames the entry
     if (i < 0) {
-      await load({ silent: true });
-      i = state.items.findIndex((it) => it.name === name);
+      // Renamed to this picture and restored like a link, so a failure leaves Retry on it.
+      if (takeover) {
+        history.replaceState(history.state, '', imgHash(name));
+        openLinked(name, true);
+        return;
+      }
+      // On page one the hero is usually just newer than the gallery: a quiet refresh catches it up. A route taken
+      // meanwhile (a day, a page) wins over this click; polling waits for it, as for any foreground load.
+      if (onFirstPage()) {
+        leaveRoute();
+        const seq = routeSeq;
+        foreground++;
+        let ok;
+        try { ok = await load({ silent: true, guard: () => seq === routeSeq }); } finally { foreground--; }
+        if (!ok) return;
+        i = state.items.findIndex((it) => it.name === name);
+      }
+      // Not on this page (an older reel frame, say) the picture gets an entry of its own and is restored into it like
+      // a link: its page is shown under it, and closing goes back to the entry left, which shows its page again.
+      if (i < 0) {
+        history.pushState({ lightbox: true }, '', imgHash(name));
+        openLinked(name, true);
+        return;
+      }
     }
-    if (i >= 0) openLightbox(i, 0, el.nowImg);
+    openLightbox(i, 0, el.nowImg);
   }
   $('#now-open').addEventListener('click', openLatest);
   $('#now-zoom').addEventListener('click', openLatest);
@@ -2243,6 +2646,42 @@
   el.lbNext.addEventListener('click', () => step(1));
   el.lbSelect.addEventListener('click', lbToggleSelect);
   el.lbZoom.addEventListener('click', () => toggleZoom());
+  el.lbCompare.addEventListener('click', () => {
+    cmp.on = !cmp.on;
+    if (cmp.on) resetZoom();
+    renderCmp();
+  });
+  el.cmpBar.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-mode]');
+    if (!b) return;
+    cmp.mode = b.dataset.mode;
+    renderCmp();
+  });
+  // Dragging on the pictures moves the cut. Touches there stay there in either mode: a swipe would move the picture
+  // under the overlay and change pictures.
+  let cmpDrag = null;
+  const cmpAt = (e) => { const r = el.cmp.getBoundingClientRect(); setCmpPos(((e.clientX - r.left) / r.width) * 100); };
+  el.cmp.addEventListener('pointerdown', (e) => {
+    if (cmp.mode !== 'slide' || e.button !== 0) return;
+    e.preventDefault();
+    cmpDrag = e.pointerId;
+    el.cmp.setPointerCapture(e.pointerId);
+    cmpAt(e);
+    el.cmpLine.focus({ preventScroll: true });
+  });
+  el.cmp.addEventListener('pointermove', (e) => { if (e.pointerId === cmpDrag) cmpAt(e); });
+  const endCmpDrag = (e) => { if (e.pointerId === cmpDrag) cmpDrag = null; };
+  el.cmp.addEventListener('pointerup', endCmpDrag);
+  el.cmp.addEventListener('pointercancel', endCmpDrag);
+  el.cmp.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+  el.cmpLine.addEventListener('keydown', (e) => {
+    const k = { ArrowLeft: -5, ArrowRight: 5, Home: -100, End: 100 }[e.key];
+    if (k === undefined) return;
+    e.preventDefault();
+    e.stopPropagation(); // the arrows move the cut here, not to another picture
+    setCmpPos(cmp.pos + (e.shiftKey ? k / 5 : k));
+  });
+  el.lbImg.addEventListener('load', () => { if (cmp.on) placeCmp(); });
   for (const btn of [el.lbLink, el.lbpSize]) {
     btn.addEventListener('click', () => (menuBtn === btn ? closeMenu(true) : openMenu(btn)));
   }
@@ -2717,7 +3156,7 @@
           renderNow();
           // Re-rendering would drop keyboard focus anywhere in the history section, the toolbar and pager included.
           const idle = state.lbIndex < 0 && window.scrollY < 400 && !document.querySelector('dialog[open]') &&
-            !el.history.contains(document.activeElement);
+            !el.history.contains(document.activeElement) && !foreground;
           if (idle) { await load({ silent: true }); return; } // load reschedules
         }
         show(el.fresh);
