@@ -94,6 +94,8 @@ jobs:
           file: build/docker/Dockerfile
           push: true
           tags: ${{ steps.metadata.outputs.refs }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           labels: |
             org.opencontainers.image.version=${{ steps.metadata.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
