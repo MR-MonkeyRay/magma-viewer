@@ -26,3 +26,9 @@ storage:
   # systemd 只允许在 /var/lib/magma-viewer 和私有 /tmp 内写入。
   dir: /var/lib/magma-viewer/images
   temp_dir: /tmp
+
+# 可选：告警 webhook。Cookie 7 天内过期（每天一次）、连续 3 次抓取失败、恢复正常时 POST 通知。
+# format 为 json（默认，{"event","title","message","time"}）或 text（纯文本“标题\n内容”，适合 ntfy 等）。
+# notify:
+#   webhook: "https://ntfy.sh/<你的主题>"
+#   format: text

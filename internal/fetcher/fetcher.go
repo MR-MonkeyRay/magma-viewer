@@ -48,6 +48,7 @@ type Status struct {
 	Paused      bool      `json:"paused"`
 	LastRun     time.Time `json:"last_run"`
 	Result      string    `json:"result"`
+	Code        string    `json:"code,omitempty"` // error code of a failed run, see Code* constants
 	Message     string    `json:"message,omitempty"`
 	File        string    `json:"file,omitempty"`
 	LastFetched time.Time `json:"last_fetched"` // last successful download, saved or not
@@ -63,13 +64,28 @@ type savedState struct {
 	LastFetched time.Time `json:"last_fetched"`
 }
 
+// Alerts passed to Fetcher.Alert.
+const (
+	AlertFailing        = "fetch_failing"
+	AlertRecovered      = "fetch_recovered"
+	AlertCookieExpiring = "cookie_expiring"
+)
+
+// alertAfter is the run of failures worth telling someone about; it is also
+// where the backoff starts.
+const alertAfter = 3
+
 type Fetcher struct {
-	cfg     config.Magma
-	tempDir string
-	store   *store.Store
-	client  *http.Client
-	now     func() time.Time
-	token   TokenInfo
+	cfg          config.Magma
+	configCookie string // magma.cookie as configured, before any page override
+	tempDir      string
+	store        *store.Store
+	client       *http.Client
+	now          func() time.Time
+
+	// Alert, when set, is told about lasting failures, recovery and an
+	// expiring cookie. It must not block.
+	Alert func(event, message string)
 
 	runMu   sync.Mutex // serialises runs (cron + manual trigger)
 	lastMD5 string
@@ -79,29 +95,27 @@ type Fetcher struct {
 
 	stateMu sync.Mutex // serialises writes of stateFile
 
-	statusMu sync.RWMutex
-	status   Status
+	statusMu     sync.RWMutex // guards the fields below
+	status       Status
+	history      []Run // newest first
+	token        TokenInfo
+	cookie       CookieInfo
+	tokenAlerted time.Time
 }
 
 func New(cfg config.Magma, tempDir string, st *store.Store) *Fetcher {
 	f := &Fetcher{
-		cfg:     cfg,
-		tempDir: tempDir,
-		store:   st,
-		client:  &http.Client{Timeout: cfg.Timeout},
-		now:     time.Now,
+		cfg:          cfg,
+		configCookie: cfg.Cookie,
+		tempDir:      tempDir,
+		store:        st,
+		client:       &http.Client{Timeout: cfg.Timeout},
+		now:          time.Now,
+		cookie:       CookieInfo{Source: "config"},
 	}
-	if tok, ok := tokenFromCookie(cfg.Cookie); ok {
-		f.token = tok
-		switch left := time.Until(tok.Expires); {
-		case left <= 0:
-			log.Printf("fetcher: WARNING cookie %s expired at %s, update magma.cookie", tok.Cookie, tok.Expires.Format(time.DateTime))
-		case left < 7*24*time.Hour:
-			log.Printf("fetcher: WARNING cookie %s expires at %s", tok.Cookie, tok.Expires.Format(time.DateTime))
-		default:
-			log.Printf("fetcher: cookie %s valid until %s", tok.Cookie, tok.Expires.Format(time.DateTime))
-		}
-	}
+	f.loadCookie()
+	f.setToken(f.cfg.Cookie)
+	f.loadHistory()
 	if it, ok := st.Latest(); ok {
 		sum, err := st.FileMD5(it)
 		if err != nil {
@@ -173,17 +187,17 @@ func (f *Fetcher) RunScheduled(ctx context.Context) {
 	if st.Paused || f.now().Add(2*time.Second).Before(st.RetryAt) {
 		return
 	}
-	f.run(ctx)
+	f.run(ctx, false)
 }
 
 // backoff is how long scheduled runs pause after the given number of
 // consecutive failures: not at all for the first two, then from one minute
 // doubling up to half an hour. A schedule slower than that is unaffected.
 func backoff(failures int) time.Duration {
-	if failures < 3 {
+	if failures < alertAfter {
 		return 0
 	}
-	return min(time.Minute<<min(failures-3, 10), 30*time.Minute)
+	return min(time.Minute<<min(failures-alertAfter, 10), 30*time.Minute)
 }
 
 func (f *Fetcher) Status() Status {
@@ -196,28 +210,50 @@ func (f *Fetcher) Status() Status {
 func (f *Fetcher) Run(ctx context.Context) Status {
 	f.runMu.Lock()
 	defer f.runMu.Unlock()
-	return f.run(ctx)
+	return f.run(ctx, true)
+}
+
+// response describes what the server sent, for the history.
+type response struct {
+	status int
+	bytes  int64
 }
 
 // run does the work of Run; the caller holds runMu.
-func (f *Fetcher) run(ctx context.Context) Status {
+func (f *Fetcher) run(ctx context.Context, manual bool) Status {
 	started := f.now()
-	file, err := f.fetchOnce(ctx, started)
+	file, resp, err := f.fetchOnce(ctx, started)
+	ended := f.now()
+	if err != nil && errors.Is(ctx.Err(), context.Canceled) {
+		// Shutting down, or the admin's request went away: an abort, not a
+		// failure of the source, so it neither counts nor gets recorded.
+		log.Printf("fetcher: run aborted: %v", err)
+		return f.Status()
+	}
 	if err == nil {
 		defer f.saveLastFetched() // runs after statusMu is released
 	}
+	rec := Run{Time: started, Manual: manual, File: file, HTTP: resp.status, Bytes: resp.bytes, Millis: ended.Sub(started).Milliseconds()}
+	defer func() { f.record(rec) }()
+	var alert, alertMsg string
+	defer func() {
+		if alert != "" && f.Alert != nil {
+			f.Alert(alert, alertMsg)
+		}
+	}()
 
 	f.statusMu.Lock()
 	defer f.statusMu.Unlock()
 	st := &f.status
 	prevMsg := st.Message
-	st.LastRun, st.File, st.Message, st.RetryAt = started, "", "", time.Time{}
+	st.LastRun, st.File, st.Code, st.Message, st.RetryAt = started, "", "", "", time.Time{}
 	st.Runs++
 	if err != nil {
-		st.Result, st.Message = ResultError, err.Error()
+		st.Result, st.Code, st.Message = ResultError, ErrorCode(err), err.Error()
+		rec.Result, rec.Code, rec.Message = st.Result, st.Code, st.Message
 		st.Failures++
 		if d := backoff(st.Failures); d > 0 {
-			st.RetryAt = f.now().Add(d) // from the end: a slow failure must not eat the pause
+			st.RetryAt = ended.Add(d) // from the end: a slow failure must not eat the pause
 		}
 		// A lasting outage (say an expired cookie) would otherwise log the same line every run.
 		switch {
@@ -226,10 +262,16 @@ func (f *Fetcher) run(ctx context.Context) Status {
 		case st.Failures%60 == 0:
 			log.Printf("fetcher: still failing after %d attempts: %v", st.Failures, err)
 		}
+		if st.Failures == alertAfter {
+			alert, alertMsg = AlertFailing, fmt.Sprintf("已连续 %d 次抓取失败：%s", st.Failures, st.Message)
+		}
 		return *st
 	}
 	if st.Failures > 0 {
 		log.Printf("fetcher: recovered after %d failed attempts", st.Failures)
+		if st.Failures >= alertAfter {
+			alert, alertMsg = AlertRecovered, fmt.Sprintf("抓取已恢复（此前连续失败 %d 次）。", st.Failures)
+		}
 		st.Failures = 0
 	}
 	if file == "" {
@@ -239,14 +281,15 @@ func (f *Fetcher) run(ctx context.Context) Status {
 		st.Saved++
 		log.Printf("fetcher: saved %s", file)
 	}
+	rec.Result = st.Result
 	return *st
 }
 
 // fetchOnce returns the stored file name, or "" when the image is unchanged.
-func (f *Fetcher) fetchOnce(ctx context.Context, now time.Time) (string, error) {
+func (f *Fetcher) fetchOnce(ctx context.Context, now time.Time) (file string, info response, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.cfg.URL, nil)
 	if err != nil {
-		return "", err
+		return "", info, err
 	}
 	for k, v := range f.cfg.Headers {
 		req.Header.Set(k, v)
@@ -273,47 +316,59 @@ func (f *Fetcher) fetchOnce(ctx context.Context, now time.Time) (string, error) 
 	client := *f.client
 	client.CheckRedirect = func(r *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
-			return errors.New("stopped after 10 redirects")
+			return errTooManyRedirects
 		}
 		conditional(r) // redirects copy the first request's headers
 		return nil
 	}
 	resp, err := client.Do(req)
+	if errors.Is(err, errTooManyRedirects) {
+		if resp != nil {
+			info.status = resp.StatusCode
+		}
+		return "", info, fail(CodeHTTP, fmt.Errorf("request: %w", err))
+	}
 	if err != nil {
-		return "", fmt.Errorf("request: %w", err)
+		return "", info, fail(transportCode(err), fmt.Errorf("request: %w", err))
 	}
 	defer resp.Body.Close()
+	info.status = resp.StatusCode
 	if resp.StatusCode == http.StatusNotModified && f.lastMD5 != "" {
-		return "", nil
+		return "", info, nil
 	}
 	if resp.StatusCode != http.StatusOK {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
 		msg := strings.TrimSpace(string(snippet))
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			return "", fmt.Errorf("unexpected status %s: %s (cookie expired or invalid?)", resp.Status, msg)
+			return "", info, fail(CodeAuth, fmt.Errorf("unexpected status %s: %s (cookie expired or invalid?)", resp.Status, msg))
 		}
-		return "", fmt.Errorf("unexpected status %s: %s", resp.Status, msg)
+		return "", info, fail(CodeHTTP, fmt.Errorf("unexpected status %s: %s", resp.Status, msg))
 	}
 
 	tmp, err := os.CreateTemp(f.tempDir, "magma-*.download")
 	if err != nil {
-		return "", err
+		return "", info, fail(CodeSave, err)
 	}
 	defer os.Remove(tmp.Name())
 	defer tmp.Close()
 
 	h := md5.New()
 	n, err := io.Copy(io.MultiWriter(tmp, h), io.LimitReader(resp.Body, maxImageBytes+1))
+	info.bytes = n
 	if err != nil {
-		return "", fmt.Errorf("download: %w", err)
+		var pe *os.PathError
+		if errors.As(err, &pe) { // the temp file, not the connection
+			return "", info, fail(CodeSave, fmt.Errorf("download: %w", err))
+		}
+		return "", info, fail(transportCode(err), fmt.Errorf("download: %w", err))
 	}
 	if n > maxImageBytes {
-		return "", fmt.Errorf("response larger than %d bytes", maxImageBytes)
+		return "", info, fail(CodeTooLarge, fmt.Errorf("response larger than %d bytes", maxImageBytes))
 	}
 
 	ext, err := sniffExt(tmp)
 	if err != nil {
-		return "", err
+		return "", info, err
 	}
 
 	// Validators are kept only once this image is safely the latest saved one;
@@ -326,7 +381,7 @@ func (f *Fetcher) fetchOnce(ctx context.Context, now time.Time) (string, error) 
 	sum := hex.EncodeToString(h.Sum(nil))
 	if sum == f.lastMD5 {
 		remember()
-		return "", nil
+		return "", info, nil
 	}
 
 	name := f.store.FileName(now, sum, ext)
@@ -336,10 +391,10 @@ func (f *Fetcher) fetchOnce(ctx context.Context, now time.Time) (string, error) 
 		name = f.store.FileName(now, sum, ext)
 	}
 	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-		return "", err
+		return "", info, fail(CodeSave, err)
 	}
 	if err := f.store.Import(tmp, name); err != nil {
-		return "", fmt.Errorf("save: %w", err)
+		return "", info, fail(CodeSave, fmt.Errorf("save: %w", err))
 	}
 	f.lastMD5 = sum
 	remember()
@@ -349,7 +404,7 @@ func (f *Fetcher) fetchOnce(ctx context.Context, now time.Time) (string, error) 
 			log.Printf("fetcher: %v", err)
 		}
 	}()
-	return name, nil
+	return name, info, nil
 }
 
 // sniffExt detects the image type from leading bytes; a login page may return
@@ -358,15 +413,15 @@ func sniffExt(f *os.File) (string, error) {
 	head := make([]byte, 512)
 	n, err := f.ReadAt(head, 0)
 	if err != nil && !errors.Is(err, io.EOF) {
-		return "", err
+		return "", fail(CodeSave, err)
 	}
 	if n == 0 {
-		return "", errors.New("empty response body")
+		return "", fail(CodeNotImage, errors.New("empty response body"))
 	}
 	ct := http.DetectContentType(head[:n])
 	ext, ok := contentTypeExt[ct]
 	if !ok {
-		return "", fmt.Errorf("response is %s, not an image (cookie expired or wrong url?)", ct)
+		return "", fail(CodeNotImage, fmt.Errorf("response is %s, not an image (cookie expired or wrong url?)", ct))
 	}
 	return ext, nil
 }

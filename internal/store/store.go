@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -344,32 +345,94 @@ func (s *Store) Watch(stop <-chan struct{}, interval time.Duration) {
 	}
 }
 
-// List returns one page of items and the total count.
-func (s *Store) List(page, size int, asc bool) ([]Item, int) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	total := len(s.items)
-	start := (page - 1) * size
-	if start < 0 || start >= total {
-		return []Item{}, total
-	}
-	end := min(start+size, total)
-	out := make([]Item, 0, end-start)
-	for i := start; i < end; i++ {
-		idx := i
-		if asc {
-			idx = total - 1 - i
-		}
-		out = append(out, s.items[idx])
-	}
-	return out, total
-}
-
 // Generation changes whenever the index does, for callers caching derived data.
 func (s *Store) Generation() uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.gen
+}
+
+// A Locator picks an item by its newest-first position while the index is
+// locked; see ListAt.
+type Locator func(items []Item, byName map[string]int) (int, bool)
+
+// ByName locates the item called name.
+func ByName(name string) Locator {
+	return func(_ []Item, byName map[string]int) (int, bool) {
+		i, ok := byName[name]
+		return i, ok
+	}
+}
+
+// ByDay locates the item that opens the day starting at day in reading
+// order: the newest one on or before it (newest first), or the oldest on or
+// after it (oldest first). A day without pictures lands on its nearest
+// neighbour in reading direction.
+func ByDay(day time.Time, asc bool) Locator {
+	return func(items []Item, _ map[string]int) (int, bool) {
+		if len(items) == 0 {
+			return 0, false
+		}
+		before := func(t time.Time) int { // first position saved before t
+			return sort.Search(len(items), func(i int) bool { return items[i].Time.Before(t) })
+		}
+		if asc {
+			return max(before(day)-1, 0), true
+		}
+		return min(before(day.AddDate(0, 0, 1)), len(items)-1), true
+	}
+}
+
+// ListAt is List, except that when loc finds an item the page holding it is
+// returned instead, along with its name. Locating and paging share one lock,
+// so a picture arriving in between cannot shift the result.
+func (s *Store) ListAt(page, size int, asc bool, loc Locator) (items []Item, total, gotPage int, focus string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	total = len(s.items)
+	if loc != nil {
+		if i, ok := loc(s.items, s.byName); ok {
+			pos := i
+			if asc {
+				pos = total - 1 - i
+			}
+			page, focus = pos/size+1, s.items[i].Name
+		}
+	}
+	page = min(max(page, 1), max((total+size-1)/size, 1))
+	start, end := (page-1)*size, min(page*size, total)
+	items = make([]Item, 0, max(end-start, 0))
+	for i := start; i < end; i++ {
+		idx := i
+		if asc {
+			idx = total - 1 - i
+		}
+		items = append(items, s.items[idx])
+	}
+	return items, total, page, focus
+}
+
+// Writable checks that new files can be saved: a temp file can be written
+// and renamed into the image directory. The latter is only asked of the OS,
+// since a real probe file would change the directory and trigger a rescan.
+func (s *Store) Writable() error {
+	tmp, err := fsutil.WriteTemp(s.tmpDir, ".probe", strings.NewReader("ok"), 0o644)
+	if err != nil {
+		return err
+	}
+	os.Remove(tmp)
+	return dirWritable(s.dir)
+}
+
+// Bytes is the total size of the archive.
+func (s *Store) Bytes() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var n int64
+	for _, it := range s.items {
+		n += it.Size
+	}
+	return n
 }
 
 func (s *Store) Count() int {

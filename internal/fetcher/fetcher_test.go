@@ -3,12 +3,16 @@ package fetcher
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -386,5 +390,265 @@ func TestValidatorsStayWithTheirURL(t *testing.T) {
 	target.Store("/new")
 	if got := f.Run(context.Background()); got.Result != ResultSaved || st.Count() != 2 {
 		t.Fatalf("new target judged by the old validator: %+v, %d images", got, st.Count())
+	}
+}
+
+func TestErrorCodes(t *testing.T) {
+	html := []byte("<html><body>login</body></html>")
+	cases := map[string]http.HandlerFunc{
+		CodeAuth:     func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no", http.StatusForbidden) },
+		CodeHTTP:     func(w http.ResponseWriter, r *http.Request) { http.Error(w, "oops", http.StatusInternalServerError) },
+		CodeNotImage: func(w http.ResponseWriter, r *http.Request) { w.Write(html) },
+		CodeTimeout:  func(w http.ResponseWriter, r *http.Request) { time.Sleep(500 * time.Millisecond) },
+	}
+	for want, h := range cases {
+		srv := httptest.NewServer(h)
+		st, _ := store.New(t.TempDir())
+		f := New(config.Magma{URL: srv.URL, Timeout: 200 * time.Millisecond}, t.TempDir(), st)
+		if got := f.Run(context.Background()); got.Code != want || got.Result != ResultError {
+			t.Errorf("%s: got %+v", want, got)
+		}
+		srv.Close()
+	}
+	st, _ := store.New(t.TempDir())
+	f := New(config.Magma{URL: "http://127.0.0.1:1/x", Timeout: time.Second}, t.TempDir(), st)
+	if got := f.Run(context.Background()); got.Code != CodeNetwork {
+		t.Errorf("unreachable: %+v", got)
+	}
+}
+
+func TestHistoryRecordsAndSurvivesRestart(t *testing.T) {
+	var fail atomic.Bool
+	img := pngBytes(t, color.RGBA{7, 8, 9, 255})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fail.Load() {
+			http.Error(w, "down", http.StatusBadGateway)
+			return
+		}
+		w.Write(img)
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	st, _ := store.New(dir)
+	cfg := config.Magma{URL: srv.URL, Timeout: 5 * time.Second}
+	f := New(cfg, t.TempDir(), st)
+	f.Run(context.Background())
+	f.RunScheduled(context.Background())
+	fail.Store(true)
+	for range 3 {
+		f.RunScheduled(context.Background())
+		f.status.RetryAt = time.Time{} // let the next scheduled run through
+	}
+	h := f.History()
+	if len(h) != 5 || h[0].Result != ResultError || h[0].Code != CodeHTTP || h[0].HTTP != http.StatusBadGateway || h[3].Result != ResultUnchanged || !h[4].Manual || h[4].Result != ResultSaved || h[4].Bytes == 0 {
+		t.Fatalf("history %+v", h)
+	}
+
+	// A restart remembers the outage and its backoff.
+	g := New(cfg, t.TempDir(), st)
+	got := g.Status()
+	if got.Failures != 3 || got.Code != CodeHTTP || got.RetryAt.IsZero() || len(g.History()) != 5 {
+		t.Fatalf("after restart: %+v, %d runs", got, len(g.History()))
+	}
+}
+
+func TestHistoryKeepsTheLatestRuns(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "x", 500) }))
+	defer srv.Close()
+	st, _ := store.New(t.TempDir())
+	f := New(config.Magma{URL: srv.URL, Timeout: time.Second}, t.TempDir(), st)
+	for range historySize + 5 {
+		f.Run(context.Background())
+	}
+	if n := len(f.History()); n != historySize {
+		t.Fatalf("%d runs kept", n)
+	}
+}
+
+func TestAlerts(t *testing.T) {
+	var fail atomic.Bool
+	img := pngBytes(t, color.RGBA{1, 1, 1, 255})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fail.Load() {
+			http.Error(w, "down", http.StatusBadGateway)
+			return
+		}
+		w.Write(img)
+	}))
+	defer srv.Close()
+	st, _ := store.New(t.TempDir())
+	f := New(config.Magma{URL: srv.URL, Timeout: time.Second}, t.TempDir(), st)
+	var events []string
+	f.Alert = func(event, _ string) { events = append(events, event) }
+	fail.Store(true)
+	for range 5 {
+		f.Run(context.Background())
+	}
+	fail.Store(false)
+	f.Run(context.Background())
+	f.Run(context.Background())
+	if strings.Join(events, ",") != AlertFailing+","+AlertRecovered {
+		t.Fatalf("alerts %v", events)
+	}
+
+	// Two failures are a blip, not worth a recovery notice.
+	events = nil
+	fail.Store(true)
+	f.Run(context.Background())
+	f.Run(context.Background())
+	fail.Store(false)
+	f.Run(context.Background())
+	if len(events) != 0 {
+		t.Fatalf("alerts after a short blip: %v", events)
+	}
+}
+
+func jwt(exp time.Time) string {
+	enc := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
+	return enc(`{"alg":"none"}`) + "." + enc(fmt.Sprintf(`{"exp":%d}`, exp.Unix())) + ".sig"
+}
+
+func TestSetCookie(t *testing.T) {
+	var seen atomic.Value
+	img := pngBytes(t, color.RGBA{2, 2, 2, 255})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.Store(r.Header.Get("Cookie"))
+		w.Write(img)
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	st, _ := store.New(dir)
+	cfg := config.Magma{URL: srv.URL, Cookie: "AUTH_TOKEN=old", Timeout: time.Second}
+	f := New(cfg, t.TempDir(), st)
+	if f.Cookie().Source != "config" {
+		t.Fatalf("source %+v", f.Cookie())
+	}
+	for _, bad := range []string{"", "  ", "a\nb", "AUTH_TOKEN="} {
+		if err := f.SetCookie(bad); !errors.Is(err, ErrInvalidCookie) {
+			t.Errorf("SetCookie(%q) = %v", bad, err)
+		}
+	}
+	tok := jwt(time.Now().Add(48 * time.Hour))
+	if err := f.SetCookie("Cookie: " + tok); err != nil { // a bare value pasted with its header name
+		t.Fatal(err)
+	}
+	f.Run(context.Background())
+	if seen.Load() != "AUTH_TOKEN="+tok || f.Cookie().Source != "page" || f.Token() == nil {
+		t.Fatalf("cookie sent %v, info %+v, token %v", seen.Load(), f.Cookie(), f.Token())
+	}
+	if info, _ := os.Stat(filepath.Join(dir, cookieFile)); info.Mode().Perm()&0o077 != 0 {
+		t.Fatalf("cookie file readable by others: %v", info.Mode())
+	}
+
+	// The override survives a restart while magma.cookie is unchanged...
+	if g := New(cfg, t.TempDir(), st); g.cfg.Cookie != "AUTH_TOKEN="+tok || g.Cookie().Source != "page" {
+		t.Fatalf("override lost on restart: %q", g.cfg.Cookie)
+	}
+	// ...and yields once the operator edits the config.
+	cfg.Cookie = "AUTH_TOKEN=edited"
+	if g := New(cfg, t.TempDir(), st); g.cfg.Cookie != "AUTH_TOKEN=edited" || g.Cookie().Source != "config" {
+		t.Fatalf("edited config ignored: %q", g.cfg.Cookie)
+	}
+	if _, err := os.Stat(filepath.Join(dir, cookieFile)); !os.IsNotExist(err) {
+		t.Fatal("stale override kept")
+	}
+}
+
+func TestCookieExpiryAlertOncePerDay(t *testing.T) {
+	st, _ := store.New(t.TempDir())
+	now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	f := New(config.Magma{URL: "http://127.0.0.1:1", Cookie: "AUTH_TOKEN=" + jwt(now.Add(3*24*time.Hour)), Timeout: time.Second}, t.TempDir(), st)
+	f.now = func() time.Time { return now }
+	var msgs []string
+	f.Alert = func(event, msg string) {
+		if event == AlertCookieExpiring {
+			msgs = append(msgs, msg)
+		}
+	}
+	f.checkToken()
+	now = now.Add(time.Hour)
+	f.checkToken()
+	if len(msgs) != 1 || !strings.Contains(msgs[0], "3 天") {
+		t.Fatalf("alerts %v", msgs)
+	}
+	now = now.Add(24 * time.Hour)
+	f.checkToken()
+	if len(msgs) != 2 {
+		t.Fatalf("no reminder the next day: %v", msgs)
+	}
+}
+
+func TestCancelledRunIsNotAFailure(t *testing.T) {
+	started := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	st, _ := store.New(t.TempDir())
+	f := New(config.Magma{URL: srv.URL, Timeout: 5 * time.Second}, t.TempDir(), st)
+	var alerts int
+	f.Alert = func(string, string) { alerts++ }
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { <-started; cancel() }()
+	got := f.Run(ctx)
+	if got.Failures != 0 || got.Result == ResultError || len(f.History()) != 0 || alerts != 0 {
+		t.Fatalf("cancelled run counted: %+v, %d runs, %d alerts", got, len(f.History()), alerts)
+	}
+}
+
+func TestCookieUpdateDropsOldOutageOnRestart(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no", 403) }))
+	defer srv.Close()
+	st, _ := store.New(t.TempDir())
+	cfg := config.Magma{URL: srv.URL, Timeout: time.Second}
+	f := New(cfg, t.TempDir(), st)
+	clock := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	f.now = func() time.Time { return clock }
+	for range 4 {
+		f.Run(context.Background())
+		clock = clock.Add(time.Minute)
+	}
+	// Restored exactly: a minute's pause doubled once, counted from the end of the last run.
+	if g := New(cfg, t.TempDir(), st); g.Status().Failures != 4 || !g.Status().RetryAt.Equal(time.Date(2026, 10, 20, 12, 5, 0, 0, time.UTC)) {
+		t.Fatalf("restored %+v", g.Status())
+	}
+	clock = clock.Add(-time.Minute + 300*time.Millisecond) // same second as the last failure, just after it
+	if err := f.SetCookie("fresh"); err != nil {
+		t.Fatal(err)
+	}
+	if g := New(cfg, t.TempDir(), st); g.Status().Failures != 0 || !g.Status().RetryAt.IsZero() {
+		t.Fatalf("failures from the old cookie restored: %+v", g.Status())
+	}
+}
+
+func TestNormalizeCookie(t *testing.T) {
+	for in, want := range map[string]string{
+		"tok":                        "AUTH_TOKEN=tok",
+		"  Cookie: tok ":             "AUTH_TOKEN=tok",
+		"cookie:AUTH_TOKEN=a; b=c":   "AUTH_TOKEN=a; b=c",
+		"empty=; AUTH_TOKEN=present": "empty=; AUTH_TOKEN=present",
+	} {
+		if got, err := normalizeCookie(in); err != nil || got != want {
+			t.Errorf("normalizeCookie(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"Cookie:", "Cookie:   ", "a=; b=", "x=1\r\nHost: evil"} {
+		if _, err := normalizeCookie(bad); err == nil {
+			t.Errorf("normalizeCookie(%q) accepted", bad)
+		}
+	}
+}
+
+func TestTooManyRedirectsIsHTTPError(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, srv.URL+r.URL.Path+"x", http.StatusFound)
+	}))
+	defer srv.Close()
+	st, _ := store.New(t.TempDir())
+	f := New(config.Magma{URL: srv.URL + "/a", Timeout: 5 * time.Second}, t.TempDir(), st)
+	if got := f.Run(context.Background()); got.Code != CodeHTTP || f.History()[0].HTTP != http.StatusFound {
+		t.Fatalf("redirect loop: %+v %+v", got, f.History()[0])
 	}
 }

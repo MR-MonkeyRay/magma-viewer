@@ -43,6 +43,8 @@ func tokenFromCookie(cookie string) (TokenInfo, bool) {
 
 // Token returns the cookie token's expiry, or nil when none was found.
 func (f *Fetcher) Token() *TokenInfo {
+	f.statusMu.RLock()
+	defer f.statusMu.RUnlock()
 	if f.token.Cookie == "" {
 		return nil
 	}

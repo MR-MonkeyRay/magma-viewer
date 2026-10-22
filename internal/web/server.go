@@ -22,6 +22,7 @@ import (
 	"magma-viewer/internal/config"
 	"magma-viewer/internal/fetcher"
 	"magma-viewer/internal/notice"
+	"magma-viewer/internal/notify"
 	"magma-viewer/internal/store"
 )
 
@@ -53,6 +54,8 @@ type Server struct {
 	NextRun func() time.Time
 	// Version is the release shown in the page footer.
 	Version string
+	// Notifier sends test alerts from the admin page; nil when no webhook is configured.
+	Notifier *notify.Notifier
 }
 
 // Go's built-in table lacks woff2, and slim images ship no /etc/mime.types.
@@ -79,6 +82,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.handleAsset)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") })
+	mux.HandleFunc("GET /readyz", s.handleReady)
 
 	mux.HandleFunc("GET /api/images", s.handleList)
 	mux.HandleFunc("GET /api/overview", s.handleOverview)
@@ -87,6 +91,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/status", s.adminOnly(s.handleStatus))
 	mux.HandleFunc("POST /api/fetch", s.adminOnly(s.handleFetch))
 	mux.HandleFunc("POST /api/schedule", s.adminOnly(s.handleSchedule))
+	mux.HandleFunc("PUT /api/cookie", s.adminOnly(s.handleCookie))
+	mux.HandleFunc("POST /api/notify/test", s.adminOnly(s.handleNotifyTest))
 	mux.HandleFunc("GET /api/notices", s.handleNotices)
 	mux.HandleFunc("GET /api/notices/all", s.adminOnly(s.handleAllNotices))
 	mux.HandleFunc("POST /api/notices", s.adminOnly(s.handleSaveNotice))
@@ -97,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /thumb/{name}", s.handleThumb(store.Small))
 	mux.HandleFunc("GET /preview/{name}", s.handleThumb(store.Preview))
 	mux.HandleFunc("GET /download/zip", s.handleZipSelected)
+	mux.HandleFunc("POST /download/zip", s.handleZipSelected) // form post: a large selection outgrows a URL
 	mux.HandleFunc("GET /download/all", sameOriginOnly(s.adminOnly(s.handleZipAll)))
 	mux.HandleFunc("GET /download/{name}", s.handleDownload)
 	// Rejects cross-origin POST/PUT/DELETE from browsers; SameSite=Lax alone
@@ -207,14 +214,10 @@ func intParam(r *http.Request, key string, def int) int {
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	size := min(max(intParam(r, "size", defaultPageSize), minPageSize), maxPageSize)
 	asc := r.URL.Query().Get("sort") == "asc"
-	page := max(intParam(r, "page", 1), 1)
-	items, total := s.store.List(page, size, asc)
+	// around= or date= ask for the page holding that picture or day instead.
+	items, total, page, focus := s.store.ListAt(intParam(r, "page", 1), size, asc, s.locator(r, asc))
 	task := s.fetcher.Status()
 	pages := max((total+size-1)/size, 1)
-	if page > pages {
-		page = pages
-		items, _ = s.store.List(page, size, asc)
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items":       items,
 		"total":       total,
@@ -227,26 +230,46 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		// Public subset of the fetch status; errors stay admin-only.
 		"task": map[string]any{
 			"paused": task.Paused, "last_fetched": task.LastFetched, "next_run": s.nextRun(),
+			"last_run": task.LastRun, "result": task.Result, "code": task.Code,
 			// Scheduled runs before retry_at are skipped while failures keep coming.
 			"failures": task.Failures, "retry_at": task.RetryAt,
 		},
 		// Lets polling notice a new announcement without fetching the list.
 		"notice": s.notices.Latest(),
+		"focus":  focus, // the picture around= or date= located, "" otherwise
 	})
+}
+
+// locator turns an around=<name> or date=YYYY-MM-DD (&tz=) query into a
+// store.Locator; nil when the request asks for neither.
+func (s *Server) locator(r *http.Request, asc bool) store.Locator {
+	q := r.URL.Query()
+	if name := q.Get("around"); name != "" {
+		return store.ByName(name)
+	}
+	day, err := time.ParseInLocation(time.DateOnly, q.Get("date"), s.zone(q.Get("tz")))
+	if err != nil {
+		return nil
+	}
+	return store.ByDay(day, asc)
+}
+
+// zone resolves a viewer's IANA zone name, falling back to the server's.
+func (s *Server) zone(tz string) *time.Location {
+	// Only canonical names: aliases such as Europe/./Paris would each take a cache slot.
+	if tz != "" && len(tz) <= 64 && path.Clean(tz) == tz {
+		if l := s.location(tz); l != nil {
+			return l
+		}
+	}
+	return time.Local
 }
 
 // handleOverview feeds the timeline strip and archive facts beside the latest picture.
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	// Days and hours are counted in the viewer's zone (an IANA name such as Asia/Shanghai) so they match the
 	// times the page shows; an unknown or missing zone falls back to the server's.
-	loc := time.Local
-	// Only canonical names: aliases such as Europe/./Paris would each take a cache slot.
-	if tz := r.URL.Query().Get("tz"); tz != "" && len(tz) <= 64 && path.Clean(tz) == tz {
-		if l := s.location(tz); l != nil {
-			loc = l
-		}
-	}
-	writeCachedJSON(w, s.overviewJSON(loc))
+	writeCachedJSON(w, s.overviewJSON(s.zone(r.URL.Query().Get("tz"))))
 }
 
 // overviewJSON encodes the overview for loc, reusing it until the index changes.
@@ -320,14 +343,80 @@ func (s *Server) nextRun() time.Time {
 	return s.NextRun()
 }
 
+// disk is the space around the archive.
+type disk struct {
+	Free    int64 `json:"free"`
+	Total   int64 `json:"total"`
+	Archive int64 `json:"archive"` // bytes taken by the indexed pictures
+}
+
 func (s *Server) statusBody() map[string]any {
+	d := diskSpace(s.store.Dir())
+	if d != nil {
+		d.Archive = s.store.Bytes()
+	}
 	return map[string]any{
 		"fetch":    s.fetcher.Status(),
 		"token":    s.fetcher.Token(),
+		"cookie":   s.fetcher.Cookie(),
+		"history":  s.fetcher.History(),
+		"notify":   s.Notifier != nil,
+		"disk":     d,
 		"schedule": s.cfg.Schedule,
 		"next_run": s.nextRun(),
 		"count":    s.store.Count(),
 	}
+}
+
+// handleReady is for monitoring: 503 when pictures could not be saved.
+// Fetch health is reported but does not fail the check, since an expired
+// cookie is not something restarting the service would fix.
+func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
+	st := s.fetcher.Status()
+	err := s.store.Writable()
+	code := http.StatusOK
+	if err != nil {
+		log.Printf("readyz: storage not writable: %v", err)
+		code = http.StatusServiceUnavailable
+	}
+	writeJSON(w, code, map[string]any{
+		"ok":               err == nil,
+		"storage_writable": err == nil,
+		"last_fetched":     st.LastFetched,
+		"failures":         st.Failures,
+	})
+}
+
+func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
+	if s.Notifier == nil {
+		writeError(w, http.StatusConflict, "notify_disabled", "未配置通知 webhook")
+		return
+	}
+	if err := s.Notifier.Post(r.Context(), notify.EventTest, "这是一条测试通知，收到即表示配置正确。"); err != nil {
+		log.Printf("notify test: %v", err)
+		writeError(w, http.StatusBadGateway, "notify_failed", "发送失败："+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"sent": true})
+}
+
+func (s *Server) handleCookie(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Cookie string `json:"cookie"`
+	}
+	if !readJSON(w, r, 16<<10, &body) {
+		return
+	}
+	if err := s.fetcher.SetCookie(body.Cookie); err != nil {
+		if errors.Is(err, fetcher.ErrInvalidCookie) {
+			writeError(w, http.StatusBadRequest, "invalid_cookie", "Cookie 格式不正确")
+			return
+		}
+		log.Printf("cookie: %v", err)
+		writeError(w, http.StatusInternalServerError, "cookie_save_failed", "保存 Cookie 失败")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.statusBody())
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
@@ -495,9 +584,18 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleZipSelected(w http.ResponseWriter, r *http.Request) {
+	names := r.URL.Query()["f"]
+	if r.Method == http.MethodPost {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		if err := r.ParseForm(); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "请求格式错误")
+			return
+		}
+		names = r.PostForm["f"]
+	}
 	seen := map[string]bool{}
 	var items []store.Item
-	for _, name := range r.URL.Query()["f"] {
+	for _, name := range names {
 		if seen[name] {
 			continue
 		}

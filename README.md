@@ -13,7 +13,7 @@ Go 单二进制 · 前端内嵌 · 无数据库 · Docker Compose / systemd 部�
 - **时间浏览**：按日分组的网格 / 瀑布流 / 列表视图，最新画面向前 24 小时的时间带回放，支持跨页切换。
 - **大图预览**：缩放拖动、键盘与触屏操作，查看尺寸、格式等信息，复制原图链接、Markdown、HTML、BBCode。
 - **下载**：单张原图 / 预览图、多选打包；访客最多 10 张，管理员不限并可打包全部。
-- **管理**：立即抓取、暂停 / 恢复定时任务、发布 / 撤回公告，登录后可用。
+- **管理**：立即抓取、暂停 / 恢复定时任务、发布 / 撤回公告、在线更新 Cookie（无需重启）、查看最近 50 次抓取记录与磁盘占用、告警 webhook 测试，登录后可用。
 - **体验**：中英文界面、明暗主题、快捷键（按 `?` 查看）、响应式布局，尊重系统“减少动态效果”。
 
 ## 快速开始
@@ -88,12 +88,14 @@ sudo bash install.sh --config ./config.yaml --no-start
 | `admin.session_secret` | 会话签名密钥；留空则每次启动随机生成，重启后需重新登录；修改 `admin.password` 后已有登录全部失效 | 空 |
 | `admin.session_ttl` | 登录有效期 | `168h` |
 | `magma.url` | 画板渲染接口，返回图片或跳转到图片 | 必填 |
-| `magma.cookie` | 原样放入 `Cookie` 请求头 | 空 |
+| `magma.cookie` | 原样放入 `Cookie` 请求头，可被管理面板中更新的 Cookie 覆盖 | 空 |
 | `magma.headers` | 额外请求头（`User-Agent`、`Referer` 等） | 空 |
 | `magma.timeout` | 单次下载超时 | `30s` |
 | `schedule` | 标准 5 段 crontab，也支持 `@every 30s`、`@hourly` | `* * * * *` |
 | `storage.dir` | 图片存储目录 | `/data/images` |
 | `storage.temp_dir` | 下载临时目录 | `/tmp` |
+| `notify.webhook` | 告警 webhook 地址，留空关闭 | 空 |
+| `notify.format` | 告警请求体格式：`json` 或 `text` | `json` |
 
 ### Magma 地址与 Cookie
 
@@ -104,7 +106,7 @@ sudo bash install.sh --config ./config.yaml --no-start
   cookie: "AUTH_TOKEN=eyJhbGciOi..."
   ```
 
-  缺失或无效时接口通常返回 `403 Access denied`。`AUTH_TOKEN` 是 JWT，有效期由 Magma 决定（通常约 90 天）；启动日志显示到期时间，管理面板显示剩余天数，不足 7 天告警。修改配置后需重启生效。
+  缺失或无效时接口通常返回 `403 Access denied`。`AUTH_TOKEN` 是 JWT，有效期由 Magma 决定（通常约 90 天）；启动日志显示到期时间，管理面板显示剩余天数，不足 7 天告警。可在管理面板直接粘贴新的 Cookie（完整 Cookie 头、`AUTH_TOKEN=...` 或只粘贴 token 值均可），立即生效并保存在 `storage.dir/.state/cookie.json`（权限 600）；之后若修改了配置文件中的 `magma.cookie`，以配置文件为准并删除 `cookie.json`。直接改配置文件仍需重启。
 
 ## 抓取与存储
 
@@ -121,6 +123,8 @@ sudo bash install.sh --config ./config.yaml --no-start
 - 缩略图（长边 480px）与预览图（长边 1600px）缓存在 `.thumbs/`；均不放大，长边不超过 1600 的图片预览直接返回原图，GIF 预览使用原图；无法解码的图片在文件变化前不会重复尝试生成，直接返回原图。缺失缓存会在启动后后台补齐，也可按需生成。
 - 首次运行时把当前 `TZ` 记录到 `storage.dir/.state/archive.json`，之后文件名中的时间始终按该时区写入和解析；迁移主机或修改 `TZ` 不会让历史时间整体偏移，启动日志会提示两者不一致。未设置 `TZ` 时按 `/etc/localtime` 指向的时区记录；无法确定时区时只在日志中提示、不记录；`archive.json` 损坏或其中时区无法加载时拒绝启动（修复或删除该文件后会按当前时区重新记录）。
 - 连续失败时自第 3 次起暂停定时抓取 1 分钟，此后每次翻倍，最长 30 分钟；成功一次即恢复，手动“立即抓取”不受影响。同一错误持续出现时日志只在首次、每 60 次和恢复时记录。
+- 最近 50 次抓取（时间、结果、错误类型、HTTP 状态、字节数、耗时、是否手动）保存在 `storage.dir/.state/history.json`；重启后连续失败次数与退避时间会从中恢复。错误类型：`network`（无法连接）、`timeout`（超时）、`auth`（401/403，Cookie 失效）、`http`（其他状态码）、`not_image`（返回的不是图片）、`too_large`（超过 200 MiB）、`save`（写入磁盘失败）。
+- 配置 `notify.webhook` 后，以下事件各 POST 一次告警：Cookie 7 天内过期时每天一次（`cookie_expiring`）、连续 3 次抓取失败时（`fetch_failing`）、此后恢复时（`fetch_recovered`）。`json` 格式请求体为 `{"event","title","message","time"}`，`event` 取上述三者或 `test`；`text` 格式为纯文本“标题换行内容”，适合 ntfy 等直接展示正文的服务。发送失败只记录日志，不重试。
 - 启动时清理超过 1 小时的写入残留（`*.part`、`.state/tmp`、下载临时文件）以及原图已不存在的缩略图和预览图。
 
 ## 权限
@@ -130,8 +134,9 @@ sudo bash install.sh --config ./config.yaml --no-start
 | 浏览、预览、下载单张 | ✓ | ✓ |
 | 多选打包下载 | 最多 10 张 | 不限 |
 | 打包下载全部 | — | ✓ |
-| 查看抓取状态与公告 | ✓ | ✓ |
+| 查看抓取状态（暂停、最近获取与下次抓取、最近结果与错误类型）与公告 | ✓ | ✓ |
 | 立即抓取、暂停 / 恢复、管理公告 | — | ✓ |
+| 在线更新 Cookie、测试告警、查看抓取记录与磁盘占用 | — | ✓ |
 
 管理员通过右上角头像登录。同一 IP 自首次失败起 5 分钟内累计 10 次登录失败后，暂时拒绝登录。
 
@@ -141,11 +146,13 @@ sudo bash install.sh --config ./config.yaml --no-start
 
 | 路由 | 说明 |
 | --- | --- |
-| `GET /api/images?page=1&size=48&sort=desc` | 分页列表；`size` 12–200；`sort=asc` 最早在前。含任务状态与最新公告 |
+| `GET /api/images?page=1&size=48&sort=desc` | 分页列表；`size` 12–200；`sort=asc` 最早在前；`around=<文件名>` 返回包含该图的页；`date=YYYY-MM-DD&tz=<时区>` 返回该日所在页（按当前排序取该日第一张；无图的日期落到阅读方向上最近的一张）；响应中的 `focus` 为定位到的文件名。含任务状态与最新公告 |
 | `GET /api/overview?tz=Asia/Shanghai` | 总数、字节数、首末时间、每日张数、最近 24 小时（以最新存档为终点，最多 400 张） |
 | `POST /api/login` / `POST /api/logout` | 登录 / 退出 |
-| `GET /api/status` / `POST /api/fetch` | 抓取状态 / 立即抓取（管理员）；抓取失败仍返回 200，查看响应中的 `fetch.result` |
+| `GET /api/status` / `POST /api/fetch` | 抓取状态（含最近抓取记录、Cookie 来源、磁盘占用）/ 立即抓取（管理员）；抓取失败仍返回 200，查看响应中的 `fetch.result` |
 | `POST /api/schedule` | `{"paused": true}` 暂停或恢复（管理员） |
+| `PUT /api/cookie` | `{"cookie": "..."}` 在线更新 Cookie（管理员） |
+| `POST /api/notify/test` | 发送测试告警（管理员）；未配置 webhook 返回 409 |
 | `GET /api/notices` | 已发布公告 |
 | `GET /api/notices/all` | 全部公告，含草稿（管理员） |
 | `POST /api/notices` / `PUT /api/notices/{id}` | 新建 / 修改；`publish=false` 存草稿或撤回（管理员） |
@@ -153,11 +160,12 @@ sudo bash install.sh --config ./config.yaml --no-start
 | `GET /img/{name}` | 原图 |
 | `GET /thumb/{name}` / `GET /preview/{name}` | 480px 缩略图 / 1600px 预览图 |
 | `GET /download/{name}` | 下载原图 |
-| `GET /download/zip?f=a&f=b` | 打包所选图片；访客最多 10 张 |
+| `GET /download/zip?f=a&f=b` | 打包所选图片；访客最多 10 张；也可用 `POST` 表单提交 `f`，适合大量选择 |
 | `GET /download/all` | 打包全部（管理员） |
-| `GET /healthz` | 健康检查 |
+| `GET /readyz` | 就绪检查：存储可写时 200，否则 503；同时返回最近获取时间与连续失败次数 |
+| `GET /healthz` | 存活检查 |
 
-公告与 `/api/schedule` 接口要求 `Content-Type: application/json`。
+公告、`/api/schedule` 与 `/api/cookie` 接口要求 `Content-Type: application/json`。
 
 ## 本地开发
 

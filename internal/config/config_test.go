@@ -84,3 +84,26 @@ func TestUnknownKeyStillLoads(t *testing.T) {
 		t.Fatalf("unknown key should only warn: %v", err)
 	}
 }
+
+func TestNotifyConfig(t *testing.T) {
+	c, err := load(t, minimal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Notify.Format != "json" {
+		t.Fatalf("default format %q", c.Notify.Format)
+	}
+	c, err = load(t, minimal+`notify: {webhook: "https://ntfy.sh/x", format: text}`)
+	if err != nil || c.Notify.Format != "text" || c.Notify.Webhook != "https://ntfy.sh/x" {
+		t.Fatalf("text format: %v %+v", err, c.Notify)
+	}
+	for name, yaml := range map[string]string{
+		"non-http webhook": minimal + `notify: {webhook: "ftp://x/y"}`,
+		"webhook no host":  minimal + `notify: {webhook: "https://"}`,
+		"bad format":       minimal + `notify: {webhook: "https://x/y", format: xml}`,
+	} {
+		if _, err := load(t, yaml); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

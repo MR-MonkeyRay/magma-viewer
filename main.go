@@ -24,6 +24,7 @@ import (
 	"magma-viewer/internal/config"
 	"magma-viewer/internal/fetcher"
 	"magma-viewer/internal/notice"
+	"magma-viewer/internal/notify"
 	"magma-viewer/internal/store"
 	"magma-viewer/internal/web"
 )
@@ -84,6 +85,11 @@ func run(configPath string) error {
 	defer stop()
 
 	f := fetcher.New(cfg.Magma, cfg.Storage.TempDir, st)
+	n := notify.New(cfg.Notify)
+	if n != nil {
+		f.Alert = n.Send
+		go f.WatchToken(ctx.Done())
+	}
 	c := cron.New(cron.WithChain(cron.SkipIfStillRunning(cron.DefaultLogger)))
 	entry, err := c.AddFunc(cfg.Schedule, func() { f.RunScheduled(ctx) })
 	if err != nil {
@@ -112,6 +118,7 @@ func run(configPath string) error {
 	ws := web.New(cfg, st, f, ns, static)
 	ws.NextRun = func() time.Time { return c.Entry(entry).Next }
 	ws.Version = strings.TrimSpace(version)
+	ws.Notifier = n
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           ws.Handler(),

@@ -26,6 +26,7 @@ type Config struct {
 	Magma          Magma    `yaml:"magma"`
 	Schedule       string   `yaml:"schedule"`
 	Storage        Storage  `yaml:"storage"`
+	Notify         Notify   `yaml:"notify"`
 
 	proxies []netip.Prefix
 }
@@ -45,6 +46,12 @@ type Magma struct {
 	Cookie  string            `yaml:"cookie"`
 	Headers map[string]string `yaml:"headers"`
 	Timeout time.Duration     `yaml:"timeout"`
+}
+
+// Notify configures the optional alert webhook.
+type Notify struct {
+	Webhook string `yaml:"webhook"` // POST target; empty disables alerts
+	Format  string `yaml:"format"`  // "json" (default) or "text"
 }
 
 type Storage struct {
@@ -95,6 +102,9 @@ func (c *Config) applyDefaults() {
 	if c.Storage.TempDir == "" {
 		c.Storage.TempDir = "/tmp"
 	}
+	if c.Notify.Format == "" {
+		c.Notify.Format = "json"
+	}
 }
 
 func (c *Config) validate() error {
@@ -111,6 +121,14 @@ func (c *Config) validate() error {
 		errs = append(errs, errors.New("magma.url is required"))
 	} else if u, err := url.Parse(c.Magma.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		errs = append(errs, errors.New("magma.url must be an http:// or https:// URL with a host"))
+	}
+	if w := c.Notify.Webhook; w != "" {
+		if u, err := url.Parse(w); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, errors.New("notify.webhook must be an http:// or https:// URL"))
+		}
+	}
+	if c.Notify.Format != "json" && c.Notify.Format != "text" {
+		errs = append(errs, fmt.Errorf("notify.format must be json or text, not %q", c.Notify.Format))
 	}
 	for _, p := range c.TrustedProxies {
 		prefix, err := netip.ParsePrefix(p)

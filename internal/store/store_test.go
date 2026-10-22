@@ -52,20 +52,23 @@ func TestIndexOrderAndPaging(t *testing.T) {
 		}
 		return out
 	}
-	page1, total := s.List(1, 2, false)
+	page1, total, _, _ := s.ListAt(1, 2, false, nil)
 	if total != 3 || strings.Join(names(page1), ",") != "20261020.jpg,manual.webp" {
 		t.Fatalf("desc page1 = %v", names(page1))
 	}
-	page2, _ := s.List(2, 2, false)
+	page2, _, _, _ := s.ListAt(2, 2, false, nil)
 	if strings.Join(names(page2), ",") != "20261020.png" {
 		t.Fatalf("desc page2 = %v", names(page2))
 	}
-	asc, _ := s.List(1, 3, true)
+	asc, _, _, _ := s.ListAt(1, 3, true, nil)
 	if names(asc)[0] != "20261020.png" {
 		t.Fatalf("asc = %v", names(asc))
 	}
-	if out, _ := s.List(5, 2, false); len(out) != 0 {
-		t.Fatal("out of range page should be empty")
+	if out, _, page, _ := s.ListAt(5, 2, false, nil); page != 2 || len(out) != 1 {
+		t.Fatalf("out of range page should clamp to the last: page %d, %d items", page, len(out))
+	}
+	if _, _, page, focus := s.ListAt(1, 2, true, ByName(page1[0].Name)); page != 2 || focus != page1[0].Name {
+		t.Fatalf("ByName asc: page %d focus %q", page, focus)
 	}
 
 	latest, _ := s.Latest()

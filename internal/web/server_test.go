@@ -23,6 +23,7 @@ import (
 	"magma-viewer/internal/config"
 	"magma-viewer/internal/fetcher"
 	"magma-viewer/internal/notice"
+	"magma-viewer/internal/notify"
 	"magma-viewer/internal/store"
 )
 
@@ -630,5 +631,248 @@ func TestZoneAliasesNotCached(t *testing.T) {
 	s.zones.Range(func(k, _ any) bool { n++; return true })
 	if n != 1 {
 		t.Fatalf("%d zones cached, want only the canonical name", n)
+	}
+}
+
+// sendJSON sends a same-origin request with a JSON body.
+func sendJSON(t *testing.T, method, u, body string, c *http.Cookie) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest(method, u, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	if c != nil {
+		req.AddCookie(c)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+func decode(t *testing.T, resp *http.Response) map[string]any {
+	t.Helper()
+	defer resp.Body.Close()
+	var m map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestListAround(t *testing.T) {
+	srv, _, st := newTestServerStore(t, 30)
+	all := st.All() // newest first
+	name := all[5].Name
+	for _, tc := range []struct {
+		sort string
+		page float64
+	}{{"desc", 1}, {"asc", 3}} {
+		m := decode(t, get(t, srv.URL+"/api/images?size=12&sort="+tc.sort+"&around="+name, nil))
+		if m["focus"] != name || m["page"] != tc.page {
+			t.Fatalf("%s: focus %v page %v, want %s page %v", tc.sort, m["focus"], m["page"], name, tc.page)
+		}
+	}
+	name = all[15].Name
+	m := decode(t, get(t, srv.URL+"/api/images?size=12&around="+name, nil))
+	if m["focus"] != name || m["page"] != 2.0 {
+		t.Fatalf("desc mid: focus %v page %v", m["focus"], m["page"])
+	}
+	m = decode(t, get(t, srv.URL+"/api/images?size=12&page=2&around=nope.png", nil))
+	if m["focus"] != "" || m["page"] != 2.0 {
+		t.Fatalf("unknown name: focus %v page %v", m["focus"], m["page"])
+	}
+}
+
+func TestListDate(t *testing.T) {
+	t.Setenv("TZ", "UTC") // the store parses file names in the TZ recorded at creation
+	srv, _, st := newTestServerStore(t, 3)
+	older := "20261018-100000_" + strings.Repeat("a", 32) + ".png"
+	newer := "20261022-100000_" + strings.Repeat("b", 32) + ".png"
+	for _, n := range []string{older, newer} {
+		if err := st.Import(strings.NewReader("img"), n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	day := st.All()[1].Name   // newest of 2026-10-20
+	first := st.All()[3].Name // earliest of 2026-10-20
+	for _, tc := range []struct{ query, focus string }{
+		{"date=2026-10-20&sort=desc", day},
+		{"date=2026-10-20&sort=asc", first},
+		{"date=2026-10-19&sort=desc", older},
+		{"date=2026-10-19&sort=asc", first},
+		{"date=2026-10-01&sort=desc", older},
+		{"date=2026-10-01&sort=asc", older},
+		{"date=2026-12-01&sort=desc", newer},
+		{"date=2026-12-01&sort=asc", newer},
+		{"date=garbage&sort=desc", ""},
+		{"date=2026-13-45&sort=asc", ""},
+	} {
+		m := decode(t, get(t, srv.URL+"/api/images?size=12&tz=UTC&"+tc.query, nil))
+		if m["focus"] != tc.focus {
+			t.Errorf("%s: focus %v, want %q", tc.query, m["focus"], tc.focus)
+		}
+	}
+}
+
+func TestReadyz(t *testing.T) {
+	srv, _, st := newTestServerStore(t, 1)
+	m := decode(t, get(t, srv.URL+"/readyz", nil))
+	if m["ok"] != true || m["storage_writable"] != true {
+		t.Fatalf("healthy: %v", m)
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	tmp := filepath.Join(st.Dir(), ".state", "tmp")
+	if err := os.Chmod(tmp, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(tmp, 0o755) })
+	r := get(t, srv.URL+"/readyz", nil)
+	if r.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("read-only storage: %s", r.Status)
+	}
+	if m := decode(t, r); m["ok"] != false || m["storage_writable"] != false {
+		t.Fatalf("read-only storage: %v", m)
+	}
+}
+
+func TestSetCookie(t *testing.T) {
+	srv, _ := newTestServer(t, 1)
+	if r := sendJSON(t, http.MethodPut, srv.URL+"/api/cookie", `{"cookie":"AUTH_TOKEN=abc"}`, nil); r.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("guest: %s", r.Status)
+	}
+	c := login(t, srv.URL)
+	r := sendJSON(t, http.MethodPut, srv.URL+"/api/cookie", `{"cookie":"AUTH_TOKEN=abc"}`, c)
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("valid cookie: %s", r.Status)
+	}
+	if ck, _ := decode(t, r)["cookie"].(map[string]any); ck["source"] != "page" {
+		t.Fatalf("cookie info: %v", ck)
+	}
+	r = sendJSON(t, http.MethodPut, srv.URL+"/api/cookie", `{"cookie":"a\nb"}`, c)
+	if r.StatusCode != http.StatusBadRequest || decode(t, r)["code"] != "invalid_cookie" {
+		t.Fatalf("newline cookie: %s", r.Status)
+	}
+}
+
+func postZip(t *testing.T, base, form string, c *http.Cookie) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, base+"/download/zip", strings.NewReader(form))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	if c != nil {
+		req.AddCookie(c)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+func TestZipFormPost(t *testing.T) {
+	srv, all11 := newTestServer(t, 11)
+	ten := all11[:strings.LastIndex(all11, "&")]
+	if r := postZip(t, srv.URL, ten, nil); r.StatusCode != http.StatusOK || zipCount(t, r) != 10 {
+		t.Fatalf("guest 10: %s", r.Status)
+	}
+	if r := postZip(t, srv.URL, all11, nil); r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("guest 11: %s", r.Status)
+	}
+	if r := postZip(t, srv.URL, all11, login(t, srv.URL)); r.StatusCode != http.StatusOK || zipCount(t, r) != 11 {
+		t.Fatalf("admin 11: %s", r.Status)
+	}
+}
+
+func TestNotifyTestDisabled(t *testing.T) {
+	srv, _ := newTestServer(t, 1)
+	url := srv.URL + "/api/notify/test"
+	req, _ := http.NewRequest(http.MethodPost, url, nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	if r, _ := http.DefaultClient.Do(req); r.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("guest: %s", r.Status)
+	}
+	req.AddCookie(login(t, srv.URL))
+	r, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.StatusCode != http.StatusConflict || decode(t, r)["code"] != "notify_disabled" {
+		t.Fatalf("unconfigured: %s", r.Status)
+	}
+}
+
+func TestNotifyTestSends(t *testing.T) {
+	got := make(chan map[string]any, 1)
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var m map[string]any
+		json.NewDecoder(r.Body).Decode(&m)
+		got <- m
+	}))
+	defer hook.Close()
+	st, err := store.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Admin: config.Admin{Username: "admin", Password: "pw", SessionTTL: time.Hour}}
+	s := New(cfg, st, fetcher.New(cfg.Magma, t.TempDir(), st), openNotices(t), fstest.MapFS{})
+	s.Notifier = notify.New(config.Notify{Webhook: hook.URL, Format: "json"})
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/notify/test", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.AddCookie(login(t, srv.URL))
+	r, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("status %s", r.Status)
+	}
+	if m := <-got; m["event"] != "test" {
+		t.Fatalf("webhook got %v", m)
+	}
+}
+
+func TestStatusBody(t *testing.T) {
+	srv, _ := newTestServer(t, 1)
+	c := login(t, srv.URL)
+	m := decode(t, get(t, srv.URL+"/api/status", c))
+	if _, ok := m["history"].([]any); !ok {
+		t.Fatalf("history: %v", m["history"])
+	}
+	if ck, _ := m["cookie"].(map[string]any); ck["source"] != "config" {
+		t.Fatalf("cookie: %v", m["cookie"])
+	}
+	if m["notify"] != false {
+		t.Fatalf("notify: %v", m["notify"])
+	}
+	d, ok := m["disk"].(map[string]any)
+	if !ok || d["free"].(float64) <= 0 || d["total"].(float64) <= 0 {
+		t.Fatalf("disk: %v", m["disk"])
+	}
+}
+
+func TestZipFormPostGuards(t *testing.T) {
+	srv, all := newTestServer(t, 2)
+	send := func(body, site string) int {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/download/zip", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Sec-Fetch-Site", site)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := send(all, "cross-site"); got != http.StatusForbidden {
+		t.Errorf("cross-site form: %d", got)
+	}
+	if got := send("f="+strings.Repeat("x", 2<<20), "same-origin"); got != http.StatusBadRequest {
+		t.Errorf("oversized form: %d", got)
 	}
 }
