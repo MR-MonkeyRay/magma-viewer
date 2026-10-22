@@ -13,6 +13,7 @@
 
       // ---- header ----
       'bar.home': '回到第一页',
+      'bar.repo': '在 GitHub 查看项目',
       'bar.views': '展示方式',
       'bar.options': '显示选项',
       'view.grid': '网格',
@@ -306,6 +307,7 @@
 
       // ---- header ----
       'bar.home': 'Back to first page',
+      'bar.repo': 'View project on GitHub',
       'bar.views': 'View mode',
       'bar.options': 'Display options',
       'view.grid': 'Grid',

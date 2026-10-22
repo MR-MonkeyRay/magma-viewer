@@ -61,6 +61,7 @@
   <symbol id="i-megaphone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10v4a1.5 1.5 0 0 0 1.5 1.5H8L17 20V4L8 8.5H5.5A1.5 1.5 0 0 0 4 10zM8 15.5 9.5 20M20.5 10v4"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4.5H7a2.5 2.5 0 0 0-2.5 2.5v10A2.5 2.5 0 0 0 7 19.5h3M15 8l4 4-4 4M19 12H9.5"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-github" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5a9.5 9.5 0 0 0-3 18.5c.5.1.6-.2.6-.5v-1.7c-2.6.6-3.2-1.2-3.2-1.2-.4-1.1-1-1.4-1-1.4-.9-.6 0-.6 0-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.3 1.1 2.9.8.1-.6.3-1.1.6-1.3-2.1-.2-4.3-1-4.3-4.7 0-1 .4-1.9 1-2.6-.1-.2-.4-1.2.1-2.5 0 0 .8-.3 2.6 1a9 9 0 0 1 4.8 0c1.8-1.3 2.6-1 2.6-1 .5 1.3.2 2.3.1 2.5.6.7 1 1.6 1 2.6 0 3.7-2.2 4.5-4.3 4.7.3.3.6.9.6 1.8v2.6c0 .3.2.6.7.5A9.5 9.5 0 0 0 12 2.5z"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="8.5" y="8.5" width="12" height="12" rx="3"/><path d="M15.5 8.5V6A2.5 2.5 0 0 0 13 3.5H6A2.5 2.5 0 0 0 3.5 6v7A2.5 2.5 0 0 0 6 15.5h2.5"/></symbol>
   <!-- The mascot: a little lava drop for "Magma", happy, oops and asleep. Its blink and drifting "z"s are SMIL, which <use> clones run
        (CSS animations would only reach the originals here); app.js pauses them when reduced motion is on. -->
@@ -92,10 +93,10 @@
 <div class="progress" id="progress" aria-hidden="true"></div>
 
 <header class="bar" id="bar">
-  <a class="brand" href="#" id="brand" title="回到第一页" data-i18n-title="bar.home">
-    <svg class="brand-mark mascot" aria-hidden="true"><use href="#mascot"/></svg>
-    <span class="brand-name" data-i18n="app.title">Magma 画板存档</span>
-  </a>
+  <div class="brand">
+    <a class="brand-home" href="#" id="brand" title="回到第一页" aria-label="回到第一页" data-i18n-title="bar.home" data-i18n-label="bar.home"><svg class="brand-mark mascot" aria-hidden="true"><use href="#mascot"/></svg></a>
+    <a class="brand-name" href="https://github.com/MR-MonkeyRay/magma-viewer" target="_blank" rel="noopener" title="在 GitHub 查看项目" data-i18n="app.title" data-i18n-title="bar.repo">Magma 画板存档</a>
+  </div>
   <div class="bar-actions">
     <button type="button" class="icon-btn" id="theme" title="切换明暗（T）" aria-label="切换明暗" data-i18n-title="theme.tip" data-i18n-label="theme.label"><svg><use href="#i-moon"/></svg></button>
     <button type="button" class="icon-btn lang-btn" id="lang" title="Switch to English (L)" aria-label="Switch to English" data-i18n="lang.switch" data-i18n-title="lang.switchTip" data-i18n-label="lang.switchLabel">EN</button>
@@ -188,6 +189,10 @@
 </main>
 
 <footer class="foot">
+  <span class="foot-meta">
+    <a class="linkish" href="https://github.com/MR-MonkeyRay/magma-viewer" target="_blank" rel="noopener" title="在 GitHub 查看项目" data-i18n-title="bar.repo"><svg><use href="#i-github"/></svg><span>magma-viewer</span></a>
+    <span class="foot-version" id="version" hidden></span>
+  </span>
   <button type="button" class="linkish" id="show-keys" title="键盘快捷键（?）" aria-label="键盘快捷键" data-i18n-title="foot.keysTip" data-i18n-label="foot.keys"><svg><use href="#i-keyboard"/></svg><kbd>?</kbd></button>
 </footer>
 

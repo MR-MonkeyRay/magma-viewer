@@ -13,7 +13,6 @@ bin
 *.download
 **/*.md
 LICENSE
-VERSION
 config.yaml
 docker-compose*.yml
 compose*.yml

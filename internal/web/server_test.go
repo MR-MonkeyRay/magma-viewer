@@ -196,7 +196,7 @@ func TestSchedulePause(t *testing.T) {
 	}
 }
 
-func TestListReportsNextRun(t *testing.T) {
+func TestListReportsNextRunAndVersion(t *testing.T) {
 	st, err := store.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -205,6 +205,7 @@ func TestListReportsNextRun(t *testing.T) {
 	s := New(cfg, st, fetcher.New(cfg.Magma, t.TempDir(), st), openNotices(t), fstest.MapFS{})
 	next := time.Date(2026, 10, 21, 12, 1, 0, 0, time.UTC)
 	s.NextRun = func() time.Time { return next }
+	s.Version = "1.2.3"
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
 
@@ -212,6 +213,7 @@ func TestListReportsNextRun(t *testing.T) {
 		Task struct {
 			NextRun time.Time `json:"next_run"`
 		} `json:"task"`
+		Version string `json:"version"`
 	}
 	r := get(t, srv.URL+"/api/images", nil)
 	defer r.Body.Close()
@@ -220,6 +222,9 @@ func TestListReportsNextRun(t *testing.T) {
 	}
 	if !body.Task.NextRun.Equal(next) {
 		t.Fatalf("next_run = %v, want %v", body.Task.NextRun, next)
+	}
+	if body.Version != "1.2.3" {
+		t.Fatalf("version = %q", body.Version)
 	}
 }
 

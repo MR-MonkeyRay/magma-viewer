@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 	_ "time/tzdata" // the scratch image has no zoneinfo; honour TZ anyway
@@ -28,6 +29,9 @@ import (
 
 //go:embed web
 var webFS embed.FS
+
+//go:embed VERSION
+var version string
 
 func main() {
 	defaultConfig := os.Getenv("CONFIG")
@@ -57,6 +61,7 @@ func run(configPath string) error {
 	if err != nil {
 		return fmt.Errorf("open storage dir: %w", err)
 	}
+	log.Printf("magma-viewer %s", strings.TrimSpace(version))
 	log.Printf("storage %s: %d images", cfg.Storage.Dir, st.Count())
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -87,6 +92,7 @@ func run(configPath string) error {
 	}
 	ws := web.New(cfg, st, f, ns, static)
 	ws.NextRun = func() time.Time { return c.Entry(entry).Next }
+	ws.Version = strings.TrimSpace(version)
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           ws.Handler(),

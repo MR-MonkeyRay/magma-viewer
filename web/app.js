@@ -44,7 +44,7 @@
     nowBadge: $('#now-badge'), nowView: $('#now-view'), nowPrev: $('#now-prev'), nowNext: $('#now-next'), nowBack: $('#now-back'), reel: $('#reel'), reelTrack: $('#reel-track'),
     reelTicks: $('#reel-ticks'), reelHead: $('#reel-head'), reelAxis: $('#reel-axis'), reelPlay: $('#reel-play'),
     seg: $('.seg'), sort: $('#sort'), size: $('#size'), group: $('#group'), selectMode: $('#select-mode'),
-    theme: $('#theme'), lang: $('#lang'), account: $('#account'), acctMenu: $('#acct-menu'), noticeBtn: $('#notice-btn'), foot: $('.foot'),
+    theme: $('#theme'), lang: $('#lang'), account: $('#account'), acctMenu: $('#acct-menu'), noticeBtn: $('#notice-btn'), foot: $('.foot'), version: $('#version'),
     selbar: $('#selbar'), selCount: $('#sel-count'), fresh: $('#fresh'),
     toast: $('#toast'), toastText: $('#toast span'), toastIcon: $('#toast use'),
     lb: $('#lightbox'), lbStage: $('#lb-stage'), lbImg: $('#lb-img'), lbTime: $('#lb-time'), lbSub: $('#lb-sub'),
@@ -297,6 +297,7 @@
       if (seq !== loadSeq) return false;
       Object.assign(state, { items: d.items, total: d.total, page: d.page, size: d.size, pages: d.pages, admin: d.admin, guestLimit: d.guest_limit, task: d.task });
       checkNotices(d.notice);
+      if (d.version) { el.version.textContent = 'v' + d.version; show(el.version); }
       // New pictures shift indexes; keep the shift-click anchor on the same picture.
       if (anchor) { const j = state.items.findIndex((it) => it.name === anchor); state.lastIndex = j >= 0 ? j : null; }
       if (onFirstPage()) { state.latest = d.items[0] || null; hide(el.fresh); }

@@ -220,11 +220,14 @@ svg.mascot { overflow: visible; }
   transition: border-color .25s, box-shadow .25s;
 }
 .bar.scrolled { border-bottom-color: var(--line); }
-.brand { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 10px; text-decoration: none; border-radius: var(--r-sm); }
+.brand { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 10px; }
+.brand a { text-decoration: none; border-radius: var(--r-sm); }
+.brand-home { display: flex; }
 .brand-mark { width: 34px; height: 34px; margin: -4px 0; transform-origin: 50% 90%; transition: transform .4s var(--spring); }
 .brand:hover .brand-mark { animation: m-wobble .5s ease-in-out 2; }
 .busy .brand-mark { animation: m-bob .7s ease-in-out infinite; }
-.brand-name { font: 600 var(--fs-lg)/1.2 var(--display); letter-spacing: .01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.brand-name { min-width: 0; font: 600 var(--fs-lg)/1.2 var(--display); letter-spacing: .01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.brand-name:hover { color: var(--pigment); }
 .bar-actions { display: flex; flex: none; align-items: center; gap: 4px; }
 .controls { display: flex; align-items: center; gap: 4px; }
 .tools { display: flex; align-items: center; gap: 2px; }
@@ -677,14 +680,18 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 .pager .jump input:focus { outline: none; border-color: var(--pigment); box-shadow: 0 0 0 3px var(--pigment-soft); }
 
 /* Always the last thing on the page; body is a column so it sits at the bottom of short pages too. */
-.foot { display: flex; justify-content: center; padding: 8px 16px max(16px, env(safe-area-inset-bottom)); }
+.foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 16px max(16px, env(safe-area-inset-bottom)); }
+.foot-meta { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.foot-version { color: var(--faint); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
 .linkish {
   display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 0; border-radius: var(--r-sm);
   background: none; color: var(--faint); font-size: var(--fs-xs); cursor: pointer; transition: color .15s, background-color .15s;
 }
 .linkish:hover { color: var(--ink); background: var(--hover); }
 .linkish kbd { background: transparent; color: inherit; }
-@media (hover: none) { .foot { display: none; } }
+a.linkish { text-decoration: none; }
+/* Touch screens have no keyboard to explain; the project link and version stay. */
+@media (hover: none) { #show-keys { display: none; } }
 .has-selbar .foot { padding-bottom: 88px; }
 
 /* ---------- buttons ---------- */

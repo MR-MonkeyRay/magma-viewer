@@ -41,6 +41,8 @@ type Server struct {
 
 	// NextRun reports when the scheduler fires next; nil leaves next_run unset.
 	NextRun func() time.Time
+	// Version is the release shown in the page footer.
+	Version string
 }
 
 // Go's built-in table lacks woff2, and slim images ship no /etc/mime.types.
@@ -162,6 +164,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		"pages":       pages,
 		"admin":       s.auth.isAdmin(r),
 		"guest_limit": GuestZipLimit,
+		"version":     s.Version,
 		// Public subset of the fetch status; errors stay admin-only.
 		"task": map[string]any{"paused": task.Paused, "last_fetched": task.LastFetched, "next_run": s.nextRun()},
 		// Lets polling notice a new announcement without fetching the list.
