@@ -10,6 +10,12 @@
   };
   const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
   const reduced = () => motion.matches;
+  // The mascot's blink is SMIL inside the sprite, which the reduced-motion CSS cannot reach. Every <use> copy
+  // follows the sprite's timeline, so pausing the sprite stills them all.
+  function stillMascots() {
+    const sprite = document.getElementById('sprite');
+    if (reduced()) { sprite.pauseAnimations(); sprite.setCurrentTime(0); } else sprite.unpauseAnimations();
+  }
   const VIEWS = ['grid', 'masonry', 'list'];
 
   const state = {
@@ -338,7 +344,7 @@
 
   function renderError(e) {
     el.gallery.className = 'gallery';
-    el.gallery.innerHTML = `<div class="load-error"><svg><use href="#i-alert"/></svg>
+    el.gallery.innerHTML = `<div class="load-error"><svg class="mascot" aria-hidden="true"><use href="#mascot-oops"/></svg>
       <p>${esc(t('load.failed', { msg: e.message }))}</p>
       <button type="button" class="btn primary" data-retry><svg><use href="#i-refresh"/></svg>${t('load.retry')}</button></div>`;
     el.summary.textContent = '';
@@ -766,6 +772,9 @@
     el.gallery.querySelectorAll('.tile[data-i]').forEach((t) => {
       const it = state.items[t.dataset.i];
       const on = state.selected.has(it.name);
+      // The heart puffs only when a picture is newly picked; redrawn tiles arrive already selected.
+      if (on && !t.classList.contains('selected')) t.classList.add('hearted');
+      else if (!on) t.classList.remove('hearted');
       t.classList.toggle('selected', on);
       t.querySelector('.tile-check').setAttribute('aria-pressed', String(on));
     });
@@ -1297,7 +1306,7 @@
     const [lead, ...older] = notices.items;
     el.noticeActions.hidden = !notices.items.some(isUnread);
     if (!lead) {
-      el.noticeList.innerHTML = `<p class="notice-empty"><svg><use href="#i-bell"/></svg>${t('notice.empty')}</p>`;
+      el.noticeList.innerHTML = `<p class="notice-empty"><svg class="mascot" aria-hidden="true"><use href="#mascot-sleep"/></svg>${t('notice.empty')}</p>`;
       return;
     }
     const wasOpen = el.noticeList.querySelector('.notice-history')?.open;
@@ -2002,8 +2011,10 @@
     if (state.page !== before) load({ scroll: true });
   });
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', renderControls);
+  motion.addEventListener('change', stillMascots);
 
   i18n.apply();
+  stillMascots();
   readHash();
   renderControls();
   onScroll();

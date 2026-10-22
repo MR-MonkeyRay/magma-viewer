@@ -12,7 +12,7 @@ admin:
   session_secret: "<随机长字符串>"
 ```
 
-Docker Compose 部署则将 `deploy/compose/compose.yaml` 的端口改为：
+Docker Compose 部署则将 `deploy/compose/docker-compose.yml` 的端口改为：
 
 ```yaml
 ports:

@@ -1,103 +1,92 @@
 # magma-viewer
 
-Magma 画板存档站：定时抓取画板图片，内容有变化才保存；按时间分页浏览，支持单张或打包下载。
+Magma 画板存档站：定时抓取画板画面，只在内容变化时保存；按时间浏览历史快照，支持单张或打包下载。
 
-## 特性
+[![Release](https://img.shields.io/github/v/release/MR-MonkeyRay/magma-viewer)](https://github.com/MR-MonkeyRay/magma-viewer/releases)
+[![License](https://img.shields.io/github/license/MR-MonkeyRay/magma-viewer)](LICENSE)
 
-- Go 单二进制，前端内嵌，无数据库；`scratch` 镜像
-- 支持 jpg / jpeg / png / webp / gif，按 md5 去重
-- 自动生成 480px 缩略图与 1600px 预览图（缓存在存储目录的 `.thumbs/`），下载始终为原图
-- 网格 / 瀑布流 / 列表视图，默认按日分组（日期标题吸顶，显示当天张数和时间范围，可一键选中当天），明暗主题；Shift + 点击连续多选；视图、排序、分组、每页数量和多选按钮位于最新画面下方的「历史快照」区，向下浏览时吸附在顶栏下方；工具栏以图标为主，悬停可见说明
-- 大图预览：从缩略图展开、先显示缩略图再换清晰图；← → 可跨页切换，单击 / Z / 滚轮放大并拖动查看细节，右侧详情面板（I 切换，手机为底部面板）展示尺寸、大小、格式、比例、距上一张间隔，可选原图 / 1600px / 480px 下载，一键复制原图链接、Markdown、HTML、BBCode；浏览器返回键关闭；手机左右滑动切换、下滑关闭、双指或双击放大、单击隐藏控件
-- 键盘快捷键（按 `?` 查看），尊重系统的“减少动态效果”设置
-- 中英文界面：默认跟随浏览器语言（中文浏览器显示中文，其余显示英文），顶栏「EN / 中」按钮或 `L` 键切换，选择保存在各自浏览器
-- 访客最多打包 10 张；管理员点击右上角头像打开管理菜单：运行状态（抓取详情、立即抓取）、定时抓取（暂停/恢复）、公告管理、下载全部、退出登录
-- 公告：管理员可写草稿、发布、修改、撤回和删除（纯文本，保留换行，网址自动成为链接）；有新公告时顶栏铃铛发光并缓慢闪烁，访客点开查看后可“标为已读”停止闪烁（已读状态保存在各自浏览器）；公告从不自动弹出，修改已发布的公告不会再次提醒
-- 首页顶部展示最新画面，右侧说明卡给出保存时间、距上一张的间隔、尺寸、今天已保存张数，以及定时抓取状态、最近获取时间和下次抓取倒计时
-- 最新画面下方的时间带列出最近 24 小时的每次保存：每次保存在轴上是一个圆点，点击或按住拖动即在大图中切换到那一刻（悬停不会切换），播放键（或 `P`）按顺序回放；鼠标移到大图左右边缘会出现上一张 / 下一张按钮
-- 每次定时抓取后自动检查（抓取较慢时会短暂重试）；保存了新画面时，最新画面原地更新，停留在顶部的图库静默刷新，正在浏览别处时显示“新画面”提示
+Go 单二进制 · 前端内嵌 · 无数据库 · Docker Compose / systemd 部署
 
-## 目录
+## 功能
 
-```text
-build/docker/       Dockerfile 与构建上下文忽略规则
-build/package.sh    Linux amd64 / arm64 Release 打包脚本
-deploy/compose/     使用 GHCR 镜像部署（配置与数据在本目录）
-deploy/systemd/     Linux 原生服务、配置样例与 Release 安装脚本
-deploy/nginx/       精简 HTTPS 反向代理配置，可选 Cloudflare 真实 IP 支持
-.github/workflows/  GHCR 镜像与 Linux GitHub Release 发布工作流
-```
+- **自动存档**：按 cron 定时抓取，MD5 与上一张对比，画面变化才保存；重启后继续。
+- **时间浏览**：按日分组的网格 / 瀑布流 / 列表视图，最新画面向前 24 小时的时间带回放，支持跨页切换。
+- **大图预览**：缩放拖动、键盘与触屏操作，查看尺寸、格式等信息，复制原图链接、Markdown、HTML、BBCode。
+- **下载**：单张原图 / 预览图、多选打包；访客最多 10 张，管理员不限并可打包全部。
+- **管理**：立即抓取、暂停 / 恢复定时任务、发布 / 撤回公告，登录后可用。
+- **体验**：中英文界面、明暗主题、快捷键（按 `?` 查看）、响应式布局，尊重系统“减少动态效果”。
 
-本地配置、`.env` 与运行数据由 `.gitignore` 排除。
+## 快速开始
 
-## 部署
+### Docker Compose（推荐）
 
-### docker compose（使用 GHCR 镜像）
+需要 Docker Engine 与 Compose v2。
 
 ```bash
-cd deploy/compose
-cp config.example.yaml config.yaml   # 已有配置可跳过
-vi config.yaml                       # 修改密码、magma 地址和 cookie
+git clone https://github.com/MR-MonkeyRay/magma-viewer.git
+cd magma-viewer/deploy/compose
+cp config.example.yaml config.yaml
+vi config.yaml    # 至少填写 admin.password、magma.url、magma.cookie
 docker compose up -d
 ```
 
-在 `deploy/compose` 下执行，配置为同目录的 `config.yaml`，图片保存在同目录的 `data/images`。镜像默认 `ghcr.io/mr-monkeyray/magma-viewer:latest`；需要固定版本时设置 `MAGMA_VIEWER_TAG=<版本>`（或写入同目录 `.env`，将 `<版本>` 替换为所需的已发布版本）。访问 `http://<服务器>:8080`。私有包需先 `docker login ghcr.io`。
+访问 `http://<服务器>:8080`。配置和数据分别在 `config.yaml` 与 `images/`（容器内 `/data/images`）。端口默认映射到所有网卡，公网部署请限制访问或使用反向代理。
 
-### nginx 反向代理（可选 Cloudflare）
+镜像默认 `ghcr.io/mr-monkeyray/magma-viewer:latest`；固定版本可在同目录 `.env` 设置 `MAGMA_VIEWER_TAG=<版本>`。GHCR 包为私有时先 `docker login ghcr.io`。
 
-公网部署建议经 nginx 提供 HTTPS；精简配置、安装步骤及可选 Cloudflare 设置见 [`deploy/nginx`](deploy/nginx/README.md)。默认不依赖 Cloudflare，保留登录限流和跨站请求防护。此时应用只监听本机（compose 端口改为 `127.0.0.1:8080:8080`）。
+升级执行 `docker compose pull && docker compose up -d`；升级或迁移前备份 `config.yaml` 与 `images/`。
 
-### Linux systemd（从 GitHub Release 一键安装）
+### Linux systemd
 
-适用于使用 systemd 的 Linux x86_64 / aarch64 主机，无需 Docker 或 Go。需安装 `bash`、`curl`、CA 证书、`tar`、coreutils 与提供 `useradd` 的账户管理工具；安装操作需要 root。
+适用于使用 systemd 的 Linux x86_64 / aarch64，无需 Docker 或 Go，需要 root。
 
 ```bash
-# 下载最新稳定版安装器并执行；&& 保证下载失败时不会执行旧脚本
 curl -fL https://github.com/MR-MonkeyRay/magma-viewer/releases/latest/download/install.sh -o install.sh && sudo bash install.sh
-sudo vi /etc/magma-viewer/config.yaml       # 设置 Magma 地址、cookie，查看/修改管理员密码
+sudo vi /etc/magma-viewer/config.yaml    # 设置 magma.url、magma.cookie，查看管理员密码
 sudo systemctl restart magma-viewer.service
 ```
 
-安装器解析 Release 的 `VERSION`，按架构下载固定 `v<版本>` 的压缩包，校验 `SHA256SUMS` 后才修改安装目录；不在服务器编译。首次生成随机管理员密码和会话密钥，配置权限为 `root:magma-viewer 0640`，不会把凭证打印到终端。默认仅监听 `127.0.0.1:8080`；远程访问推荐配置 HTTPS 反向代理，也可自行修改 `listen` 并设置防火墙。Magma 占位地址和 cookie 必须编辑后才能成功抓取。
+安装器从 Release 下载固定版本压缩包，校验 `SHA256SUMS` 后才写入；首次安装生成随机管理员密码和会话密钥。默认只监听 `127.0.0.1:8080`，公网访问请配置 HTTPS 反向代理。
 
 | 路径 | 用途 |
-|---|---|
+| --- | --- |
 | `/usr/local/bin/magma-viewer` | 程序 |
-| `/etc/magma-viewer/config.yaml` | 运行配置，升级时保留 |
-| `/etc/magma-viewer/config.example.yaml` | 随版本更新的配置样例 |
-| `/var/lib/magma-viewer/images` | 图片、缩略图与预览缓存，升级时保留 |
-| `/etc/systemd/system/magma-viewer.service` | systemd 单元，升级时更新 |
-
-服务使用专用非登录用户 `magma-viewer`，启动后自动运行并设为开机启动，失败时自动重启；日志写入 journal。时区默认 `Asia/Shanghai`。配置中的持久存储路径应位于 `/var/lib/magma-viewer` 内，服务沙箱禁止写入其他持久目录，临时文件可使用私有 `/tmp`。
+| `/etc/magma-viewer/config.yaml` | 配置，升级时保留 |
+| `/var/lib/magma-viewer/images` | 图片与缓存，升级时保留 |
+| `/etc/systemd/system/magma-viewer.service` | systemd 单元 |
 
 ```bash
 sudo systemctl status magma-viewer.service
 sudo journalctl -u magma-viewer.service -f
 sudo /usr/local/bin/magma-viewer -config /etc/magma-viewer/config.yaml healthcheck
 
-# 再次执行安装器即升级；固定版本或回退时，将 <版本> 替换为所需的已发布版本（可带 v 前缀）
-sudo bash install.sh --version '<版本>'
+# 升级到最新稳定版；指定版本可回退
+sudo bash install.sh
+sudo bash install.sh --version <版本>
 
-# 首次安装时使用事先编辑好的配置，先安装不启动
+# 首次安装时使用预先准备好的配置，且不启动服务
 sudo bash install.sh --config ./config.yaml --no-start
-sudo systemctl enable --now magma-viewer.service
 ```
 
-已有配置永不覆盖，`--config` 仅在首次创建配置时生效。`--no-start` 不启用、启动或重启服务，已有运行进程保持原状；需要时手动重启加载新程序。`--repo OWNER/REPO` 可选择遵循相同资产格式的公开 fork。升级会替换单元文件，自定义服务参数请用 `sudo systemctl edit magma-viewer.service` 创建 drop-in；仓库根目录的本地配置和数据不会被迁移或修改。
+已有配置不会被覆盖。服务使用专用用户 `magma-viewer`，持久写入仅限 `/var/lib/magma-viewer`（临时目录为私有 `/tmp`）；自定义单元参数用 `sudo systemctl edit magma-viewer.service`。卸载前执行 `sudo systemctl disable --now magma-viewer.service`，再删除程序和单元并 `sudo systemctl daemon-reload`；配置与图片按需保留或删除。
 
-卸载时先 `sudo systemctl disable --now magma-viewer.service`，再删除程序及单元并执行 `sudo systemctl daemon-reload`。配置、图片和服务账户默认保留，按需备份后自行删除。
+### HTTPS 反向代理
+
+公网部署建议经 nginx 提供 HTTPS。将应用改为只监听 `127.0.0.1:8080`，由 nginx 负责 TLS、登录限流和跨站请求防护；配置与步骤见 [`deploy/nginx`](deploy/nginx/README.md)。
 
 ## 配置
 
-完整说明见 [`deploy/compose/config.example.yaml`](deploy/compose/config.example.yaml)。配置路径通过 `-config` 参数或 `CONFIG` 环境变量指定，容器内默认 `/config/config.yaml`。`TZ` 环境变量（镜像默认 `Asia/Shanghai`）决定计划执行时间和文件名中的时间。
+配置文件路径通过 `-config` 参数或 `CONFIG` 环境变量指定，容器内默认 `/config/config.yaml`。`TZ`（镜像默认 `Asia/Shanghai`）决定定时执行时间和文件名中的时间。
+
+完整样例：[`deploy/compose/config.example.yaml`](deploy/compose/config.example.yaml)（systemd 使用 [`deploy/systemd/config.example.yaml`](deploy/systemd/config.example.yaml)）。
 
 | 配置项 | 说明 | 默认值 |
-|---|---|---|
+| --- | --- | --- |
 | `listen` | HTTP 监听地址 | `:8080` |
 | `admin.username` / `admin.password` | 管理员凭证（明文） | 必填 |
 | `admin.session_secret` | 会话签名密钥；留空则每次启动随机生成，重启后需重新登录 | 空 |
 | `admin.session_ttl` | 登录有效期 | `168h` |
-| `magma.url` | 画板渲染接口，需直接返回图片 | 必填 |
+| `magma.url` | 画板渲染接口，返回图片或跳转到图片 | 必填 |
 | `magma.cookie` | 原样放入 `Cookie` 请求头 | 空 |
 | `magma.headers` | 额外请求头（`User-Agent`、`Referer` 等） | 空 |
 | `magma.timeout` | 单次下载超时 | `30s` |
@@ -105,107 +94,109 @@ sudo systemctl enable --now magma-viewer.service
 | `storage.dir` | 图片存储目录 | `/data/images` |
 | `storage.temp_dir` | 下载临时目录 | `/tmp` |
 
-### magma 地址与 cookie
+### Magma 地址与 Cookie
 
-- 地址：`https://magma.com/api/render/<画板ID>/jpg`，`<画板ID>` 取自画板链接。接口会 302 跳转到渲染图片，程序自动跟随。
-- cookie：只需 `AUTH_TOKEN`。浏览器登录 magma 后，在开发者工具 → 应用 → Cookies → `magma.com` 复制其值：
+- 地址：`https://magma.com/api/render/<画板ID>/jpg`，`<画板ID>` 取自画板链接；接口会 302 跳转到渲染图，程序自动跟随。
+- Cookie：只需 `AUTH_TOKEN`。登录 Magma 后，在开发者工具 → Application → Cookies → `magma.com` 复制其值：
 
   ```yaml
   cookie: "AUTH_TOKEN=eyJhbGciOi..."
   ```
 
-  缺少或无效 cookie 时接口返回 `403 Access denied`。`AUTH_TOKEN` 是有效期约 90 天的 JWT；启动日志与管理面板会显示剩余天数，不足 7 天时告警。更新配置后重启容器生效。
+  缺失或无效时接口通常返回 `403 Access denied`。`AUTH_TOKEN` 是 JWT，有效期由 Magma 决定（通常约 90 天）；启动日志显示到期时间，管理面板显示剩余天数，不足 7 天告警。修改配置后需重启生效。
 
-## 抓取与去重
+## 抓取与存储
 
-每次计划触发（启动时立即执行一次）：
+每次计划触发（以及启动时，未暂停的情况下）：
 
-1. 带 cookie 请求 `magma.url`，流式写入 `temp_dir` 下的临时文件并计算 md5；
-2. 按文件头判断图片类型，非图片（如 cookie 失效返回的登录页）则放弃并记录错误；
-3. 与上一张已保存图片的 md5 比较：相同则丢弃，不同则保存为 `YYYYMMDD-HHMMSS_<md5>.<ext>`。
+1. 带 Cookie 请求 `magma.url`，流式写入 `storage.temp_dir` 并计算 MD5，单张上限 200 MiB。
+2. 按文件头识别 JPEG / PNG / WebP / GIF，非图片（如失效 Cookie 返回的登录页）记为失败。
+3. 仅与上一张已保存图片比较 MD5，不同才保存为 `YYYYMMDD-HHMMSS_<md5>.<ext>`。
 
-重启后从最新图片恢复 md5，不会重复保存。管理员暂停定时抓取后，状态与最近获取时间保存在存储目录的 `.state/fetcher.json`，重启后保持；公告保存在 `.state/notices.json`；暂停期间仍可手动立即抓取。手动放入存储目录的图片会被识别（每分钟检查目录变化），时间取文件修改时间。新图保存后及启动时为缺失的图片补齐缩略图。
+重启后从最新图片恢复 MD5。去重基准是上一张，因此 A → B → A 会保存三次。
+
+- 暂停状态与最近获取时间保存在 `storage.dir/.state/fetcher.json`，重启后保持；公告在 `.state/notices.json`。
+- 手动放入存储目录第一层的图片会被识别（每分钟检查目录变化）；时间优先取文件名前缀，否则取文件修改时间。
+- 缩略图（长边 480px）与预览图（长边 1600px）缓存在 `.thumbs/`；均不放大，长边不超过 1600 的图片预览直接返回原图，GIF 预览使用原图。缺失缓存会在启动后后台补齐，也可按需生成。
 
 ## 权限
 
 | 操作 | 访客 | 管理员 |
-|---|---|---|
+| --- | --- | --- |
 | 浏览、预览、下载单张 | ✓ | ✓ |
 | 多选打包下载 | 最多 10 张 | 不限 |
-| 打包下载全部 | | ✓ |
-| 查看定时抓取是否运行、最近获取时间 | ✓ | ✓ |
-| 查看抓取详情、立即抓取、暂停/恢复定时抓取 | | ✓ |
-| 查看已发布的公告 | ✓ | ✓ |
-| 编辑、发布、撤回、删除公告 | | ✓ |
+| 打包下载全部 | — | ✓ |
+| 查看抓取状态与公告 | ✓ | ✓ |
+| 立即抓取、暂停 / 恢复、管理公告 | — | ✓ |
 
-管理员通过页面右上角登录；同一 IP 连续失败 10 次后需等待 5 分钟。
+管理员通过右上角头像登录。同一 IP 自首次失败起 5 分钟内累计 10 次登录失败后，暂时拒绝登录。
 
-## 接口
+## HTTP 接口
+
+管理员接口需登录，未登录返回 401。
 
 | 路由 | 说明 |
-|---|---|
-| `GET /api/images?page=1&size=48&sort=desc` | 分页列表，`size` 范围 12–200，`sort=asc` 为最早在前；`task` 字段为定时任务状态、最近获取时间和下次抓取时间（`next_run`）；`notice` 为最新公告的发布时间 |
-| `GET /api/overview?tz=Asia/Shanghai` | 存档概览：总数、总字节、首末时间、按天的张数（按 `tz` 时区统计，缺省为服务器时区）、最近 24 小时的图片 |
+| --- | --- |
+| `GET /api/images?page=1&size=48&sort=desc` | 分页列表；`size` 12–200；`sort=asc` 最早在前。含任务状态与最新公告 |
+| `GET /api/overview?tz=Asia/Shanghai` | 总数、字节数、首末时间、每日张数、最近 24 小时（以最新存档为终点，最多 400 张） |
+| `POST /api/login` / `POST /api/logout` | 登录 / 退出 |
+| `GET /api/status` / `POST /api/fetch` | 抓取状态 / 立即抓取（管理员）；抓取失败仍返回 200，查看响应中的 `fetch.result` |
+| `POST /api/schedule` | `{"paused": true}` 暂停或恢复（管理员） |
+| `GET /api/notices` | 已发布公告 |
+| `GET /api/notices/all` | 全部公告，含草稿（管理员） |
+| `POST /api/notices` / `PUT /api/notices/{id}` | 新建 / 修改；`publish=false` 存草稿或撤回（管理员） |
+| `DELETE /api/notices/{id}` | 删除（管理员） |
 | `GET /img/{name}` | 原图 |
 | `GET /thumb/{name}` / `GET /preview/{name}` | 480px 缩略图 / 1600px 预览图 |
-| `GET /download/{name}` | 下载单张 |
-| `GET /download/zip?f=a&f=b` | 打包下载所选图片 |
-| `GET /download/all` | 打包下载全部（管理员） |
-| `POST /api/login` / `POST /api/logout` | 登录 / 退出 |
-| `GET /api/status` / `POST /api/fetch` | 抓取状态 / 立即抓取（管理员） |
-| `POST /api/schedule` `{"paused": true}` | 暂停或恢复定时抓取（管理员） |
-| `GET /api/notices` | 已发布的公告，最新发布在前 |
-| `GET /api/notices/all` | 全部公告，含草稿（管理员） |
-| `POST /api/notices` / `PUT /api/notices/{id}` `{"title", "body", "publish"}` | 新建 / 修改公告；`publish=false` 存为草稿或撤回（管理员） |
-| `DELETE /api/notices/{id}` | 删除公告（管理员） |
+| `GET /download/{name}` | 下载原图 |
+| `GET /download/zip?f=a&f=b` | 打包所选图片；访客最多 10 张 |
+| `GET /download/all` | 打包全部（管理员） |
 | `GET /healthz` | 健康检查 |
+
+公告与 `/api/schedule` 接口要求 `Content-Type: application/json`。
 
 ## 本地开发
 
+需要 Go，版本以 [`go.mod`](go.mod) 为准（`GOTOOLCHAIN=auto` 可自动获取）。
+
 ```bash
-cp deploy/compose/config.example.yaml config.yaml   # 已有配置可跳过
+cp deploy/compose/config.example.yaml config.yaml
 go test ./...
 go run . -config ./config.yaml
 ```
 
-## 版本、镜像与 Release
+本地运行时将 `storage.dir` 改为可写目录（如 `./data/images`），并确认 `listen` 端口可用。
 
-版本由 [`VERSION`](VERSION) 统一维护，发布新版本时递增该文件并推送；本文中的 `<版本>` 均为占位符，使用时替换为所需的已发布版本。
+目录：
 
-### Linux Release
+```text
+build/      镜像构建与 Release 打包脚本
+deploy/     Compose、systemd、nginx 部署文件
+internal/   Go 服务（抓取、存储、Web、公告）
+web/        前端页面、脚本、样式与字体（编译时内嵌）
+```
 
-[Release 工作流](.github/workflows/release.yml) 在 `main` 推送时自动检查 `VERSION`，也可在 Actions 中针对 `main` 手动执行。未发布的版本先运行 `go test ./...`，再交叉构建静态 Linux 二进制、打包并创建 `v<版本>` 标签及 GitHub Release，发布说明由 GitHub 自动生成。无需额外 PAT；只有发布 job 获得 `contents: write`，仓库策略须允许该权限。
+## 版本与发布
 
-Release 资产：
+版本由 [`VERSION`](VERSION) 统一维护（无 `v` 前缀的 SemVer），递增并推送后由 [Release 工作流](.github/workflows/release.yml) 测试、打包并创建 `v<版本>` Release；资产为 Linux amd64 / arm64 压缩包、`SHA256SUMS`、`install.sh` 与 `VERSION`。已发布的 Release 不会被覆盖。
 
-- `magma-viewer_<版本>_linux_amd64.tar.gz`
-- `magma-viewer_<版本>_linux_arm64.tar.gz`
-- `SHA256SUMS`、`install.sh`、`VERSION`
+[GHCR 工作流](.github/workflows/docker.yml) 在分支推送时构建镜像：`main` 使用 `<版本>` 与 `latest`，其他分支使用 `<分支>-<7 位 commit>`。目标标签均已存在时跳过构建。
 
-每个压缩包包含二进制、`config.example.yaml`、`magma-viewer.service`、安装脚本、README、LICENSE 与 VERSION。已发布版本直接跳过，不覆盖已有资产；失败上传保留草稿，可重跑原工作流完成发布。已有版本标签必须指向该次工作流的源码，否则拒绝发布；若 `main` 已前进，请重跑原提交的工作流或递增版本。带预发布后缀的版本发布为 prerelease，不作为默认安装的最新稳定版。
-
-本地构建（Go 工具链版本以 [`go.mod`](go.mod) 为准，需支持自动获取模块工具链）：
+本地打包：
 
 ```bash
 bash build/package.sh
 (cd dist && sha256sum --check SHA256SUMS)
 ```
 
-产物在已忽略的 `dist/`，不会包含本地 `config.yaml`、cookie 或运行数据。首次使用安装命令前，需先将以上工作流推送到 `main` 并成功发布至少一个稳定 Release；没有 Release 时下载地址会返回 404。
-
-### GHCR 镜像
-
-[Docker 工作流](.github/workflows/docker.yml) 在任意分支推送或手动触发时运行，使用 `GITHUB_TOKEN` 推送到 `ghcr.io/<owner>/<repo>`：
-
-| 分支 | 标签 | 示例 |
-|---|---|---|
-| `main` | `VERSION` 原值与 `latest` | `ghcr.io/mr-monkeyray/magma-viewer:<版本>`、`ghcr.io/mr-monkeyray/magma-viewer:latest` |
-| 其他分支 | `<分支名>-<7 位 commit>` | `ghcr.io/mr-monkeyray/magma-viewer:feature-login-abcdef0` |
-
-分支名会转为合法的 Docker 标签；目标标签全部已存在时跳过构建，不覆盖已有镜像。`main` 推送会同时更新 `VERSION` 标签和 `latest`，因此再次发布需先递增 `VERSION`。
-
-GHCR 包默认私有，匿名拉取需在包设置中改为 Public；私有包需先 `docker login ghcr.io`。
+产物在已忽略的 `dist/`。
 
 ## 安全
 
-`config.yaml` 可能包含真实 cookie 和管理员密码，不要提交。接口响应带 `Cache-Control: no-store`，不会被浏览器或 CDN 缓存；反向代理下的登录防护、跨站请求防护与源站保护见 [`deploy/nginx`](deploy/nginx/README.md)。仓库只保留 `config.example.yaml` 占位配置；`.gitignore` 已排除本地配置、`.env`、运行数据、缩略图、构建与测试产物。安装包的 SHA-256 校验用于发现下载损坏，不替代对 GitHub 仓库和 Release 发布者的信任。
+- `config.yaml` 含真实 Cookie 和管理员密码，不要提交；仓库只保留 `config.example.yaml`，`.gitignore` 已排除本地配置、`.env` 和运行数据。
+- API 与 ZIP 响应带 `Cache-Control: no-store`；公网部署按 [`deploy/nginx`](deploy/nginx/README.md) 配置 HTTPS、限流与跨站防护。
+- Release 的 `SHA256SUMS` 用于校验下载完整性，不替代对发布来源的信任。
+
+## 许可证
+
+[GPL-3.0](LICENSE)
