@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	_ "time/tzdata" // the scratch image has no zoneinfo; honour TZ anyway
@@ -33,6 +34,10 @@ var webFS embed.FS
 //go:embed VERSION
 var version string
 
+// stopBudget is how long shutdown may wait; it stays under Docker's default
+// 10s stop grace period and the systemd unit's TimeoutStopSec=15s.
+const stopBudget = 8 * time.Second
+
 func main() {
 	defaultConfig := os.Getenv("CONFIG")
 	if defaultConfig == "" {
@@ -41,8 +46,16 @@ func main() {
 	configPath := flag.String("config", defaultConfig, "path to config.yaml (env CONFIG)")
 	flag.Parse()
 
-	if flag.Arg(0) == "healthcheck" {
+	switch flag.Arg(0) {
+	case "healthcheck":
 		os.Exit(healthcheck(*configPath))
+	case "checkconfig":
+		if _, err := config.Load(*configPath); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		fmt.Println("config ok")
+		return
 	}
 	if err := run(*configPath); err != nil {
 		log.Fatal(err)
@@ -62,6 +75,9 @@ func run(configPath string) error {
 		return fmt.Errorf("open storage dir: %w", err)
 	}
 	log.Printf("magma-viewer %s", strings.TrimSpace(version))
+	if cfg.Admin.SessionSecret == "" {
+		log.Printf("WARNING admin.session_secret is empty: a random key is used and every restart logs the admin out")
+	}
 	log.Printf("storage %s: %d images", cfg.Storage.Dir, st.Count())
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -74,8 +90,8 @@ func run(configPath string) error {
 		return err
 	}
 	c.Start()
-	defer c.Stop()
-	go f.RunScheduled(ctx)
+	var startup sync.WaitGroup
+	startup.Go(func() { f.RunScheduled(ctx) })
 	log.Printf("fetch schedule: %q", cfg.Schedule)
 
 	go st.Watch(ctx.Done(), time.Minute)
@@ -97,30 +113,49 @@ func run(configPath string) error {
 		Addr:              cfg.Listen,
 		Handler:           ws.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 	}
+	// ListenAndServe returns as soon as Shutdown begins, so wait here for
+	// in-flight downloads and for fetches (which see ctx cancelled) to finish
+	// writing, all within one deadline.
+	drained := make(chan struct{})
 	go func() {
+		defer close(drained)
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		stopCtx, cancel := context.WithTimeout(context.Background(), stopBudget)
 		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
+		fetches := make(chan struct{})
+		go func() {
+			<-c.Stop().Done()
+			startup.Wait()
+			close(fetches)
+		}()
+		if err := srv.Shutdown(stopCtx); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
+		select {
+		case <-fetches:
+		case <-stopCtx.Done():
+			log.Printf("shutdown: a fetch is still running")
+		}
 	}()
 	log.Printf("listening on %s", cfg.Listen)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	<-drained
 	return nil
 }
 
 // healthcheck lets the scratch image run a Docker HEALTHCHECK without curl.
 func healthcheck(configPath string) int {
-	port := "8080"
-	if cfg, err := config.Load(configPath); err == nil {
-		if _, p, err := net.SplitHostPort(cfg.Listen); err == nil && p != "" {
-			port = p
-		}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
 	}
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get("http://127.0.0.1:" + port + "/healthz")
+	resp, err := client.Get("http://" + probeAddr(cfg.Listen) + "/healthz")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -130,4 +165,20 @@ func healthcheck(configPath string) int {
 		return 1
 	}
 	return 0
+}
+
+// probeAddr turns a listen address into one a local client can dial: a
+// wildcard host becomes loopback, a specific address is used as is.
+func probeAddr(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return listen
+	}
+	switch host {
+	case "", "0.0.0.0":
+		host = "127.0.0.1"
+	case "::":
+		host = "::1"
+	}
+	return net.JoinHostPort(host, port)
 }

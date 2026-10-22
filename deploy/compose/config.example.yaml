@@ -2,9 +2,13 @@
 
 listen: ":8080"
 
+# 可信反向代理（IP 或 CIDR），只采用这些来源转发的 X-Real-IP 作为客户端地址（用于登录限流）。
+# 不设置时信任本机和内网地址；端口直接暴露给不可信网络时，建议只列出实际的代理地址。
+# trusted_proxies: ["172.16.0.0/12"]
+
 admin:
   username: admin
-  password: "change-me"
+  password: "change-me"  # 必须修改：保留示例值会拒绝启动
   # 留空则每次启动随机生成，重启后需重新登录
   session_secret: ""
   session_ttl: 168h

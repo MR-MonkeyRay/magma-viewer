@@ -8,10 +8,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -51,6 +54,13 @@ func openNotices(t *testing.T) *notice.Store {
 
 func newTestServer(t *testing.T, n int) (*httptest.Server, string) {
 	t.Helper()
+	srv, q, _ := newTestServerStore(t, n)
+	return srv, q
+}
+
+// newTestServerStore serves n tiny images and returns the server, an f=... query naming them all, and the store.
+func newTestServerStore(t *testing.T, n int) (*httptest.Server, string, *store.Store) {
+	t.Helper()
 	dir := t.TempDir()
 	var names []string
 	for i := 0; i < n; i++ {
@@ -76,7 +86,7 @@ func newTestServer(t *testing.T, n int) (*httptest.Server, string) {
 	for _, n := range names {
 		q.Add("f", n)
 	}
-	return srv, q.Encode()
+	return srv, q.Encode(), st
 }
 
 func login(t *testing.T, base string) *http.Cookie {
@@ -88,9 +98,11 @@ func login(t *testing.T, base string) *http.Cookie {
 	return resp.Cookies()[0]
 }
 
+// get fetches u like a browser on the site's own page would.
 func get(t *testing.T, u string, c *http.Cookie) *http.Response {
 	t.Helper()
 	req, _ := http.NewRequest(http.MethodGet, u, nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	if c != nil {
 		req.AddCookie(c)
 	}
@@ -250,14 +262,131 @@ func TestClientIP(t *testing.T) {
 		{"127.0.0.1:4000", "not-an-ip", "127.0.0.1"},
 		{"127.0.0.1:4000", "", "127.0.0.1"},
 	}
+	a := newAuth("admin", "pw", "", time.Hour)
 	for _, c := range cases {
 		r := httptest.NewRequest(http.MethodPost, "/api/login", nil)
 		r.RemoteAddr = c.remote
 		if c.header != "" {
 			r.Header.Set("X-Real-IP", c.header)
 		}
-		if got := clientIP(r); got != c.want {
+		if got := a.clientIP(r); got != c.want {
 			t.Errorf("clientIP(%s, %q) = %s, want %s", c.remote, c.header, got, c.want)
+		}
+	}
+
+	// With trusted_proxies set, only those peers may speak for a client.
+	a.proxies = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
+	for remote, want := range map[string]string{"127.0.0.1:1": "198.51.100.7", "172.18.0.1:1": "172.18.0.1", "[::ffff:127.0.0.1]:1": "198.51.100.7"} {
+		r := httptest.NewRequest(http.MethodPost, "/api/login", nil)
+		r.RemoteAddr = remote
+		r.Header.Set("X-Real-IP", "198.51.100.7")
+		if got := a.clientIP(r); got != want {
+			t.Errorf("trusted 127.0.0.1: clientIP(%s) = %s, want %s", remote, got, want)
+		}
+	}
+}
+
+func TestLoginLimitHoldsUnderConcurrency(t *testing.T) {
+	srv, _ := newTestServer(t, 0)
+	var wg sync.WaitGroup
+	var unauthorized, limited atomic.Int32
+	for range 40 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := http.Post(srv.URL+"/api/login", "application/json", strings.NewReader(`{"username":"admin","password":"bad"}`))
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			resp.Body.Close()
+			switch resp.StatusCode {
+			case http.StatusUnauthorized:
+				unauthorized.Add(1)
+			case http.StatusTooManyRequests:
+				limited.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if unauthorized.Load() != loginMaxFailures || limited.Load() != 40-loginMaxFailures {
+		t.Fatalf("401=%d 429=%d, want %d guesses checked", unauthorized.Load(), limited.Load(), loginMaxFailures)
+	}
+}
+
+func TestPasswordChangeEndsSessions(t *testing.T) {
+	tok, _ := newAuth("admin", "old", "secret", time.Hour).newToken()
+	if newAuth("admin", "new", "secret", time.Hour).validToken(tok) {
+		t.Fatal("session survived a password change")
+	}
+}
+
+func TestZipSkipsFileDeletedBehindIndex(t *testing.T) {
+	srv, all, st := newTestServerStore(t, 3)
+	gone := st.All()[0].Name
+	os.Remove(filepath.Join(st.Dir(), gone))
+
+	c := login(t, srv.URL)
+	if r := get(t, srv.URL+"/download/zip?"+all, c); r.StatusCode != http.StatusOK || zipCount(t, r) != 2 {
+		t.Fatalf("zip without deleted file: %s", r.Status)
+	}
+	r := get(t, srv.URL+"/img/"+gone, nil)
+	r.Body.Close()
+	if r.StatusCode != http.StatusNotFound || r.Header.Get("Cache-Control") != "" {
+		t.Fatalf("deleted image: %s, Cache-Control %q", r.Status, r.Header.Get("Cache-Control"))
+	}
+}
+
+func TestCrossSiteRequestsRejected(t *testing.T) {
+	srv, _ := newTestServer(t, 1)
+	c := login(t, srv.URL)
+	send := func(method, path, site string, extra ...string) int {
+		req, _ := http.NewRequest(method, srv.URL+path, nil)
+		req.AddCookie(c)
+		if site != "" {
+			req.Header.Set("Sec-Fetch-Site", site)
+		}
+		for i := 0; i+1 < len(extra); i += 2 {
+			req.Header.Set(extra[i], extra[i+1])
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := send(http.MethodPost, "/api/schedule", "cross-site"); got != http.StatusForbidden {
+		t.Errorf("cross-site POST: %d", got)
+	}
+	if got := send(http.MethodGet, "/download/all", "cross-site"); got != http.StatusForbidden {
+		t.Errorf("cross-site download all: %d", got)
+	}
+	if got := send(http.MethodGet, "/download/all", "same-origin"); got != http.StatusOK {
+		t.Errorf("same-origin download all: %d", got)
+	}
+	// Plain-http origins get no Fetch Metadata: Origin or Referer must prove the request came from here.
+	if got := send(http.MethodGet, "/download/all", ""); got != http.StatusForbidden {
+		t.Errorf("download all without any origin evidence: %d", got)
+	}
+	if got := send(http.MethodGet, "/download/all", "", "Referer", "http://evil.example/page"); got != http.StatusForbidden {
+		t.Errorf("download all from another site's link: %d", got)
+	}
+	if got := send(http.MethodGet, "/download/all", "", "Referer", srv.URL+"/"); got != http.StatusOK {
+		t.Errorf("download all from our page over http: %d", got)
+	}
+	if got := send(http.MethodPost, "/api/logout", "same-origin"); got != http.StatusOK {
+		t.Errorf("same-origin logout: %d", got)
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	srv, _ := newTestServer(t, 0)
+	r := get(t, srv.URL+"/", nil)
+	r.Body.Close()
+	for _, h := range []string{"X-Content-Type-Options", "X-Frame-Options", "Referrer-Policy", "Content-Security-Policy"} {
+		if r.Header.Get(h) == "" {
+			t.Errorf("missing %s", h)
 		}
 	}
 }

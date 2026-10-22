@@ -5,6 +5,7 @@ package store
 import (
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -18,12 +19,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	_ "golang.org/x/image/webp"
+
+	"magma-viewer/internal/fsutil"
 )
 
 // TimeLayout is the timestamp prefix of stored file names.
@@ -50,11 +53,17 @@ type Item struct {
 type Store struct {
 	dir      string
 	thumbDir string
+	tmpDir   string         // same file system as dir, but renames there do not touch dir's mtime
+	loc      *time.Location // zone of the timestamps in file names
+
+	scanMu sync.Mutex // serialises Rescan and Import so neither drops the other's result
 
 	mu     sync.RWMutex
 	items  []Item // newest first
 	byName map[string]int
 	dirMod time.Time
+	gen    uint64    // bumped on every index change
+	synced time.Time // when the last full rescan finished
 
 	thumbSem   chan struct{}
 	thumbLocks sync.Map // name -> *sync.Mutex
@@ -64,12 +73,20 @@ func New(dir string) (*Store, error) {
 	s := &Store{
 		dir:      dir,
 		thumbDir: filepath.Join(dir, ".thumbs"),
+		tmpDir:   filepath.Join(dir, ".state", "tmp"),
 		// Decoding a 4K image needs ~35 MB, so keep concurrency low.
 		thumbSem: make(chan struct{}, min(2, runtime.NumCPU())),
 	}
-	if err := os.MkdirAll(s.thumbDir, 0o755); err != nil {
+	for _, d := range []string{s.thumbDir, s.tmpDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return nil, err
+		}
+	}
+	loc, err := archiveLocation(filepath.Join(dir, ".state", "archive.json"))
+	if err != nil {
 		return nil, err
 	}
+	s.loc = loc
 	if err := s.Rescan(); err != nil {
 		return nil, err
 	}
@@ -78,9 +95,79 @@ func New(dir string) (*Store, error) {
 
 func (s *Store) Dir() string { return s.dir }
 
-// FileName builds the canonical stored name for an image.
-func FileName(t time.Time, sum, ext string) string {
-	return t.Format(TimeLayout) + "_" + sum + ext
+// archiveLocation returns the zone file names were written in. The first run
+// records the local zone, so moving the archive to a host or container with
+// another TZ does not shift every stored time.
+func archiveLocation(path string) (*time.Location, error) {
+	var rec struct {
+		TZ string `json:"tz"`
+	}
+	data, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		// "Local" would follow whatever host the archive lands on, defeating the record.
+		if json.Unmarshal(data, &rec) != nil || rec.TZ == "" || rec.TZ == "Local" {
+			return nil, fmt.Errorf("%s is damaged: restore it, or delete it to record the current time zone", path)
+		}
+		loc, err := time.LoadLocation(rec.TZ)
+		if err != nil {
+			return nil, fmt.Errorf("archive time zone %q (%s): %w", rec.TZ, path, err)
+		}
+		if cur := localZoneName(); cur != rec.TZ {
+			log.Printf("store: WARNING file names use time zone %s, the local zone is %q; keeping %s", rec.TZ, cur, rec.TZ)
+		}
+		return loc, nil
+	case !errors.Is(err, os.ErrNotExist):
+		return nil, err
+	}
+	rec.TZ = localZoneName()
+	if rec.TZ == "" {
+		log.Printf("store: WARNING cannot tell which time zone file names use; set TZ (e.g. Asia/Shanghai) so stored times survive a move")
+		return time.Local, nil
+	}
+	loc, err := time.LoadLocation(rec.TZ)
+	if err != nil {
+		return nil, err
+	}
+	// Failing to record is not fatal: this run uses the zone anyway and the next start tries again.
+	data, _ = json.Marshal(rec)
+	if err := fsutil.WriteFile(path, data, 0o644); err != nil {
+		log.Printf("store: save %s: %v", path, err)
+	}
+	return loc, nil
+}
+
+// localZoneName names the zone time.Local was loaded from, or "" when unknown.
+func localZoneName() string {
+	tz, set := os.LookupEnv("TZ")
+	localtime, _ := os.Readlink("/etc/localtime")
+	return zoneName(tz, set, localtime)
+}
+
+// zoneName mirrors how Go picks the local zone: TZ when set (empty means
+// UTC), otherwise /etc/localtime, which usually links into a zoneinfo tree.
+func zoneName(tz string, set bool, localtime string) string {
+	if set {
+		tz = strings.TrimPrefix(tz, ":")
+		if tz == "" {
+			return "UTC"
+		}
+		if _, err := time.LoadLocation(tz); err != nil || tz == "Local" {
+			return "" // Go falls back to UTC here, but the name the user meant is unknown
+		}
+		return tz
+	}
+	if _, name, ok := strings.Cut(localtime, "zoneinfo/"); ok {
+		if _, err := time.LoadLocation(name); err == nil {
+			return name
+		}
+	}
+	return ""
+}
+
+// FileName builds the canonical stored name for an image saved at t.
+func (s *Store) FileName(t time.Time, sum, ext string) string {
+	return t.In(s.loc).Format(TimeLayout) + "_" + sum + ext
 }
 
 // IsAllowedExt reports whether ext (with dot) is a supported image extension.
@@ -100,10 +187,10 @@ func imageSize(path string) (int, int) {
 	return cfg.Width, cfg.Height
 }
 
-func parseItem(name string, info os.FileInfo) Item {
+func parseItem(name string, info os.FileInfo, loc *time.Location) Item {
 	it := Item{Name: name, Size: info.Size(), Time: info.ModTime(), mod: info.ModTime()}
 	if m := namePattern.FindStringSubmatch(name); m != nil {
-		if t, err := time.ParseInLocation(TimeLayout, m[1], time.Local); err == nil {
+		if t, err := time.ParseInLocation(TimeLayout, m[1], loc); err == nil {
 			it.Time = t
 		}
 		it.MD5 = m[2]
@@ -111,29 +198,31 @@ func parseItem(name string, info os.FileInfo) Item {
 	return it
 }
 
-func sortItems(items []Item) {
-	sort.Slice(items, func(i, j int) bool {
-		if !items[i].Time.Equal(items[j].Time) {
-			return items[i].Time.After(items[j].Time)
-		}
-		if !items[i].mod.Equal(items[j].mod) {
-			return items[i].mod.After(items[j].mod)
-		}
-		return items[i].Name > items[j].Name
-	})
+// newerFirst orders items newest first.
+func newerFirst(a, b Item) int {
+	if c := b.Time.Compare(a.Time); c != 0 {
+		return c
+	}
+	if c := b.mod.Compare(a.mod); c != 0 {
+		return c
+	}
+	return strings.Compare(b.Name, a.Name)
 }
 
+// reindex installs items, which must already be sorted; the caller holds mu.
 func (s *Store) reindex(items []Item) {
-	sortItems(items)
 	byName := make(map[string]int, len(items))
 	for i, it := range items {
 		byName[it.Name] = i
 	}
 	s.items, s.byName = items, byName
+	s.gen++
 }
 
 // Rescan rebuilds the index from the directory contents.
 func (s *Store) Rescan() error {
+	s.scanMu.Lock()
+	defer s.scanMu.Unlock()
 	dirInfo, err := os.Stat(s.dir)
 	if err != nil {
 		return err
@@ -160,7 +249,7 @@ func (s *Store) Rescan() error {
 		if err != nil {
 			continue
 		}
-		it := parseItem(name, info)
+		it := parseItem(name, info, s.loc)
 		if p, ok := prev[name]; ok && p.Size == it.Size && p.mod.Equal(it.mod) {
 			it.W, it.H = p.W, p.H
 		} else {
@@ -168,34 +257,65 @@ func (s *Store) Rescan() error {
 		}
 		items = append(items, it)
 	}
+	slices.SortFunc(items, newerFirst)
 	s.mu.Lock()
 	s.reindex(items)
 	s.dirMod = dirInfo.ModTime()
+	s.synced = time.Now()
 	s.mu.Unlock()
 	return nil
 }
 
-// Add indexes a file that was just written into the directory.
-func (s *Store) Add(name string) error {
-	info, err := os.Stat(filepath.Join(s.dir, name))
+// Import durably saves r as name in the directory and indexes it.
+func (s *Store) Import(r io.Reader, name string) error {
+	tmp, err := fsutil.WriteTemp(s.tmpDir, ".import", r, 0o644)
 	if err != nil {
 		return err
 	}
-	it := parseItem(name, info)
-	it.W, it.H = imageSize(filepath.Join(s.dir, name))
+	defer os.Remove(tmp) // no-op once renamed
+	dst := filepath.Join(s.dir, name)
+
+	s.scanMu.Lock()
+	defer s.scanMu.Unlock()
+	before, err := os.Stat(s.dir)
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		return err
+	}
+	_ = fsutil.SyncDir(s.dir) // best effort: the file is in place and must be indexed either way
+	after, aerr := os.Stat(s.dir)
+	info, err := os.Stat(dst)
+	if err != nil {
+		return err
+	}
+	it := parseItem(name, info, s.loc)
+	it.W, it.H = imageSize(dst)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	items := s.items
-	if i, ok := s.byName[name]; ok {
-		items[i] = it
-	} else {
-		items = append(items, it)
+	// Our own rename should not trigger a full rescan, unless something else
+	// had already changed the directory since the last one. A change by
+	// another process between the two Stat calls would be missed here; the
+	// periodic resync in Watch catches it.
+	if aerr == nil && before.ModTime().Equal(s.dirMod) {
+		s.dirMod = after.ModTime()
 	}
-	s.reindex(items)
+	items := slices.Clone(s.items)
+	if i, ok := s.byName[name]; ok {
+		items = slices.Delete(items, i, i+1)
+	}
+	i, _ := slices.BinarySearchFunc(items, it, newerFirst)
+	s.reindex(slices.Insert(items, i, it))
 	return nil
 }
 
-// Watch rescans when the directory mtime changes, picking up manual edits.
+// resyncEvery bounds how long a missed directory change can stay unindexed.
+const resyncEvery = 30 * time.Minute
+
+// Watch rescans when the directory mtime changes, picking up manual edits,
+// and at least every resyncEvery regardless.
 func (s *Store) Watch(stop <-chan struct{}, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -209,7 +329,7 @@ func (s *Store) Watch(stop <-chan struct{}, interval time.Duration) {
 				continue
 			}
 			s.mu.RLock()
-			changed := !info.ModTime().Equal(s.dirMod)
+			changed := !info.ModTime().Equal(s.dirMod) || time.Since(s.synced) >= resyncEvery
 			s.mu.RUnlock()
 			if changed {
 				if err := s.Rescan(); err != nil {

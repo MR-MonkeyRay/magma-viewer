@@ -9,12 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"magma-viewer/internal/fsutil"
 )
 
 const (
@@ -169,18 +170,7 @@ func (s *Store) write(items []Notice) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-		return err
-	}
-	part := s.path + ".part"
-	if err := os.WriteFile(part, data, 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(part, s.path); err != nil {
-		os.Remove(part)
-		return err
-	}
-	return nil
+	return fsutil.WriteFile(s.path, data, 0o644)
 }
 
 func newID() string {

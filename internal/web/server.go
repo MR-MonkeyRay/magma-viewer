@@ -11,6 +11,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -49,12 +50,14 @@ type Server struct {
 func init() { _ = mime.AddExtensionType(".woff2", "font/woff2") }
 
 func New(cfg *config.Config, st *store.Store, f *fetcher.Fetcher, ns *notice.Store, static fs.FS) *Server {
+	a := newAuth(cfg.Admin.Username, cfg.Admin.Password, cfg.Admin.SessionSecret, cfg.Admin.SessionTTL)
+	a.proxies = cfg.TrustedProxyPrefixes()
 	return &Server{
 		cfg:     cfg,
 		store:   st,
 		fetcher: f,
 		notices: ns,
-		auth:    newAuth(cfg.Admin.Username, cfg.Admin.Password, cfg.Admin.SessionSecret, cfg.Admin.SessionTTL),
+		auth:    a,
 		static:  static,
 	}
 }
@@ -83,9 +86,63 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /thumb/{name}", s.handleThumb(store.Small))
 	mux.HandleFunc("GET /preview/{name}", s.handleThumb(store.Preview))
 	mux.HandleFunc("GET /download/zip", s.handleZipSelected)
-	mux.HandleFunc("GET /download/all", s.adminOnly(s.handleZipAll))
+	mux.HandleFunc("GET /download/all", sameOriginOnly(s.adminOnly(s.handleZipAll)))
 	mux.HandleFunc("GET /download/{name}", s.handleDownload)
-	return logRequests(mux)
+	// Rejects cross-origin POST/PUT/DELETE from browsers; SameSite=Lax alone
+	// still lets a sibling subdomain post with the session cookie.
+	cop := http.NewCrossOriginProtection()
+	cop.SetDenyHandler(http.HandlerFunc(denyCrossOrigin))
+	return logRequests(securityHeaders(cop.Handler(mux)))
+}
+
+func denyCrossOrigin(w http.ResponseWriter, _ *http.Request) {
+	writeError(w, http.StatusForbidden, "cross_origin", "拒绝跨站请求")
+}
+
+// securityHeaders mirrors the nginx sample, so a deployment without the proxy gets them too.
+func securityHeaders(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hd := w.Header()
+		hd.Set("X-Content-Type-Options", "nosniff")
+		hd.Set("X-Frame-Options", "DENY")
+		hd.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		hd.Set("Content-Security-Policy", contentSecurityPolicy)
+		h.ServeHTTP(w, r)
+	})
+}
+
+const contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+	"img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; " +
+	"base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+
+// sameOriginOnly refuses a GET that another site started (a link or redirect
+// carries the Lax session cookie), for endpoints too costly to trigger by accident.
+func sameOriginOnly(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !startedHere(r) {
+			denyCrossOrigin(w, r)
+			return
+		}
+		h(w, r)
+	}
+}
+
+// startedHere reports whether a request came from this site's own pages or
+// the address bar. Browsers send no Fetch Metadata to plain-http origins, so
+// Origin and then Referer stand in; a request proving neither is refused.
+func startedHere(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "same-origin", "none":
+		return true
+	case "":
+		for _, h := range []string{"Origin", "Referer"} {
+			if v := r.Header.Get(h); v != "" {
+				u, err := url.Parse(v)
+				return err == nil && u.Host == r.Host
+			}
+		}
+	}
+	return false
 }
 
 // Embedded files carry no modification time, so revalidation cannot answer 304; fonts change rarely enough to cache.
@@ -187,8 +244,8 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
-	if !s.auth.allowAttempt(ip) {
+	ip := s.auth.clientIP(r)
+	if !s.auth.beginAttempt(ip) {
 		writeError(w, http.StatusTooManyRequests, "too_many_attempts", "尝试次数过多，请稍后再试")
 		return
 	}
@@ -201,7 +258,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.auth.checkCredentials(body.Username, body.Password) {
-		s.auth.recordFailure(ip)
 		writeError(w, http.StatusUnauthorized, "bad_credentials", "用户名或密码错误")
 		return
 	}
@@ -324,7 +380,9 @@ func writeNoticeError(w http.ResponseWriter, err error) {
 	}
 }
 
-func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, path, contentType string) {
+// serveFile sends path; cacheControl is set only once the file opens, so a
+// 404 for a file deleted behind the index is never cached.
+func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, path, cacheControl string) {
 	f, err := os.Open(path)
 	if err != nil {
 		http.NotFound(w, r)
@@ -336,11 +394,13 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, path, content
 		http.NotFound(w, r)
 		return
 	}
-	if contentType != "" {
-		w.Header().Set("Content-Type", contentType)
+	if cacheControl != "" {
+		w.Header().Set("Cache-Control", cacheControl)
 	}
 	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
 }
+
+const imageCache = "public, max-age=86400"
 
 func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 	path, err := s.store.Path(r.PathValue("name"))
@@ -348,8 +408,7 @@ func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Cache-Control", "public, max-age=86400")
-	s.serveFile(w, r, path, "")
+	s.serveFile(w, r, path, imageCache)
 }
 
 func (s *Server) handleThumb(size store.Size) http.HandlerFunc {
@@ -365,8 +424,7 @@ func (s *Server) handleThumb(size store.Size) http.HandlerFunc {
 			s.handleImage(w, r)
 			return
 		}
-		w.Header().Set("Cache-Control", "public, max-age=86400")
-		s.serveFile(w, r, path, "")
+		s.serveFile(w, r, path, imageCache)
 	}
 }
 
@@ -421,7 +479,9 @@ func (s *Server) handleZipAll(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeZip streams the archive with uncompressed entries; images are already
-// compressed, so deflate would only waste CPU.
+// compressed, so deflate would only waste CPU. Once streaming has started a
+// failure can only be signalled by cutting the connection: finishing the
+// response normally would hand the browser a corrupt archive it calls complete.
 func (s *Server) writeZip(w http.ResponseWriter, r *http.Request, filename string, items []store.Item) {
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Cache-Control", "no-store")
@@ -429,24 +489,31 @@ func (s *Server) writeZip(w http.ResponseWriter, r *http.Request, filename strin
 	zw := zip.NewWriter(w)
 	for _, it := range items {
 		if r.Context().Err() != nil {
-			return
+			return // the client is gone
 		}
-		if err := addToZip(zw, filepath.Join(s.store.Dir(), it.Name), it); err != nil {
+		f, err := os.Open(filepath.Join(s.store.Dir(), it.Name))
+		if err != nil {
+			// Deleted by hand since the last rescan: leave it out rather than fail the archive.
+			log.Printf("zip: skip %s: %v", it.Name, err)
+			continue
+		}
+		err = addToZip(zw, f, it)
+		f.Close()
+		if err != nil {
+			if r.Context().Err() != nil {
+				return // the client went away mid-transfer
+			}
 			log.Printf("zip %s: %v", it.Name, err)
-			return
+			panic(http.ErrAbortHandler)
 		}
 	}
 	if err := zw.Close(); err != nil {
 		log.Printf("zip close: %v", err)
+		panic(http.ErrAbortHandler)
 	}
 }
 
-func addToZip(zw *zip.Writer, path string, it store.Item) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
+func addToZip(zw *zip.Writer, f *os.File, it store.Item) error {
 	hw, err := zw.CreateHeader(&zip.FileHeader{Name: it.Name, Method: zip.Store, Modified: it.Time})
 	if err != nil {
 		return err

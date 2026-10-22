@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +28,7 @@ type auth struct {
 	secret   []byte
 	ttl      time.Duration
 	now      func() time.Time
+	proxies  []netip.Prefix // peers whose X-Real-IP is believed; nil means loopback and private ranges
 
 	mu       sync.Mutex
 	failures map[string]*failure
@@ -59,12 +61,15 @@ func (a *auth) sign(payload string) string {
 	return base64.RawURLEncoding.EncodeToString(m.Sum(nil))
 }
 
-// token format: <expiry-unix>.<hmac(username|expiry)>
+// token format: <expiry-unix>.<hmac(username|password|expiry)>; signing the
+// password means changing it in the config ends every existing session.
 func (a *auth) newToken() (string, time.Time) {
 	exp := a.now().Add(a.ttl)
 	e := strconv.FormatInt(exp.Unix(), 10)
-	return e + "." + a.sign(a.username+"|"+e), exp
+	return e + "." + a.sign(a.payload(e)), exp
 }
+
+func (a *auth) payload(exp string) string { return a.username + "|" + a.password + "|" + exp }
 
 func (a *auth) validToken(tok string) bool {
 	e, sig, ok := strings.Cut(tok, ".")
@@ -75,7 +80,7 @@ func (a *auth) validToken(tok string) bool {
 	if err != nil || a.now().Unix() >= exp {
 		return false
 	}
-	return hmac.Equal([]byte(sig), []byte(a.sign(a.username+"|"+e)))
+	return hmac.Equal([]byte(sig), []byte(a.sign(a.payload(e))))
 }
 
 func (a *auth) isAdmin(r *http.Request) bool {
@@ -89,37 +94,37 @@ func (a *auth) checkCredentials(user, pass string) bool {
 	return u&p == 1
 }
 
-// clientIP is the TCP peer, or X-Real-IP when the peer is a reverse proxy on
-// this host or a private network (nginx overwrites any value the client sent).
-func clientIP(r *http.Request) string {
+// clientIP is the TCP peer, or X-Real-IP when the peer is a trusted reverse
+// proxy (nginx overwrites any value the client sent).
+func (a *auth) clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	if peer := net.ParseIP(host); peer != nil && (peer.IsLoopback() || peer.IsPrivate()) {
-		if real := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); real != nil {
-			return real.String()
+	if peer, err := netip.ParseAddr(host); err == nil && a.trusted(peer.Unmap()) {
+		if real, err := netip.ParseAddr(strings.TrimSpace(r.Header.Get("X-Real-IP"))); err == nil {
+			return real.Unmap().String()
 		}
 	}
 	return host
 }
 
-// allowAttempt reports whether ip is still under the failed-login limit.
-func (a *auth) allowAttempt(ip string) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	f, ok := a.failures[ip]
-	if !ok {
-		return true
+func (a *auth) trusted(peer netip.Addr) bool {
+	if a.proxies == nil {
+		return peer.IsLoopback() || peer.IsPrivate()
 	}
-	if a.now().Sub(f.since) > loginWindow {
-		delete(a.failures, ip)
-		return true
+	for _, p := range a.proxies {
+		if p.Contains(peer) {
+			return true
+		}
 	}
-	return f.count < loginMaxFailures
+	return false
 }
 
-func (a *auth) recordFailure(ip string) {
+// beginAttempt counts a login attempt from ip and reports whether it is still
+// under the limit. Counting before the password is checked keeps concurrent
+// guesses from all passing the check; a successful login clears the count.
+func (a *auth) beginAttempt(ip string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := a.now()
@@ -134,7 +139,11 @@ func (a *auth) recordFailure(ip string) {
 		f = &failure{since: now}
 		a.failures[ip] = f
 	}
+	if f.count >= loginMaxFailures {
+		return false
+	}
 	f.count++
+	return true
 }
 
 func (a *auth) clearFailures(ip string) {

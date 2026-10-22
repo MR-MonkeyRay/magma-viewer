@@ -2,8 +2,13 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log"
+	"net"
+	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -13,12 +18,20 @@ import (
 )
 
 type Config struct {
-	Listen   string  `yaml:"listen"`
-	Admin    Admin   `yaml:"admin"`
-	Magma    Magma   `yaml:"magma"`
-	Schedule string  `yaml:"schedule"`
-	Storage  Storage `yaml:"storage"`
+	Listen string `yaml:"listen"`
+	// TrustedProxies lists the peers (IPs or CIDRs) whose X-Real-IP header is
+	// believed; unset means loopback and private networks.
+	TrustedProxies []string `yaml:"trusted_proxies"`
+	Admin          Admin    `yaml:"admin"`
+	Magma          Magma    `yaml:"magma"`
+	Schedule       string   `yaml:"schedule"`
+	Storage        Storage  `yaml:"storage"`
+
+	proxies []netip.Prefix
 }
+
+// placeholderPassword is the sample config's value, which must not go live.
+const placeholderPassword = "change-me"
 
 type Admin struct {
 	Username      string        `yaml:"username"`
@@ -48,6 +61,13 @@ func Load(path string) (*Config, error) {
 	c := &Config{}
 	if err := yaml.Unmarshal(data, c); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	// A misspelt key would silently fall back to its default; warn rather than
+	// refuse, so an upgrade never stops a running deployment over it.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&Config{}); err != nil {
+		log.Printf("config: WARNING %v", err)
 	}
 	c.applyDefaults()
 	if err := c.validate(); err != nil {
@@ -81,14 +101,40 @@ func (c *Config) validate() error {
 	var errs []error
 	if c.Admin.Username == "" || c.Admin.Password == "" {
 		errs = append(errs, errors.New("admin.username and admin.password are required"))
+	} else if c.Admin.Password == placeholderPassword {
+		errs = append(errs, fmt.Errorf("admin.password is still the sample value %q; set your own", placeholderPassword))
+	}
+	if _, _, err := net.SplitHostPort(c.Listen); err != nil {
+		errs = append(errs, fmt.Errorf("invalid listen %q: %w", c.Listen, err))
 	}
 	if c.Magma.URL == "" {
 		errs = append(errs, errors.New("magma.url is required"))
-	} else if !strings.HasPrefix(c.Magma.URL, "http://") && !strings.HasPrefix(c.Magma.URL, "https://") {
-		errs = append(errs, errors.New("magma.url must start with http:// or https://"))
+	} else if u, err := url.Parse(c.Magma.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		errs = append(errs, errors.New("magma.url must be an http:// or https:// URL with a host"))
+	}
+	for _, p := range c.TrustedProxies {
+		prefix, err := netip.ParsePrefix(p)
+		if err != nil {
+			addr, aerr := netip.ParseAddr(p)
+			if aerr != nil {
+				errs = append(errs, fmt.Errorf("invalid trusted_proxies entry %q", p))
+				continue
+			}
+			prefix = netip.PrefixFrom(addr, addr.BitLen())
+		}
+		c.proxies = append(c.proxies, prefix.Masked())
 	}
 	if _, err := cron.ParseStandard(c.Schedule); err != nil {
 		errs = append(errs, fmt.Errorf("invalid schedule %q: %w", c.Schedule, err))
 	}
 	return errors.Join(errs...)
+}
+
+// TrustedProxyPrefixes returns the parsed trusted_proxies, nil when unset.
+// An explicit empty list trusts no proxy at all.
+func (c *Config) TrustedProxyPrefixes() []netip.Prefix {
+	if c.TrustedProxies == nil {
+		return nil
+	}
+	return append([]netip.Prefix{}, c.proxies...)
 }

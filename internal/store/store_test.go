@@ -194,3 +194,144 @@ func TestOverview(t *testing.T) {
 		t.Fatalf("empty overview = %+v", o)
 	}
 }
+
+func TestImportKeepsOrderWithoutRescan(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := func(c byte) string { return strings.Repeat(string(c), 32) }
+	for _, name := range []string{"20261020-110000_" + sum('b') + ".png", "20261020-120000_" + sum('c') + ".png", "20261020-100000_" + sum('a') + ".png"} {
+		if err := s.Import(strings.NewReader("x"), name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got []string
+	for _, it := range s.All() {
+		got = append(got, it.Name[9:15])
+	}
+	if strings.Join(got, ",") != "120000,110000,100000" {
+		t.Fatalf("order after imports: %v", got)
+	}
+	// Watch compares the directory mtime with dirMod; our own writes must not look like a manual change.
+	info, _ := os.Stat(dir)
+	if !info.ModTime().Equal(s.dirMod) {
+		t.Fatal("import left the directory looking changed, so Watch would rescan")
+	}
+	if entries, _ := os.ReadDir(filepath.Join(dir, ".state", "tmp")); len(entries) != 0 {
+		t.Fatalf("leftover temp files: %v", entries)
+	}
+}
+
+func TestImportNoticesEarlierManualChange(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A file dropped in by hand after the scan, then the directory mtime moves on.
+	touch(t, dir, "manual.png", time.Now())
+	past := time.Now().Add(-time.Hour)
+	os.Chtimes(dir, past, past)
+	if err := s.Import(strings.NewReader("x"), "20261020-100000_"+strings.Repeat("a", 32)+".png"); err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(dir)
+	if info.ModTime().Equal(s.dirMod) {
+		t.Fatal("import hid a manual change from Watch")
+	}
+}
+
+func TestArchiveTimeZone(t *testing.T) {
+	name := "20261020-120000_" + strings.Repeat("a", 32) + ".png"
+
+	// A recorded zone wins over the process TZ.
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".state"), 0o755)
+	os.WriteFile(filepath.Join(dir, ".state", "archive.json"), []byte(`{"tz":"UTC"}`), 0o644)
+	touch(t, dir, name, time.Now())
+	t.Setenv("TZ", "Asia/Shanghai")
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.All()[0].Time; !got.Equal(time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)) {
+		t.Fatalf("time parsed in the wrong zone: %v", got)
+	}
+	if got := s.FileName(time.Date(2026, 10, 20, 4, 0, 0, 0, time.UTC), "x", ".png"); got != "20261020-040000_x.png" {
+		t.Fatalf("FileName ignores the archive zone: %s", got)
+	}
+
+	// The first run records the TZ in use.
+	dir = t.TempDir()
+	if _, err := New(dir); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(dir, ".state", "archive.json")); !strings.Contains(string(data), "Asia/Shanghai") {
+		t.Fatalf("archive zone not recorded: %s", data)
+	}
+}
+
+func TestZoneName(t *testing.T) {
+	cases := []struct {
+		tz        string
+		set       bool
+		localtime string
+		want      string
+	}{
+		{"Asia/Shanghai", true, "/usr/share/zoneinfo/America/Los_Angeles", "Asia/Shanghai"},
+		{":Europe/Berlin", true, "", "Europe/Berlin"},
+		{"", true, "/usr/share/zoneinfo/America/Los_Angeles", "UTC"}, // empty TZ means UTC to Go
+		{"Local", true, "", ""},
+		{"Not/AZone", true, "/usr/share/zoneinfo/Asia/Tokyo", ""},
+		{"", false, "/usr/share/zoneinfo/Asia/Tokyo", "Asia/Tokyo"},
+		{"", false, "../usr/share/zoneinfo/Europe/London", "Europe/London"},
+		{"", false, "/etc/some-file", ""},
+		{"", false, "", ""},
+	}
+	for _, c := range cases {
+		if got := zoneName(c.tz, c.set, c.localtime); got != c.want {
+			t.Errorf("zoneName(%q, %v, %q) = %q, want %q", c.tz, c.set, c.localtime, got, c.want)
+		}
+	}
+}
+
+func TestDamagedArchiveZoneStopsStartup(t *testing.T) {
+	for _, content := range []string{"{not json", `{"tz":""}`, `{"tz":"Not/AZone"}`, `{"tz":"Local"}`} {
+		dir := t.TempDir()
+		os.MkdirAll(filepath.Join(dir, ".state"), 0o755)
+		os.WriteFile(filepath.Join(dir, ".state", "archive.json"), []byte(content), 0o644)
+		if _, err := New(dir); err == nil {
+			t.Errorf("archive.json %q accepted", content)
+		}
+	}
+}
+
+func TestImportDuringRescanIsNotLost(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 50 {
+			s.Rescan()
+		}
+	}()
+	for i := range 50 {
+		name := fmt.Sprintf("20261020-1200%02d_%032d.png", i, i)
+		if err := s.Import(strings.NewReader("x"), name); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := s.Get(name); !ok {
+			t.Fatalf("%s vanished from the index right after import", name)
+		}
+	}
+	<-done
+	if s.Count() != 50 {
+		t.Fatalf("count %d after concurrent rescans", s.Count())
+	}
+}

@@ -2,6 +2,9 @@
 # 默认监听本机；公网访问建议通过带 HTTPS 的反向代理。
 listen: "127.0.0.1:8080"
 
+# 可信反向代理（IP 或 CIDR），只采用这些来源转发的 X-Real-IP；不设置时信任本机和内网地址。
+# trusted_proxies: ["127.0.0.1", "::1"]
+
 admin:
   username: admin
   # 安装脚本自动替换为随机密码，可在安装后的 config.yaml 中查看、修改。

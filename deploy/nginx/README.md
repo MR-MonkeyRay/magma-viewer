@@ -1,6 +1,6 @@
 # nginx 反向代理
 
-默认配置不依赖 Cloudflare：只需修改域名、证书路径和应用地址。保留登录限流、跨站 POST 防护、安全响应头与 ZIP 流式下载，不再按每个业务接口单独配置代理规则。
+默认配置不依赖 Cloudflare：只需修改域名、证书路径和应用地址。安全响应头由应用设置；nginx 负责 TLS、登录限流、跨站 POST 防护与 ZIP 流式转发，不再按每个业务接口单独配置代理规则。
 
 ## 1. 应用只监听本机
 
@@ -21,7 +21,7 @@ ports:
 
 容器内的应用仍监听 `:8080`，不要改成容器内的 `127.0.0.1:8080`。以上示例假设 nginx 运行在宿主机。
 
-应用仅对本机或内网来源采用 `X-Real-IP`；nginx 会覆盖客户端传入的代理头。不要将应用端口暴露给公网或内网中不可信的机器。
+应用默认仅对本机或内网来源采用 `X-Real-IP`，未设置时与以前一致。可在应用配置中用 `trusted_proxies`（IP 或 CIDR 列表）收紧来源，只采用这些来源的 `X-Real-IP`。例如 nginx 在宿主机、应用由 systemd 运行时设为 `trusted_proxies: ["127.0.0.1", "::1"]`；Docker Compose 且 nginx 在宿主机时，来源为 Docker 网桥网关，可设为 `trusted_proxies: ["172.16.0.0/12"]`。nginx 会覆盖客户端传入的代理头。不要将应用端口暴露给公网或内网中不可信的机器。
 
 ## 2. 安装配置
 
@@ -72,7 +72,14 @@ printf '%s\n' '0 4 * * 1 root sh /etc/nginx/magma-viewer/update-cloudflare-ips.s
 
 **缓存**：默认遵循应用响应头，不开启全站「缓存所有内容」。API 与 ZIP 下载为 `no-store`，页面和脚本为 `no-cache`。若自定义缓存规则，必须绕过 `/api/*`、`/download/all` 和 `/download/zip`；`/api/images` 随登录状态变化，不能缓存。
 
-**脚本与 WAF**：关闭 Rocket Loader；若启用 Web Analytics 自动注入，在 CSP 的 `script-src` 中加入 `https://static.cloudflareinsights.com`，在 `connect-src` 中加入 `https://cloudflareinsights.com`。管理接口由页面通过 fetch 调用，WAF 规则应选「阻止」而非交互式「质询」。大批量下载与立即抓取仍受 Cloudflare 套餐的回源超时限制，nginx 的 300 秒读超时不会延长 CDN 上限。
+**脚本与 WAF**：关闭 Rocket Loader。CSP 现由应用设置，默认不含 Cloudflare Web Analytics 来源。若启用 Web Analytics 自动注入，在 nginx 的 `server {}` 中隐藏应用的 CSP，并以应用默认值为基础追加来源后重新设置：
+
+```nginx
+proxy_hide_header Content-Security-Policy;
+add_header Content-Security-Policy "default-src 'self'; script-src 'self' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://cloudflareinsights.com; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'" always;
+```
+
+管理接口由页面通过 fetch 调用，WAF 规则应选「阻止」而非交互式「质询」。大批量下载与立即抓取仍受 Cloudflare 套餐的回源超时限制，nginx 的 300 秒读超时不会延长 CDN 上限。
 
 ## 4. 从旧配置迁移
 
@@ -81,7 +88,7 @@ printf '%s\n' '0 4 * * 1 root sh /etc/nginx/magma-viewer/update-cloudflare-ips.s
 - 删除旧配置的 `geo`、管理 IP 白名单、按接口限流区、默认拒绝站点与分路径代理；只保留登录限流和两个代理 location。
 - 不再使用 `cloudflare-geo.conf`；确认其他配置未引用后，可删除服务器上的旧文件。新更新脚本只维护 `cloudflare-realip.conf`。
 - 若原来依赖 nginx 阻止源站直连或限制管理 IP，切换前将这些策略配置到防火墙 / Cloudflare WAF；精简配置不会自动保留它们。
-- HSTS、额外响应头及压缩不再由本示例设置；若此前启用了 HSTS，浏览器会继续执行到期前的策略，必须持续提供有效 HTTPS。
+- HSTS 与压缩不再由本示例设置。安全响应头（`X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy`、`Content-Security-Policy`）已改由应用设置；若旧配置中自行添加了这些 `add_header`，应删除以免重复。若此前启用了 HSTS，浏览器会继续执行到期前的策略，必须持续提供有效 HTTPS。
 
 ## 5. 验证
 
@@ -91,6 +98,7 @@ printf '%s\n' '0 4 * * 1 root sh /etc/nginx/magma-viewer/update-cloudflare-ips.s
 curl -I http://viewer.example.com/                   # 301 跳转 HTTPS
 curl -i https://viewer.example.com/healthz           # 200，正文 ok
 curl -I https://viewer.example.com/api/images        # Cache-Control: no-store
+curl -sI https://viewer.example.com/ | grep -i content-security-policy  # 只输出一行，由应用设置
 curl -i -X POST -H 'Origin: https://evil.example' \
   https://viewer.example.com/api/logout             # 403
 ```

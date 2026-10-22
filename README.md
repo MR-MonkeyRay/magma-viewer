@@ -72,19 +72,20 @@ sudo bash install.sh --config ./config.yaml --no-start
 
 ### HTTPS 反向代理
 
-公网部署建议经 nginx 提供 HTTPS。将应用改为只监听 `127.0.0.1:8080`，由 nginx 负责 TLS、登录限流和跨站请求防护；配置与步骤见 [`deploy/nginx`](deploy/nginx/README.md)。
+公网部署建议经 nginx 提供 HTTPS。将应用改为只监听 `127.0.0.1:8080`，由 nginx 负责 TLS 与登录限流，跨站请求防护由应用和 nginx 共同承担；应用依据 nginx 转发的 `X-Real-IP` 识别客户端（可用 `trusted_proxies` 限定来源）；配置与步骤见 [`deploy/nginx`](deploy/nginx/README.md)。
 
 ## 配置
 
-配置文件路径通过 `-config` 参数或 `CONFIG` 环境变量指定，容器内默认 `/config/config.yaml`。`TZ`（镜像默认 `Asia/Shanghai`）决定定时执行时间和文件名中的时间。
+配置文件路径通过 `-config` 参数或 `CONFIG` 环境变量指定，容器内默认 `/config/config.yaml`。`TZ`（镜像默认 `Asia/Shanghai`）决定定时执行时间；文件名中的时间在首次运行时按当时的 `TZ` 固定（见「抓取与存储」）。配置中拼错或未知的键会在启动日志中给出 WARNING（不会阻止启动）。可用 `magma-viewer -config <路径> checkconfig` 只校验配置、不启动服务（Docker 中为 `docker compose run --rm magma-viewer checkconfig`）。
 
 完整样例：[`deploy/compose/config.example.yaml`](deploy/compose/config.example.yaml)（systemd 使用 [`deploy/systemd/config.example.yaml`](deploy/systemd/config.example.yaml)）。
 
 | 配置项 | 说明 | 默认值 |
 | --- | --- | --- |
 | `listen` | HTTP 监听地址 | `:8080` |
-| `admin.username` / `admin.password` | 管理员凭证（明文） | 必填 |
-| `admin.session_secret` | 会话签名密钥；留空则每次启动随机生成，重启后需重新登录 | 空 |
+| `trusted_proxies` | 可信反向代理列表（IP 或 CIDR）；仅采用这些来源转发的 `X-Real-IP` 作为客户端地址（用于登录限流），设为 `[]` 则不信任任何代理 | 本机与内网 |
+| `admin.username` / `admin.password` | 管理员凭证（明文）；保留示例值 `change-me` 会拒绝启动 | 必填 |
+| `admin.session_secret` | 会话签名密钥；留空则每次启动随机生成，重启后需重新登录；修改 `admin.password` 后已有登录全部失效 | 空 |
 | `admin.session_ttl` | 登录有效期 | `168h` |
 | `magma.url` | 画板渲染接口，返回图片或跳转到图片 | 必填 |
 | `magma.cookie` | 原样放入 `Cookie` 请求头 | 空 |
@@ -111,13 +112,14 @@ sudo bash install.sh --config ./config.yaml --no-start
 
 1. 带 Cookie 请求 `magma.url`，流式写入 `storage.temp_dir` 并计算 MD5，单张上限 200 MiB。
 2. 按文件头识别 JPEG / PNG / WebP / GIF，非图片（如失效 Cookie 返回的登录页）记为失败。
-3. 仅与上一张已保存图片比较 MD5，不同才保存为 `YYYYMMDD-HHMMSS_<md5>.<ext>`。
+3. 仅与上一张已保存图片比较 MD5，不同才保存为 `YYYYMMDD-HHMMSS_<md5>.<ext>`。先写入 `.state/tmp` 并落盘（fsync）后再改名，断电不会留下截断的图片。
 
 重启后从最新图片恢复 MD5。去重基准是上一张，因此 A → B → A 会保存三次。
 
 - 暂停状态与最近获取时间保存在 `storage.dir/.state/fetcher.json`，重启后保持；公告在 `.state/notices.json`。
-- 手动放入存储目录第一层的图片会被识别（每分钟检查目录变化）；时间优先取文件名前缀，否则取文件修改时间。
+- 手动放入存储目录第一层的图片会被识别（目录变化每分钟检查一次，另外每 30 分钟强制完整对账一次）；时间优先取文件名前缀，否则取文件修改时间。
 - 缩略图（长边 480px）与预览图（长边 1600px）缓存在 `.thumbs/`；均不放大，长边不超过 1600 的图片预览直接返回原图，GIF 预览使用原图。缺失缓存会在启动后后台补齐，也可按需生成。
+- 首次运行时把当前 `TZ` 记录到 `storage.dir/.state/archive.json`，之后文件名中的时间始终按该时区写入和解析；迁移主机或修改 `TZ` 不会让历史时间整体偏移，启动日志会提示两者不一致。未设置 `TZ` 时按 `/etc/localtime` 指向的时区记录；无法确定时区时只在日志中提示、不记录；`archive.json` 损坏或其中时区无法加载时拒绝启动（修复或删除该文件后会按当前时区重新记录）。
 
 ## 权限
 
@@ -194,7 +196,9 @@ bash build/package.sh
 ## 安全
 
 - `config.yaml` 含真实 Cookie 和管理员密码，不要提交；仓库只保留 `config.example.yaml`，`.gitignore` 已排除本地配置、`.env` 和运行数据。
-- API 与 ZIP 响应带 `Cache-Control: no-store`；公网部署按 [`deploy/nginx`](deploy/nginx/README.md) 配置 HTTPS、限流与跨站防护。
+- API 与 ZIP 响应带 `Cache-Control: no-store`；公网部署按 [`deploy/nginx`](deploy/nginx/README.md) 配置 HTTPS 与登录限流（应用自身已设置安全响应头和跨站防护）。
+- 应用自身设置 `X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy` 与 CSP 响应头，并拒绝浏览器发起的跨站 POST / PUT / DELETE 请求，以及跨站触发的“打包下载全部”；在纯 HTTP 部署下以 Origin / Referer 判断来源，无法证明同源时拒绝。
+- 停止服务时最多等待 8 秒，让进行中的下载和抓取完成（低于 Docker 默认 10 秒与 systemd 单元 15 秒的停止期限）。
 - Release 的 `SHA256SUMS` 用于校验下载完整性，不替代对发布来源的信任。
 
 ## 许可证

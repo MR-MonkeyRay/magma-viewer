@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"magma-viewer/internal/config"
+	"magma-viewer/internal/fsutil"
 	"magma-viewer/internal/store"
 )
 
@@ -127,19 +128,7 @@ func (f *Fetcher) writeState(s savedState) error {
 	if err != nil {
 		return err
 	}
-	path := f.statePath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	part := path + ".part"
-	if err := os.WriteFile(part, data, 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(part, path); err != nil {
-		os.Remove(part)
-		return err
-	}
-	return nil
+	return fsutil.WriteFile(f.statePath(), data, 0o644)
 }
 
 // SetPaused switches scheduled runs off or on and persists the choice.
@@ -271,19 +260,19 @@ func (f *Fetcher) fetchOnce(ctx context.Context, now time.Time) (string, error) 
 		return "", nil
 	}
 
-	name := store.FileName(now, sum, ext)
+	name := f.store.FileName(now, sum, ext)
 	// The same content may come back within one second (A -> B -> A).
 	for _, exists := f.store.Get(name); exists; _, exists = f.store.Get(name) {
 		now = now.Add(time.Second)
-		name = store.FileName(now, sum, ext)
+		name = f.store.FileName(now, sum, ext)
 	}
-	if err := copyInto(tmp, filepath.Join(f.store.Dir(), name)); err != nil {
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	if err := f.store.Import(tmp, name); err != nil {
 		return "", fmt.Errorf("save: %w", err)
 	}
 	f.lastMD5 = sum
-	if err := f.store.Add(name); err != nil {
-		return "", fmt.Errorf("index: %w", err)
-	}
 	// Render thumbnails now so the first visitor does not wait for a 4K decode.
 	go func() {
 		if err := f.store.Ensure(name); err != nil {
@@ -310,26 +299,4 @@ func sniffExt(f *os.File) (string, error) {
 		return "", fmt.Errorf("response is %s, not an image (cookie expired or wrong url?)", ct)
 	}
 	return ext, nil
-}
-
-// copyInto copies src to dst via a temp file, as /tmp may be on another device.
-func copyInto(src *os.File, dst string) error {
-	if _, err := src.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-	part := dst + ".part"
-	out, err := os.OpenFile(part, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, src); err != nil {
-		out.Close()
-		os.Remove(part)
-		return err
-	}
-	if err := out.Close(); err != nil {
-		os.Remove(part)
-		return err
-	}
-	return os.Rename(part, dst)
 }
