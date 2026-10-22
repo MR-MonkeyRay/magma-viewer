@@ -231,6 +231,35 @@ svg.mascot { overflow: visible; }
 .bar-actions { display: flex; flex: none; align-items: center; gap: 4px; }
 .controls { display: flex; align-items: center; gap: 4px; }
 .tools { display: flex; align-items: center; gap: 2px; }
+/* Jump to a day: a month of days shaded by how many pictures each holds. */
+.cal-wrap { position: relative; display: inline-flex; }
+.cal {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 30; width: 272px; padding: 10px 12px 12px;
+  border-radius: 18px; background: var(--raised); color: var(--ink); border: 2px solid var(--outline); box-shadow: var(--pop);
+  transform-origin: top right; animation: menu-in .18s var(--ease);
+}
+.cal[hidden] { display: none; }
+.cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.cal-head strong { font: 600 var(--fs-sm) var(--display); }
+.cal-head .icon-btn:disabled { opacity: .3; pointer-events: none; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.cal-wd { text-align: center; color: var(--faint); font-size: var(--fs-xs); line-height: 24px; }
+.cal-day {
+  height: 32px; padding: 0; border: 0; border-radius: 9px; cursor: pointer; font: 600 var(--fs-xs) var(--font);
+  font-variant-numeric: tabular-nums; color: var(--ink); background: var(--hover); transition: transform .12s;
+}
+.cal-day:hover:not(:disabled) { transform: scale(1.08); }
+.cal-day:disabled { cursor: default; color: var(--faint); background: none; }
+.cal-day.today { box-shadow: inset 0 0 0 2px var(--outline); }
+.cal-day.l1, .cal-legend .l1 { background: color-mix(in srgb, var(--pigment) 25%, transparent); }
+.cal-day.l2, .cal-legend .l2 { background: color-mix(in srgb, var(--pigment) 50%, transparent); }
+.cal-day.l3, .cal-legend .l3 { background: color-mix(in srgb, var(--pigment) 75%, transparent); color: var(--pigment-ink); }
+.cal-day.l4, .cal-legend .l4 { background: var(--pigment); color: var(--pigment-ink); }
+.cal-legend { display: flex; align-items: center; justify-content: flex-end; gap: 4px; margin: 8px 0 0; color: var(--faint); font-size: var(--fs-xs); }
+.cal-legend i { width: 12px; height: 12px; border-radius: 3px; }
+@media (max-width: 640px) {
+  .cal { position: fixed; top: auto; left: 12px; right: 12px; bottom: max(12px, env(safe-area-inset-bottom)); width: auto; max-width: 360px; margin: 0 auto; }
+}
 .sep { width: 2px; height: 20px; margin: 0 6px; border-radius: 1px; background: var(--line); }
 
 .seg {
@@ -329,6 +358,16 @@ svg.mascot { overflow: visible; }
 #theme:hover svg { transform: rotate(-30deg); }
 
 main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16px var(--pad) 48px; }
+/* The newest unread notice, until it is read or dismissed. */
+.notice-banner {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 14px; padding: 6px 6px 6px 14px;
+  border: 2px solid var(--outline); border-radius: var(--r-md); background: var(--pigment-soft); box-shadow: var(--pop-sm);
+  animation: fade-up .3s var(--ease);
+}
+.notice-banner[hidden] { display: none; }
+.notice-banner > svg { width: 18px; height: 18px; flex: none; color: var(--pigment); }
+.notice-banner-title { flex: 1; min-width: 0; margin: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.notice-banner .btn { height: 32px; padding: 0 12px; }
 
 /* ---------- latest canvas ---------- */
 /* The picture takes the wide column; a caption card beside it says when it was saved. */
@@ -428,18 +467,6 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 }
 .reel-speed select:hover { background-color: var(--pigment-soft); color: var(--ink); }
 .reel-speed option { background: var(--surface); color: var(--ink); }
-/* With a mouse the reel floats over the bottom of the picture like a video player's bar and shows on hover or focus. */
-@media (hover: hover) {
-  .now-stage { position: relative; padding-bottom: 10px; }
-  .reel {
-    position: absolute; left: 22px; right: 22px; bottom: 22px; z-index: 3; padding: 4px 12px 6px;
-    border: 2px solid var(--outline); border-radius: var(--r-md); background: var(--glass); box-shadow: var(--pop-sm);
-    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
-    opacity: 0; transform: translateY(8px); pointer-events: none; transition: opacity .2s, transform .25s var(--ease-out);
-  }
-  /* Keyboard focus keeps it up; a mouse click must not, or the bar would stay after the pointer leaves. */
-  .now-stage:hover .reel, .reel:has(:focus-visible), .reel.awake, .reel.dragging { opacity: 1; transform: none; pointer-events: auto; }
-}
 
 .now-card { display: flex; flex-direction: column; gap: 16px; padding: 20px; min-width: 0; }
 .now-state { display: flex; align-items: center; gap: 10px; margin: 0; font-size: var(--fs-xs); color: var(--graphite); }
@@ -479,6 +506,19 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 .now-task.paused .task-state { color: var(--warn); }
 .now-task.paused .task-dot { background: var(--warn); }
 .now-task.paused .task-dot::after { animation: none; opacity: 0; }
+/* Repeated fetch failures: the picture may be out of date. */
+.now-warn {
+  display: grid; gap: 4px; padding: 10px 12px; border-radius: var(--r-sm); font-size: var(--fs-xs); color: var(--ink);
+  border: 1.5px solid color-mix(in srgb, var(--warn) 55%, transparent); background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.now-warn p { margin: 0; }
+.now-warn-title { display: flex; align-items: center; gap: 6px; color: var(--warn); font-weight: 700; }
+.now-warn-title svg { width: 16px; height: 16px; flex: none; }
+.now-warn .linkish { justify-self: start; }
+.now-warn[hidden] { display: none; }
+.now-card .now-more { display: none; align-items: center; gap: 4px; font-size: var(--fs-xs); }
+.now-more svg { width: 14px; height: 14px; transition: transform .2s; }
+.now-more[aria-expanded="true"] svg { transform: rotate(180deg); }
 @keyframes ping { 0% { transform: scale(1); opacity: .6; } 80%, 100% { transform: scale(3); opacity: 0; } }
 
 /* ---------- history ---------- */
@@ -575,6 +615,7 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 .tile-open {
   position: relative; display: block; width: 100%; padding: 0; border: 0; overflow: hidden;
   background: var(--placeholder); cursor: zoom-in; border-radius: inherit;
+  -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; /* a long press selects instead */
 }
 .tile-open:not(.ready) {
   background: linear-gradient(100deg, var(--placeholder) 30%, var(--shimmer) 50%, var(--placeholder) 70%) 0 0 / 300% 100%;
@@ -1008,6 +1049,27 @@ a.linkish { text-decoration: none; }
 .stats .ok { color: var(--ok); }
 .stats .bad { color: var(--bad); }
 .stats .loading-row { color: var(--graphite); }
+.stats .meter { display: block; height: 6px; margin: 3px 0 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.stats .meter > span { display: block; height: 100%; background: var(--ok); }
+.stats .meter.bad > span { background: var(--bad); }
+/* Recorded fetch runs, newest first; a long history scrolls inside the dialog. */
+.runs h3 { margin: 0 0 6px; font: 600 var(--fs-sm) var(--display); color: var(--pigment); }
+.runs[hidden] { display: none; }
+.runs-list { max-height: 220px; overflow-y: auto; margin: 0; padding: 0; list-style: none; font-size: var(--fs-xs); }
+.run { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 2px 10px; align-items: baseline; padding: 6px 0; border-bottom: 1px dashed var(--line); }
+.run:last-child { border-bottom: 0; }
+.run time { color: var(--graphite); font-variant-numeric: tabular-nums; }
+.run-what { font-weight: 600; }
+.run.saved .run-what { color: var(--ok); }
+.run.error .run-what { color: var(--bad); }
+.run-what em { font-style: normal; font-weight: 500; color: var(--faint); }
+.run-meta { color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (max-width: 480px) {
+  .run { grid-template-columns: auto minmax(0, 1fr); }
+  .run-meta { grid-column: 2; }
+}
+.cookie-state, .cookie-hint { margin: 0; color: var(--graphite); font-size: var(--fs-xs); }
+#cookie-dialog textarea { min-height: 0; font-family: var(--mono); word-break: break-all; }
 
 /* ---------- notices ---------- */
 .notice-scroll { max-height: min(62vh, 560px); overflow-y: auto; margin: 0 -24px; padding: 0 24px; overscroll-behavior: contain; }
@@ -1092,7 +1154,7 @@ a.linkish { text-decoration: none; }
 /* Below 1280px the caption card moves under the picture and lays its parts out in a row. */
 @media (max-width: 1279px) {
   .now { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-  .now-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "state facts actions" "clock facts actions" "task task task"; align-items: center; gap: 4px 24px; padding: 14px 18px; }
+  .now-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "state facts actions" "clock facts actions" "task task task" "warn warn warn"; align-items: center; gap: 4px 24px; padding: 14px 18px; }
   .now-state { grid-area: state; }
   .now-date { display: none; }
   .now-clock { grid-area: clock; }
@@ -1101,9 +1163,10 @@ a.linkish { text-decoration: none; }
   .now-back { position: absolute; }
   .now-task { grid-area: task; display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; padding-top: 10px; border-top: 2px dashed var(--line); }
   .now-task dd { text-align: left; margin-right: 12px; }
+  .now-warn { grid-area: warn; margin-top: 8px; }
 }
 @media (max-width: 900px) {
-  .now-card { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "state actions" "clock actions" "facts facts" "task task"; }
+  .now-card { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "state actions" "clock actions" "facts facts" "task task" "warn warn"; }
   .now-facts { grid-template-columns: repeat(2, auto); padding: 10px 0 0; margin-top: 6px; border-left: 0; border-top: 2px dashed var(--line); gap: 8px 24px; }
   .now-actions { justify-self: end; }
 }
@@ -1139,7 +1202,10 @@ a.linkish { text-decoration: none; }
   .now { margin-bottom: 20px; }
   .now-stage { padding: 6px 6px 2px; }
   .now-frame { min-height: 140px; }
-  .now-card { padding: 12px 14px; column-gap: 12px; grid-template-areas: "state state" "clock actions" "facts facts" "task task"; }
+  .now-card { padding: 12px 14px; column-gap: 12px; grid-template-areas: "state more" "clock actions" "facts facts" "task task" "warn warn"; }
+  /* Phones show the time and the actions; the facts and the fetch state open on request. */
+  .now-card .now-more { display: inline-flex; grid-area: more; justify-self: end; }
+  .now-card:not(.expanded) .now-facts, .now-card:not(.expanded) .now-task { display: none; }
   .now-clock { font-size: 28px; }
   .now-actions .btn { height: 36px; padding: 0 10px; }
   .now-actions .btn svg { display: none; }

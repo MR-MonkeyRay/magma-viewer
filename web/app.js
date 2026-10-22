@@ -43,7 +43,7 @@
     now: $('#now'), nowImg: $('#now-img'), nowTime: $('#now-time'), nowAgo: $('#now-ago'), nowDate: $('#now-date'), nowFacts: $('#now-facts'), nowDl: $('#now-dl'),
     nowBadge: $('#now-badge'), nowView: $('#now-view'), nowPrev: $('#now-prev'), nowNext: $('#now-next'), nowBack: $('#now-back'), reel: $('#reel'), reelTrack: $('#reel-track'),
     reelHeat: $('#reel-heat'), reelFill: $('#reel-fill'), reelHead: $('#reel-head'), reelTip: $('#reel-tip'), reelPlay: $('#reel-play'),
-    reelLive: $('#reel-live'), reelPos: $('#reel-pos'), reelSpeed: $('#reel-speed'), reelQuality: $('#reel-quality'), reelLoop: $('#reel-loop'),
+    reelLive: $('#reel-live'), reelPos: $('#reel-pos'), reelSpeed: $('#reel-speed'), reelQuality: $('#reel-quality'), reelLoop: $('#reel-loop'), reelTimed: $('#reel-timed'),
     seg: $('.seg'), sort: $('#sort'), size: $('#size'), group: $('#group'), selectMode: $('#select-mode'),
     theme: $('#theme'), lang: $('#lang'), account: $('#account'), acctMenu: $('#acct-menu'), noticeBtn: $('#notice-btn'), foot: $('.foot'), version: $('#version'),
     selbar: $('#selbar'), selCount: $('#sel-count'), fresh: $('#fresh'),
@@ -55,11 +55,14 @@
     lbpSize: $('#lbp-size'), lbpSizeMenu: $('#lbp-size-menu'), lbpGrid: $('#lbp-grid'), lbpName: $('#lbp-name'), lbpZone: $('#lbp-zone'),
     loginDialog: $('#login-dialog'), loginForm: $('#login-form'), loginError: $('#login-error'), loginSubmit: $('#login-submit'),
     statusDialog: $('#status-dialog'), adminStats: $('#admin-stats'), fetchNow: $('#fetch-now'),
+    adminRuns: $('#admin-runs'), runsList: $('#runs-list'), notifyTest: $('#notify-test'),
+    cookieDialog: $('#cookie-dialog'), cookieForm: $('#cookie-form'), cookieState: $('#cookie-state'), cookieError: $('#cookie-error'), cookieSave: $('#cookie-save'),
     scheduleDialog: $('#schedule-dialog'), scheduleStats: $('#schedule-stats'), toggleSchedule: $('#toggle-schedule'), scheduleHint: $('#schedule-hint'),
     noticeDialog: $('#notice-dialog'), noticeList: $('#notice-list'), noticeActions: $('#notice-actions'),
+    noticeBanner: $('#notice-banner'), noticeBannerTitle: $('#notice-banner-title'),
     naDialog: $('#notice-admin-dialog'), naList: $('#na-list'), naForm: $('#na-form'), naState: $('#na-state'), naCount: $('#na-count'),
     naError: $('#na-error'), naDelete: $('#na-delete'), naDraft: $('#na-draft'), naPublish: $('#na-publish'),
-    keysDialog: $('#keys-dialog'), task: $('#task'),
+    keysDialog: $('#keys-dialog'), task: $('#task'), nowWarn: $('#now-warn'),
   };
 
   // ---------- formatting ----------
@@ -89,7 +92,8 @@
   function fmtSize(b) {
     if (b < 1024) return fmtNum(b) + ' B';
     if (b < 1024 * 1024) return fmtNum(b / 1024) + ' KB';
-    return fmtNum(b / 1024 / 1024, b < 10 * 1024 * 1024 ? 2 : 1) + ' MB';
+    if (b < 1024 ** 3) return fmtNum(b / 1024 / 1024, b < 10 * 1024 * 1024 ? 2 : 1) + ' MB';
+    return fmtNum(b / 1024 ** 3, 1) + ' GB';
   }
   function fmtAgo(d, saved = true) {
     const s = Math.max(0, (Date.now() - d.getTime()) / 1000);
@@ -324,14 +328,33 @@
   }
 
   // ---------- data ----------
+  // The address names the page (#p=), a day (#date=) or a picture (#img=), so any view can be shared or reloaded.
+  // A day or picture is returned for the caller to look up; only a page is applied here.
   function readHash() {
-    const m = /p=(\d+)/.exec(location.hash);
-    state.page = m ? Math.max(1, Number(m[1])) : 1;
+    const q = new URLSearchParams(location.hash.slice(1));
+    const img = q.get('img') || '';
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(q.get('date') || '') ? q.get('date') : '';
+    if (!img && !date) state.page = Math.max(1, Math.floor(Number(q.get('p'))) || 1);
+    return { img, date };
   }
-  function writeHash() {
-    const h = state.page > 1 ? `#p=${state.page}` : '';
-    if (location.hash !== h) history.replaceState(null, '', h || location.pathname);
+  const imgHash = (name) => `#img=${encodeURIComponent(name)}`;
+  // Shows what the address names; on start-up and when retrying a failed load.
+  function followHash() {
+    const link = readHash();
+    if (link.img) openLinked(link.img);
+    else if (link.date) goDate(link.date, false);
+    else load();
   }
+  // Turning pages adds history entries (push); corrections replace the current one. While the lightbox is open its
+  // own entry carries #img=, and closing it puts the page back.
+  function writeHash(push = false) {
+    if (lbHistory) return;
+    const h = state.date && state.date.page === state.page ? `#date=${state.date.key}` : state.page > 1 ? `#p=${state.page}` : '';
+    if (location.hash !== h) history[push ? 'pushState' : 'replaceState'](null, '', h || location.pathname + location.search);
+  }
+  const viewerZone = () => {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { return ''; } // server time then
+  };
 
   const onFirstPage = () => state.sort === 'desc' && state.page === 1;
 
@@ -340,7 +363,8 @@
   // Resolves true once the page is shown, false when the request failed or was superseded.
   // around names a picture whose page to show instead of state.page; guard, when given, must still hold when the
   // answer arrives or nothing is shown.
-  async function load({ scroll = false, silent = false, around = '', guard = null } = {}) {
+  // date (YYYY-MM-DD in the viewer's zone) does the same for the first picture of a day.
+  async function load({ scroll = false, silent = false, around = '', date = '', guard = null } = {}) {
     const seq = ++loadSeq;
     if (!silent) {
       if (!state.items.length) renderSkeleton();
@@ -351,9 +375,13 @@
     const viewing = state.lbIndex >= 0 && state.items[state.lbIndex] ? state.items[state.lbIndex].name : null;
     const anchor = state.lastIndex !== null && state.items[state.lastIndex] ? state.items[state.lastIndex].name : null;
     try {
-      const d = await api(`/api/images?page=${state.page}&size=${state.size}&sort=${state.sort}${around ? `&around=${enc(around)}` : ''}`);
+      const at = around ? `&around=${enc(around)}` : date ? `&date=${date}&tz=${enc(viewerZone())}` : '';
+      const d = await api(`/api/images?page=${state.page}&size=${state.size}&sort=${state.sort}${at}`);
       if (seq !== loadSeq || (guard && !guard())) return false;
       Object.assign(state, { items: d.items, total: d.total, page: d.page, size: d.size, pages: d.pages, admin: d.admin, guestLimit: d.guest_limit, task: d.task });
+      if (date) state.date = { key: date, page: d.page, focus: d.focus || '' };
+      // A refresh that pushed the day off this page ends the day's address; the page number takes over.
+      else if (state.date && !state.items.some((it) => fmtDate(new Date(it.time)) === state.date.key)) state.date = null;
       checkNotices(d.notice);
       if (d.version) { el.version.textContent = 'v' + d.version; show(el.version); }
       // New pictures shift indexes; keep the shift-click anchor on the same picture.
@@ -383,7 +411,7 @@
       if (lost && !stepping) { if (state.items.length) openLightbox(state.lbIndex); else closeLightbox(); }
       return true;
     } catch (e) {
-      if (seq === loadSeq && !silent) renderError(e);
+      if (seq === loadSeq && !silent && (!guard || guard())) renderError(e);
       return false;
     } finally {
       if (!silent) busy(false);
@@ -394,10 +422,62 @@
 
   let slideDir = 0; // pages slide in from the side they were reached from
   function go(page) {
+    leaveRoute();
     slideDir = Math.sign(page - state.page);
     state.page = page;
+    state.date = null;
     state.lastIndex = null;
+    writeHash(true);
     return load({ scroll: true });
+  }
+
+  // Every change of route bumps this, so a day or picture still being looked up is dropped once the viewer moved on.
+  let routeSeq = 0;
+  let lbRestore = 0; // the routeSeq of the picture link being restored into the current entry, 0 for none
+  function leaveRoute() {
+    ++routeSeq;
+    if (state.lbIndex < 0) { lbHistory = false; lbRestore = 0; } // a link still being restored no longer owns the entry
+  }
+
+  // Shows the page holding a day, scrolled to its first picture.
+  async function goDate(key, push = true) {
+    leaveRoute();
+    const seq = routeSeq;
+    if (push) history.pushState(null, '', `#date=${key}`);
+    state.lastIndex = null;
+    if (!(await load({ date: key, guard: () => seq === routeSeq }))) return false;
+    const focus = state.date && state.date.focus;
+    const node = el.gallery.querySelector(`.group-title[data-date="${key}"]`)
+      || (focus && el.gallery.querySelector(`.tile[data-i="${state.items.findIndex((it) => it.name === focus)}"]`));
+    if (node) {
+      const top = node.getBoundingClientRect().top + scrollY - el.bar.offsetHeight - el.historyBar.offsetHeight - 8;
+      window.scrollTo({ top: Math.max(0, top), behavior: reduced() ? 'auto' : 'smooth' });
+    }
+    // The server lands on the nearest picture when the day has none.
+    const hit = state.items.find((it) => it.name === focus);
+    if (hit && fmtDate(new Date(hit.time)) !== key) toast(t('date.none'));
+    return true;
+  }
+
+  // Opens the picture a link names; its page is found by around=, as when stepping across pages. restore means the
+  // current history entry already names the picture (Forward into it): it is kept rather than replaced and pushed again.
+  async function openLinked(name, restore = false) {
+    const seq = ++routeSeq;
+    state.date = null;
+    if (restore) { lbHistory = true; lbBase = null; lbRestore = seq; } // keeps load() from rewriting the entry
+    // Gives the entry back unless a newer restore has taken it over.
+    const release = () => { if (lbRestore === seq) { lbRestore = 0; if (state.lbIndex < 0) lbHistory = false; } };
+    const ok = await load({ around: name, guard: () => seq === routeSeq });
+    if (seq !== routeSeq) { release(); return; }
+    const i = ok ? state.items.findIndex((it) => it.name === name) : -1;
+    if (i < 0) {
+      release();
+      // A picture that is gone hands the address back to the page; a failed request keeps it for Retry.
+      if (ok) { writeHash(); toast(t('err.image_not_found'), 'error'); }
+      return;
+    }
+    if (lbRestore === seq) lbRestore = 0;
+    openLightbox(i, 0, el.gallery.querySelector(`.tile[data-i="${i}"] .tile-open img`));
   }
 
   // The newest pictures: page one, newest first.
@@ -479,13 +559,13 @@
     // Playback shows frames of the chosen quality, which reelTick has already loaded and decoded. A quality change or a
     // thumbnail fallback swaps the frame of the same picture too.
     if (reel.playing && el.now.dataset.name) {
-      const frame = reelSrc(shown);
-      if (el.now.dataset.name === shown.name && el.nowImg.getAttribute('src') === frame) return;
       nowVer++; // drops a preview still loading from before playback
+      const frame = reelSrc(shown);
+      if (frame.startsWith('/thumb/')) el.now.dataset.thumb = shown.name; else delete el.now.dataset.thumb;
+      if (el.now.dataset.name === shown.name && el.nowImg.getAttribute('src') === frame) return;
       el.now.dataset.name = shown.name;
       if (shown.w) { el.nowImg.width = shown.w; el.nowImg.height = shown.h; }
       el.nowImg.src = frame;
-      if (frame.startsWith('/thumb/')) el.now.dataset.thumb = shown.name; else delete el.now.dataset.thumb;
       return;
     }
     // A thumbnail shown by scrubbing or smooth playback is replaced by the preview once the picture holds still.
@@ -529,6 +609,7 @@
     speed: REEL_SPEEDS.includes(+store.get('reelSpeed')) ? +store.get('reelSpeed') : 1,
     quality: store.get('reelQuality', 'preview') in REEL_QUALITY ? store.get('reelQuality', 'preview') : 'preview',
     loop: store.get('reelLoop') === '1',
+    timed: store.get('reelTimed') === '1', // space pictures by their real gaps instead of evenly
     run: 0, // bumped whenever playback stops or restarts, so a frame still loading cannot advance an old run
     frames: new Map(), // src -> promise settled once that frame is decoded or failed
     failed: new Set(), // frame URLs that did not load; playback shows that picture's thumbnail instead
@@ -537,8 +618,7 @@
   async function loadOverview() {
     const seq = ++overviewSeq;
     try {
-      let tz = '';
-      try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { /* server time then */ }
+      const tz = viewerZone();
       const o = await api(`/api/overview${tz ? `?tz=${enc(tz)}` : ''}`);
       if (seq !== overviewSeq) return; // a later request is on its way; an older answer must not overwrite it
       // A rolling 24 hours (the reel's window) rather than since midnight, so the count does not drop to zero
@@ -546,7 +626,8 @@
       overview.recent = o.heat ? o.heat.reduce((a, b) => a + b, 0) : o.recent.length;
       overview.first = validTime(o.first) ? o.first : '';
       overview.days = new Map(o.days.map((x) => [x.date, x]));
-      // The window slides as pictures arrive, so a held or playing position is found again by name.
+      // The window slides as pictures arrive, so a held or playing position is found again by name; once it has slid
+      // out, the oldest picture left is the nearest.
       const held = reel.at >= 0 ? reel.items[reel.at].name : '';
       reel.items = o.recent.slice().reverse();
       reel.times = reel.items.map((it) => new Date(it.time).getTime());
@@ -554,7 +635,7 @@
       reel.heat = o.heat || [];
       if (held) {
         reel.at = reel.items.findIndex((it) => it.name === held);
-        if (reel.at < 0 && reel.playing) reel.at = 0;
+        if (reel.at < 0) reel.at = 0;
       }
       reel.to = o.recent.length ? new Date(o.last).getTime() : 0;
       reel.from = reel.to - 864e5;
@@ -580,6 +661,7 @@
     el.reelSpeed.value = String(reel.speed);
     el.reelQuality.value = reel.quality;
     el.reelLoop.setAttribute('aria-pressed', String(reel.loop));
+    el.reelTimed.setAttribute('aria-pressed', String(reel.timed));
   }
   function renderReelHead() {
     const i = reel.at >= 0 ? reel.at : reel.items.length - 1;
@@ -684,8 +766,10 @@
     if (reel.at >= last && !reel.loop) { reelPause(); return; }
     const run = reel.run;
     const live = () => run === reel.run && reel.playing;
-    // Linger on the newest picture before starting over.
-    const wait = reel.at < last ? REEL_FRAME / reel.speed : 1200;
+    // Linger on the newest picture before starting over. Timed playback spaces pictures by their real gaps, scaled
+    // so the whole window takes as long as it does at one frame time per picture.
+    const gap = () => Math.max(30, ((reel.times[reel.at + 1] - reel.times[reel.at]) / (reel.to - reel.from)) * reel.items.length * REEL_FRAME);
+    const wait = reel.at < last ? (reel.timed ? gap() : REEL_FRAME) / reel.speed : 1200;
     // Only a step clearly longer than its frame time shows the ring, so it does not flicker on fast connections.
     clearTimeout(reelBufferTimer);
     reelBufferTimer = setTimeout(() => { if (live()) setReelBuffering(true); }, wait + 200);
@@ -697,23 +781,29 @@
       renderNow(); // shows the thumbnail if the frame fell back to it
       const due = new Promise((resolve) => { reel.timer = setTimeout(resolve, wait); });
       const n = reel.items.length;
-      reelAdvance(reel.items[reel.at < n - 1 ? reel.at + 1 : 0], due, live);
+      reelAdvance(cur, reel.items[reel.at < n - 1 ? reel.at + 1 : 0], due, live);
     });
   }
 
-  // Shows target once it has been decoded and due has passed. An overview refresh can drop target from the window
-  // meanwhile; the picture now after the current one is then waited for in its place.
-  function reelAdvance(target, due, live) {
-    if (!target) return;
+  // Shows target once it has been decoded and due has passed. When the wait is over but a refresh changed the
+  // pictures around cur, or looping was turned off on the newest picture, playback carries on from where reel.at
+  // stands instead.
+  function reelAdvance(cur, target, due, live) {
     Promise.all([due, reelFrame(target)]).then(() => {
       if (!live()) return;
-      const j = reel.items.findIndex((it) => it.name === target.name);
-      if (j >= 0) { setReelBuffering(false); reelTick(j); return; }
       const n = reel.items.length;
-      reelAdvance(reel.items[reel.at < n - 1 ? reel.at + 1 : 0], due, live);
+      const next = reel.at < n - 1 ? reel.at + 1 : 0;
+      if (reel.items[reel.at]?.name !== cur.name || reel.items[next]?.name !== target.name || (next === 0 && !reel.loop)) {
+        reelTick(reel.at);
+        return;
+      }
+      setReelBuffering(false);
+      reelTick(next);
     });
   }
   function reelStart(from) {
+    if (reel.items.length < 2) return; // a refresh during a drag can leave nothing to replay
+
     clearTimeout(reel.timer);
     reel.run++;
     setReelBuffering(false);
@@ -738,13 +828,6 @@
     reelStop();
     reelSeek(reel.items.length - 1);
   }
-  // Keyboard changes happen while the bar may be hidden; show it for a moment so the change is visible.
-  let reelWakeTimer = 0;
-  function reelWake() {
-    el.reel.classList.add('awake');
-    clearTimeout(reelWakeTimer);
-    reelWakeTimer = setTimeout(() => el.reel.classList.remove('awake'), 1500);
-  }
   function setReelSpeed(v) {
     reel.speed = v;
     el.reelSpeed.value = String(v);
@@ -762,7 +845,6 @@
   function stepReelSpeed(d) {
     const i = REEL_SPEEDS.indexOf(reel.speed) + d;
     if (i >= 0 && i < REEL_SPEEDS.length) setReelSpeed(REEL_SPEEDS[i]);
-    reelWake();
   }
   // The tip previews any point of the strip without moving the big picture.
   function reelTip(i) {
@@ -829,6 +911,11 @@
     el.reelLoop.setAttribute('aria-pressed', String(reel.loop));
     store.set('reelLoop', reel.loop ? '1' : '0');
   });
+  el.reelTimed.addEventListener('click', () => {
+    reel.timed = !reel.timed;
+    el.reelTimed.setAttribute('aria-pressed', String(reel.timed));
+    store.set('reelTimed', reel.timed ? '1' : '0');
+  });
   // Side buttons step through the same 24 hours as the reel; the newest picture is the last step.
   function nowStep(d) {
     if (reel.items.length < 2) return;
@@ -848,8 +935,25 @@
   el.nowView.addEventListener('pointerleave', () => el.nowView.classList.remove('near-prev', 'near-next'));
   el.nowBack.addEventListener('click', reelToLatest);
 
+  // Repeated failures mean the picture may be out of date. Guests are told just that; admins get the reason and a
+  // way to the run history.
+  function renderFail(task) {
+    const failing = !!task && task.result === 'error' && task.failures > 0;
+    el.nowWarn.hidden = !failing;
+    if (!failing) return;
+    if (!state.admin) {
+      el.nowWarn.innerHTML = `<p class="now-warn-title"><svg><use href="#i-alert"/></svg>${t('fail.guest')}</p>`;
+      return;
+    }
+    const key = `fail.${task.code}`;
+    el.nowWarn.innerHTML = `<p class="now-warn-title"><svg><use href="#i-alert"/></svg>${t('fail.title', { n: task.failures })}</p>
+      <p>${t(key) !== key ? t(key) : t('fail.other')}</p>
+      <button type="button" class="linkish" id="now-warn-more">${t('fail.details')}</button>`;
+  }
+
   function renderTask() {
     const task = state.task;
+    renderFail(task);
     el.task.hidden = !task;
     if (!task) return;
     const at = validTime(task.last_fetched) ? new Date(task.last_fetched) : null;
@@ -990,6 +1094,7 @@
     }
     el.account.querySelector('use').setAttribute('href', state.admin ? '#i-shield' : '#i-user');
     el.account.classList.toggle('is-admin', state.admin);
+    renderFail(state.task); // admins see the reason, guests only that the picture may be stale
   }
 
   // Reading computed styles forces a style pass, so the theme is read only when it may have changed, not per render.
@@ -1132,6 +1237,7 @@
   let lbReturn = null;
   let lbFrom = null; // page image the lightbox opened from, for the zoom-out on close
   let lbHistory = false; // an entry was pushed so the Back button closes the lightbox
+  let lbBase = null; // the address of the entry under the lightbox's
   let expectPop = false;
   const zoom = { on: false, s: 1, x: 0, y: 0 };
   const MAX_ZOOM = 5;
@@ -1307,8 +1413,10 @@
       setInert(true);
       document.body.style.overflow = 'hidden';
       document.documentElement.classList.add('lb-open');
-      if (!lbHistory) { history.pushState({ lightbox: true }, ''); lbHistory = true; }
+      if (!lbHistory) { lbBase = location.hash; history.pushState({ lightbox: true }, '', imgHash(it.name)); lbHistory = true; }
       $('#lb-close').focus({ preventScroll: true });
+    } else if (lbHistory) {
+      history.replaceState(history.state, '', imgHash(it.name)); // the address follows the picture shown
     }
     // Show the image already on the page at once, then swap in the sharp one when it is decoded.
     img.src = from && from.currentSrc ? from.currentSrc : `/thumb/${enc(it.name)}`;
@@ -1496,7 +1604,8 @@
   function linkText(fmt, it) {
     const url = new URL(`/img/${enc(it.name)}`, location.href).href;
     const alt = fmtFull(new Date(it.time));
-    return { url, md: `![${alt}](${url})`, html: `<img src="${url}" alt="${alt}">`, bb: `[img]${url}[/img]` }[fmt];
+    const page = new URL(imgHash(it.name), location.href).href; // this page with the picture open
+    return { url, page, md: `![${alt}](${url})`, html: `<img src="${url}" alt="${alt}">`, bb: `[img]${url}[/img]` }[fmt];
   }
 
   let menuBtn = null; // the trigger of the open menu; its menu is the next sibling
@@ -1535,7 +1644,7 @@
     const it = state.items[state.lbIndex];
     if (!it) return false;
     const ok = await copyText(linkText(fmt, it));
-    toast(ok ? (fmt === 'url' ? t('copy.url') : t('copy.fmt', { label })) : t('copy.failed'), ok ? 'ok' : 'error');
+    toast(ok ? (fmt === 'url' ? t('copy.url') : fmt === 'page' ? t('copy.page') : t('copy.fmt', { label })) : t('copy.failed'), ok ? 'ok' : 'error');
     return ok;
   }
 
@@ -1588,7 +1697,11 @@
       <dt>${t('status.lastFetched')}</dt><dd>${at(f.last_fetched)}</dd>
       <dt>${t('status.result')}</dt><dd>${result}${f.message ? `<br><span class="bad">${esc(f.message)}</span>` : ''}</dd>
       <dt>${t('status.lastSaved')}</dt><dd>${at(f.last_saved)}</dd>
-      <dt>${t('status.session')}</dt><dd>${t('status.sessionValue', { runs: f.runs, saved: f.saved })}</dd>${tokenRow(s.token)}`;
+      <dt>${t('status.session')}</dt><dd>${t('status.sessionValue', { runs: f.runs, saved: f.saved })}</dd>${tokenRow(s.token)}${cookieRow(s.cookie)}${diskRow(s.disk)}`;
+    renderRuns(s.history || []);
+    state.cookie = s.cookie;
+    renderCookieState();
+    el.notifyTest.hidden = !s.notify;
     const next = !f.paused && validTime(s.next_run) ? s.next_run : '';
     const plan = describeSchedule(s.schedule);
     el.scheduleStats.innerHTML = `
@@ -1650,11 +1763,88 @@
     return `<dt>${t('token.label')}</dt><dd>${t('token.value', { cookie: esc(tok.cookie), time: fmtShort(exp), left })}</dd>`;
   }
 
+  function cookieRow(c) {
+    if (!c) return '';
+    const value = c.source === 'page' && validTime(c.updated) ? t('cookie.fromPage', { time: fmtShort(new Date(c.updated)) }) : t('cookie.fromConfig');
+    return `<dt>${t('cookie.label')}</dt><dd>${value}</dd>`;
+  }
+
+  function diskRow(d) {
+    if (!d || !d.total) return '';
+    const pct = Math.round((1 - d.free / d.total) * 100);
+    return `<dt>${t('disk.label')}</dt><dd><span class="meter${pct >= 90 ? ' bad' : ''}" aria-hidden="true"><span style="width: ${pct}%"></span></span>${t('disk.value', { pct, archive: fmtSize(d.archive), free: fmtSize(d.free) })}</dd>`;
+  }
+
+  // The recorded runs, newest first: what each attempt got, so an outage can be read without the server log.
+  function renderRuns(runs) {
+    el.adminRuns.hidden = !runs.length;
+    el.runsList.innerHTML = runs.map((r) => {
+      const key = `fail.${r.code}`;
+      const what = r.result === 'saved' ? t('status.saved') : r.result === 'unchanged' ? t('status.unchanged') : t(key) !== key ? t(key) : t('fail.other');
+      const meta = [r.http ? `HTTP ${r.http}` : '', r.bytes ? fmtSize(r.bytes) : '', t('runs.took', { s: fmtNum(r.ms / 1000, 1) })].filter(Boolean).join(' · ');
+      const d = new Date(r.time);
+      return `<li class="run ${esc(r.result)}"${r.message ? ` title="${esc(r.message)}"` : ''}>
+        <time datetime="${esc(r.time)}" title="${esc(fmtFull(d))}">${fmtShort(d)}</time>
+        <span class="run-what">${what}${r.manual ? ` <em>${t('runs.manual')}</em>` : ''}</span>
+        <span class="run-meta">${meta}</span></li>`;
+    }).join('');
+  }
+
+  function renderCookieState() {
+    const c = state.cookie;
+    el.cookieState.textContent = !c ? '' : c.source === 'page' && validTime(c.updated)
+      ? t('cookie.fromPage', { time: fmtShort(new Date(c.updated)) }) : t('cookie.fromConfig');
+  }
+
+  function openCookie() {
+    el.cookieForm.reset();
+    showCookieError('');
+    renderCookieState();
+    openDialog(el.cookieDialog);
+    el.cookieForm.elements.cookie.focus();
+    refreshStatus();
+  }
+
+  function showCookieError(msg) {
+    el.cookieError.hidden = !msg;
+    el.cookieError.textContent = msg;
+    el.cookieForm.elements.cookie.toggleAttribute('aria-invalid', !!msg);
+    if (msg) announce(msg, true);
+  }
+
+  el.cookieForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const value = el.cookieForm.elements.cookie.value.trim();
+    if (!value) { showCookieError(t('err.invalid_cookie')); el.cookieForm.elements.cookie.focus(); return; }
+    el.cookieSave.disabled = true;
+    el.cookieSave.classList.add('loading');
+    try {
+      const s = await api('/api/cookie', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cookie: value }) });
+      renderStats(s);
+      closeDialog(el.cookieDialog, true);
+      toast(t('cookie.saved'), 'ok');
+    } catch (err) {
+      if (err.status === 401) handleAuthError(err); else showCookieError(err.message);
+    } finally {
+      el.cookieSave.disabled = false;
+      el.cookieSave.classList.remove('loading');
+    }
+  });
+  el.cookieForm.elements.cookie.addEventListener('input', () => { if (!el.cookieError.hidden) showCookieError(''); });
+
+  el.notifyTest.addEventListener('click', async () => {
+    closeMenu(true);
+    try {
+      await api('/api/notify/test', { method: 'POST' });
+      toast(t('notify.sent'), 'ok');
+    } catch (e) { handleAuthError(e); }
+  });
+
   function handleAuthError(e) {
     if (e.status === 401) {
       state.admin = false;
       closeMenu();
-      [el.statusDialog, el.scheduleDialog, el.naDialog].forEach((d) => closeDialog(d, true));
+      [el.statusDialog, el.scheduleDialog, el.naDialog, el.cookieDialog].forEach((d) => closeDialog(d, true));
       renderControls();
       toast(t('login.expired'), 'error');
     } else {
@@ -1690,7 +1880,23 @@
     el.noticeBtn.classList.toggle('unread', n > 0);
     el.noticeBtn.title = t('bell.tip', { label });
     el.noticeBtn.setAttribute('aria-label', label);
+    renderBanner();
   }
+
+  // The newest unread notice also shows as a strip above the picture until it is read or dismissed.
+  function renderBanner() {
+    const n = notices.items.find(isUnread);
+    el.noticeBanner.hidden = !n;
+    if (n) el.noticeBannerTitle.textContent = n.title;
+  }
+  // Opening the notices from the strip reads them; they are marked once the dialog closes, so its "new" tags still show.
+  let readOnClose = false;
+  $('#notice-banner-open').addEventListener('click', () => { readOnClose = true; openNotices(); });
+  $('#notice-banner-close').addEventListener('click', () => { if (notices.items.length) setNoticesSeen(noticeTime(notices.items[0])); });
+  el.noticeDialog.addEventListener('close', () => {
+    if (readOnClose && notices.items.length) setNoticesSeen(noticeTime(notices.items[0]));
+    readOnClose = false;
+  });
 
   // Plain text with line breaks kept; only http(s) addresses become links.
   function linkify(text) {
@@ -1908,7 +2114,7 @@
   });
 
   el.gallery.addEventListener('click', (e) => {
-    if (e.target.closest('[data-retry]')) { load(); return; }
+    if (e.target.closest('[data-retry]')) { followHash(); return; }
     const head = e.target.closest('.group-check');
     if (head) {
       const h = head.closest('.group-title');
@@ -1937,6 +2143,40 @@
       openLightbox(i, 0, tile.querySelector('.tile-open img'));
     }
   });
+
+  // On touch screens a long press on a picture starts selecting with it, as in a phone's photo gallery.
+  let press = null;
+  let swallowClick = false; // the press selected; the click that ends the same gesture is not a tap
+  el.gallery.addEventListener('pointerdown', (e) => {
+    endPress();
+    swallowClick = false;
+    if (e.pointerType !== 'touch' || state.selectMode || !e.target.closest('.tile-open')) return;
+    const tile = e.target.closest('.tile[data-i]');
+    if (!tile) return;
+    press = { x: e.clientX, y: e.clientY, timer: setTimeout(() => {
+      press = null;
+      const i = Number(tile.dataset.i);
+      const it = state.items[i];
+      if (!it || !tile.isConnected) return;
+      swallowClick = true;
+      setSelectMode(true);
+      if (!state.selected.has(it.name) && toggleSelect(it.name)) state.lastIndex = i;
+      renderSelection();
+      if (navigator.vibrate) navigator.vibrate(15);
+    }, 500) };
+  });
+  function endPress() {
+    if (press) clearTimeout(press.timer);
+    press = null;
+  }
+  el.gallery.addEventListener('pointermove', (e) => { if (press && Math.hypot(e.clientX - press.x, e.clientY - press.y) > 10) endPress(); });
+  el.gallery.addEventListener('pointerup', endPress);
+  el.gallery.addEventListener('pointercancel', () => { endPress(); swallowClick = false; });
+  // The click that ends a long press must not toggle the picture straight back, nor the press open a context menu.
+  el.gallery.addEventListener('click', (e) => {
+    if (swallowClick) { swallowClick = false; e.stopImmediatePropagation(); e.preventDefault(); }
+  }, true);
+  el.gallery.addEventListener('contextmenu', (e) => { if (press || swallowClick) e.preventDefault(); });
 
   // The hero may already show a newer picture than the gallery holds; catch the gallery up first.
   async function openLatest() {
@@ -2158,9 +2398,74 @@
     } else {
       return;
     }
-    // Stepping across pages in the lightbox moved the page; keep it rather than the older entry's hash.
-    writeHash();
+    // Stepping across pages in the lightbox moved the page; keep it rather than the older entry's hash. A jump further
+    // back through the history menu lands elsewhere, and hashchange shows that entry's page instead.
+    if (location.hash === lbBase) writeHash();
   });
+
+  // ---------- calendar: pictures per day, deeper = more; a day opens the page holding it ----------
+  const cal = { month: null }; // first day of the month shown
+  const calBtn = $('#cal-btn');
+  const calBox = $('#cal');
+  function monthStart(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
+  function renderCal() {
+    const m = cal.month;
+    const first = overview.first ? monthStart(new Date(overview.first)) : m;
+    const last = monthStart(new Date());
+    $('#cal-title').textContent = new Intl.DateTimeFormat(i18n.locale, { year: 'numeric', month: 'long' }).format(m);
+    $('#cal-prev').disabled = m <= first;
+    $('#cal-next').disabled = m >= last;
+    const days = new Date(m.getFullYear(), m.getMonth() + 1, 0).getDate();
+    const counts = [];
+    for (let d = 1; d <= days; d++) counts.push((overview.days.get(fmtDate(new Date(m.getFullYear(), m.getMonth(), d))) || { count: 0 }).count);
+    const peak = Math.max(1, ...counts);
+    const wd = new Intl.DateTimeFormat(i18n.locale, { weekday: 'narrow' });
+    // Weeks start on Monday; 2024-01-01 was one.
+    let html = [0, 1, 2, 3, 4, 5, 6].map((i) => `<span class="cal-wd" aria-hidden="true">${wd.format(new Date(2024, 0, 1 + i))}</span>`).join('');
+    html += '<span></span>'.repeat((m.getDay() + 6) % 7);
+    const today = fmtDate(new Date());
+    counts.forEach((n, i) => {
+      const d = new Date(m.getFullYear(), m.getMonth(), i + 1);
+      const key = fmtDate(d);
+      // The square root keeps a quiet day visible beside a busy one, as on the reel.
+      const level = n ? Math.max(1, Math.ceil(Math.sqrt(n / peak) * 4)) : 0;
+      const label = `${fmtDay(d)} · ${n ? t('cal.count', { n }) : t('cal.empty')}`;
+      html += `<button type="button" class="cal-day l${level}${key === today ? ' today' : ''}" data-date="${key}" aria-label="${esc(label)}" title="${esc(label)}"${n ? '' : ' disabled'}>${i + 1}</button>`;
+    });
+    $('#cal-grid').innerHTML = html;
+  }
+  function openCal() {
+    const top = state.items[0];
+    cal.month = monthStart(top ? new Date(top.time) : new Date());
+    renderCal();
+    calBox.hidden = false;
+    calBtn.setAttribute('aria-expanded', 'true');
+    // Without overview data every day is disabled; focus the box itself so its keys stay in the calendar.
+    (calBox.querySelector('.cal-day:not(:disabled), .cal-head .icon-btn:not(:disabled)') || calBox).focus();
+    if (!overview.days.size) loadOverview().then(() => { if (!calBox.hidden) renderCal(); });
+  }
+  function closeCal(refocus = false) {
+    if (calBox.hidden) return;
+    calBox.hidden = true;
+    calBtn.setAttribute('aria-expanded', 'false');
+    if (refocus) calBtn.focus();
+  }
+  calBtn.addEventListener('click', () => (calBox.hidden ? openCal() : closeCal(true)));
+  $('#cal-prev').addEventListener('click', () => { cal.month = new Date(cal.month.getFullYear(), cal.month.getMonth() - 1, 1); renderCal(); });
+  $('#cal-next').addEventListener('click', () => { cal.month = new Date(cal.month.getFullYear(), cal.month.getMonth() + 1, 1); renderCal(); });
+  $('#cal-grid').addEventListener('click', (e) => {
+    const b = e.target.closest('.cal-day');
+    if (!b || b.disabled) return;
+    closeCal(true);
+    goDate(b.dataset.date);
+  });
+  // Keys pressed in the calendar are its own; page shortcuts (arrows turn pages, L switches language) must not fire.
+  calBox.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Escape') { e.preventDefault(); closeCal(true); }
+  });
+  document.addEventListener('pointerdown', (e) => { if (!calBox.hidden && !e.target.closest('.cal-wrap')) closeCal(); });
+  calBox.addEventListener('focusout', (e) => { if (e.relatedTarget && !e.relatedTarget.closest('.cal-wrap')) closeCal(); });
 
   // ---------- keyboard ----------
   function lightboxKey(e) {
@@ -2203,7 +2508,7 @@
     else if (k === 'o') toggleSort();
     else if (k === 'g') toggleGroup();
     else if (k === 'p' && !el.reel.hidden && !el.now.hidden) reelPlay();
-    else if ((k === ',' || k === '.') && !el.reel.hidden && !el.now.hidden) { nowStep(k === ',' ? -1 : 1); reelWake(); }
+    else if ((k === ',' || k === '.') && !el.reel.hidden && !el.now.hidden) { nowStep(k === ',' ? -1 : 1); }
     else if ((k === '[' || k === ']') && !el.reel.hidden && !el.now.hidden) stepReelSpeed(k === '[' ? -1 : 1);
     else if (k === '?') openDialog(el.keysDialog);
     else if (k === 'n') openNotices();
@@ -2269,11 +2574,20 @@
   });
 
   // Focus goes back to the avatar first, so closing the section's dialog returns it there.
-  const SECTIONS = { 'status-dialog': openStatus, 'schedule-dialog': openSchedule, 'notice-admin-dialog': openNoticeAdmin };
+  const SECTIONS = { 'status-dialog': openStatus, 'schedule-dialog': openSchedule, 'notice-admin-dialog': openNoticeAdmin, 'cookie-dialog': openCookie };
   el.acctMenu.addEventListener('click', (e) => {
     const item = e.target.closest('[data-open]');
     if (item) { closeMenu(true); SECTIONS[item.dataset.open](); }
     else if (e.target.closest('#download-all')) closeMenu(true);
+  });
+
+  el.nowWarn.addEventListener('click', (e) => { if (e.target.closest('#now-warn-more')) openStatus(); });
+  $('#now-more').addEventListener('click', (e) => {
+    const open = el.now.querySelector('.now-card').classList.toggle('expanded');
+    const b = e.currentTarget;
+    b.setAttribute('aria-expanded', String(open));
+    b.querySelector('span').textContent = t(open ? 'now.less' : 'now.more');
+    b.querySelector('span').dataset.i18n = open ? 'now.less' : 'now.more';
   });
 
   el.naList.addEventListener('click', (e) => {
@@ -2469,19 +2783,22 @@
       if (zoom.on) { clampPan(); applyZoom(); }
     }, 150);
   });
+  // Back and Forward between pages, or a link pasted into the address bar.
   window.addEventListener('hashchange', () => {
+    leaveRoute();
     const before = state.page;
-    readHash();
-    if (state.page !== before) load({ scroll: true });
+    const link = readHash();
+    if (link.img) { if (state.lbIndex < 0) openLinked(link.img, true); }
+    else if (link.date) goDate(link.date, false);
+    else if (state.page !== before || state.date) { state.date = null; load({ scroll: true }); }
   });
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', renderTheme);
   motion.addEventListener('change', stillMascots);
 
   i18n.apply();
   stillMascots();
-  readHash();
   renderControls();
   renderTheme();
   onScroll();
-  load();
+  followHash();
 })();

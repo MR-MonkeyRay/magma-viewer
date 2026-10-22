@@ -52,6 +52,7 @@
   <symbol id="i-sort-desc" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4.5v14M4 15.5l3 3 3-3M13.5 6h7M13.5 11h5M13.5 16h3"/></symbol>
   <symbol id="i-sort-asc" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4.5v14M4 15.5l3 3 3-3M13.5 6h3M13.5 11h5M13.5 16h7"/></symbol>
   <symbol id="i-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5.5" width="16" height="15" rx="3.5"/><path d="M8.5 3.5v4M15.5 3.5v4M4 10.5h16"/><path d="M12 17.6s-2.6-1.5-2.6-3.1a1.3 1.3 0 0 1 2.6-.5 1.3 1.3 0 0 1 2.6.5c0 1.6-2.6 3.1-2.6 3.1z" fill="currentColor" stroke-width="1.2"/></symbol>
+  <symbol id="i-date" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5.5" width="16" height="15" rx="3.5"/><path d="M8.5 3.5v4M15.5 3.5v4M4 10.5h16"/><path d="M8.5 14.5h.01M12 14.5h.01M15.5 14.5h.01M8.5 17.5h.01M12 17.5h.01" stroke-width="3"/></symbol>
   <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3 2"/></symbol>
   <symbol id="i-panel" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="3.5"/><path d="M15 4.5v15"/></symbol>
   <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"><path d="M8 5.8v12.4L18 12z"/></symbol>
@@ -108,6 +109,8 @@
         <div class="acct-head"><strong data-i18n="acct.admin">管理员</strong><span id="acct-sub"></span></div>
         <button type="button" role="menuitem" data-open="status-dialog"><svg><use href="#i-info"/></svg><span data-i18n="acct.status">运行状态</span><em id="acct-result"></em></button>
         <button type="button" role="menuitem" data-open="schedule-dialog"><svg><use href="#i-clock"/></svg><span data-i18n="task.title">定时抓取</span><em id="acct-schedule"></em></button>
+        <button type="button" role="menuitem" data-open="cookie-dialog"><svg><use href="#i-shield"/></svg><span data-i18n="cookie.menu">更新 Cookie</span></button>
+        <button type="button" role="menuitem" id="notify-test" hidden><svg><use href="#i-bell"/></svg><span data-i18n="notify.test">测试通知</span></button>
         <button type="button" role="menuitem" data-open="notice-admin-dialog"><svg><use href="#i-megaphone"/></svg><span data-i18n="acct.notices">公告管理</span><em id="acct-notices"></em></button>
         <a role="menuitem" id="download-all" href="/download/all" download><svg><use href="#i-download"/></svg><span data-i18n="acct.downloadAll">下载全部</span></a>
         <hr>
@@ -118,6 +121,12 @@
 </header>
 
 <main id="main">
+  <div class="notice-banner" id="notice-banner" hidden>
+    <svg aria-hidden="true"><use href="#i-megaphone"/></svg>
+    <p class="notice-banner-title" id="notice-banner-title"></p>
+    <button type="button" class="btn ghost" id="notice-banner-open" data-i18n="banner.open">查看</button>
+    <button type="button" class="icon-btn" id="notice-banner-close" title="知道了" aria-label="知道了" data-i18n-title="banner.dismiss" data-i18n-label="banner.dismiss"><svg><use href="#i-close"/></svg></button>
+  </div>
   <section class="now" id="now" aria-label="画板最新状态" data-i18n-label="now.label" hidden>
     <div class="now-stage">
       <div class="now-view" id="now-view">
@@ -155,12 +164,14 @@
               <option value="4">4×</option>
             </select>
           </label>
+          <button type="button" class="reel-btn" id="reel-timed" title="按真实时间间隔回放" aria-label="按真实时间间隔回放" data-i18n-title="reel.timed" data-i18n-label="reel.timed" aria-pressed="false"><svg><use href="#i-clock"/></svg></button>
           <button type="button" class="reel-btn" id="reel-loop" title="循环回放" aria-label="循环回放" data-i18n-title="reel.loop" data-i18n-label="reel.loop" aria-pressed="false"><svg><use href="#i-loop"/></svg></button>
         </div>
       </div>
     </div>
     <aside class="now-card">
       <p class="now-state"><span class="now-badge" id="now-badge">最新</span><span class="now-ago" id="now-ago"></span></p>
+      <button type="button" class="linkish now-more" id="now-more" aria-expanded="false" aria-controls="now-facts task"><span data-i18n="now.more">更多</span><svg aria-hidden="true"><use href="#i-down"/></svg></button>
       <p class="now-date" id="now-date"></p>
       <time class="now-clock" id="now-time"></time>
       <dl class="now-facts" id="now-facts"></dl>
@@ -170,6 +181,7 @@
       </div>
       <button type="button" class="linkish now-back" id="now-back" hidden><svg><use href="#i-right"/></svg><span data-i18n="now.back">回到最新</span></button>
       <dl class="now-task" id="task" hidden></dl>
+      <div class="now-warn" id="now-warn" hidden></div>
     </aside>
   </section>
 
@@ -180,6 +192,18 @@
         <div class="summary" id="summary"></div>
       </div>
       <div class="controls">
+        <span class="cal-wrap">
+          <button type="button" class="icon-btn" id="cal-btn" title="按日期跳转" aria-label="按日期跳转" data-i18n-title="cal.label" data-i18n-label="cal.label" aria-haspopup="dialog" aria-expanded="false" aria-controls="cal"><svg><use href="#i-date"/></svg></button>
+          <div class="cal" id="cal" role="dialog" aria-labelledby="cal-title" tabindex="-1" hidden>
+            <div class="cal-head">
+              <button type="button" class="icon-btn" id="cal-prev" title="上个月" aria-label="上个月" data-i18n-title="cal.prev" data-i18n-label="cal.prev"><svg><use href="#i-left"/></svg></button>
+              <strong id="cal-title" aria-live="polite"></strong>
+              <button type="button" class="icon-btn" id="cal-next" title="下个月" aria-label="下个月" data-i18n-title="cal.next" data-i18n-label="cal.next"><svg><use href="#i-right"/></svg></button>
+            </div>
+            <div class="cal-grid" id="cal-grid"></div>
+            <p class="cal-legend" aria-hidden="true"><span data-i18n="cal.less">少</span><i class="l1"></i><i class="l2"></i><i class="l3"></i><i class="l4"></i><span data-i18n="cal.more">多</span></p>
+          </div>
+        </span>
         <div class="seg" role="group" aria-label="展示方式" data-i18n-label="bar.views">
           <button type="button" data-view="grid" title="网格（1）" aria-label="网格" data-i18n-title="view.gridTip" data-i18n-label="view.grid"><svg><use href="#i-grid"/></svg></button>
           <button type="button" data-view="list" title="列表（3）" aria-label="列表" data-i18n-title="view.listTip" data-i18n-label="view.list"><svg><use href="#i-list"/></svg></button>
@@ -244,6 +268,7 @@
       <span class="lb-menu-wrap lb-dup">
         <button type="button" class="lb-btn" id="lb-link" title="复制链接（C）" aria-label="复制链接" data-i18n-title="lb.copyTip" data-i18n-label="lb.copy" aria-haspopup="menu" aria-expanded="false"><svg><use href="#i-link"/></svg></button>
         <span class="menu" id="lb-menu" role="menu" hidden>
+          <button type="button" role="menuitem" data-fmt="page" data-i18n="lb.fmtPage">查看页链接</button>
           <button type="button" role="menuitem" data-fmt="url" data-i18n="lb.fmtUrl">原图链接</button>
           <button type="button" role="menuitem" data-fmt="md">Markdown</button>
           <button type="button" role="menuitem" data-fmt="html">HTML</button>
@@ -279,6 +304,7 @@
     <div class="lbp-block">
       <p class="lbp-label" data-i18n="lbp.copy">复制链接</p>
       <div class="chips" id="lbp-share">
+        <button type="button" class="chip" data-fmt="page" data-i18n="lbp.page">查看页</button>
         <button type="button" class="chip" data-fmt="url" data-i18n="lbp.link">链接</button>
         <button type="button" class="chip" data-fmt="md">Markdown</button>
         <button type="button" class="chip" data-fmt="html">HTML</button>
@@ -315,11 +341,30 @@
   <div class="admin">
     <h2 data-i18n="status.title">运行状态</h2>
     <dl class="stats" id="admin-stats"></dl>
+    <section class="runs" id="admin-runs" hidden>
+      <h3 data-i18n="runs.title">最近抓取</h3>
+      <ol class="runs-list" id="runs-list"></ol>
+    </section>
     <div class="modal-actions">
       <button type="button" class="btn primary" id="fetch-now"><svg><use href="#i-refresh"/></svg><span data-i18n="status.fetchNow">立即抓取</span></button>
     </div>
     <button type="button" class="modal-x" data-close aria-label="关闭" data-i18n-label="dialog.close" autofocus><svg><use href="#i-close"/></svg></button>
   </div>
+</dialog>
+
+<dialog class="modal" id="cookie-dialog">
+  <form class="admin" id="cookie-form" novalidate>
+    <h2 data-i18n="cookie.title">更新 Cookie</h2>
+    <p class="cookie-state" id="cookie-state"></p>
+    <label data-i18n="cookie.field">新的 Cookie<textarea name="cookie" rows="4" maxlength="8192" spellcheck="false" autocomplete="off" required aria-describedby="cookie-error cookie-hint"></textarea></label>
+    <p class="cookie-hint" id="cookie-hint" data-i18n="cookie.hint">可以粘贴整段 Cookie 请求头、NAME=value 形式，或只粘贴 AUTH_TOKEN 的值。保存后立即生效，重启后也会保留；之后若修改了配置文件中的 magma.cookie，则以配置文件为准。</p>
+    <p class="form-error" id="cookie-error" hidden></p>
+    <div class="modal-actions">
+      <button type="button" class="btn ghost" data-close data-i18n="login.cancel">取消</button>
+      <button type="submit" class="btn primary" id="cookie-save"><span class="spinner" aria-hidden="true"></span><span data-i18n="cookie.save">保存并启用</span></button>
+    </div>
+    <button type="button" class="modal-x" data-close aria-label="关闭" data-i18n-label="dialog.close"><svg><use href="#i-close"/></svg></button>
+  </form>
 </dialog>
 
 <dialog class="modal" id="schedule-dialog">
