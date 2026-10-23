@@ -319,10 +319,10 @@
   }
 
   // ---------- images ----------
-  // Data saver or a 2G/3G connection: the big picture stays a thumbnail, playback defaults to thumbnails and nothing
-  // is fetched far ahead.
+  // Data saver or a 2G connection: the big picture stays a thumbnail, playback defaults to thumbnails and nothing is
+  // fetched far ahead. Not 3G: that estimate follows round-trip time, so a far-away server alone can report it.
   const conn = navigator.connection;
-  const saveData = !!conn && (conn.saveData || /2g|3g/.test(conn.effectiveType || ''));
+  const saveData = !!conn && (conn.saveData || /2g/.test(conn.effectiveType || ''));
   // Fetches src into the browser cache without decoding it; an <img> asking for it later gets it from there.
   const prefetch = (src, signal) => fetch(src, { priority: 'low', signal }).then((r) => r.blob());
   function imageDone(img, failed) {
@@ -634,9 +634,11 @@
   // Playback quality: the 480px thumbnail, the 1600px preview (default) or the original file. Larger frames take
   // longer to arrive, so more of them are loaded ahead.
   const REEL_QUALITY = { thumb: { path: '/thumb/', ahead: 3 }, preview: { path: '/preview/', ahead: 6 }, original: { path: '/img/', ahead: 4 } };
-  // Beyond those, about this much playback is downloaded (not decoded) ahead, so fast speeds do not outrun the network.
+  // Beyond those, about this much playback is downloaded (not decoded) ahead, so fast speeds do not outrun the network;
+  // a few at a time, so starting playback does not fire a burst of requests.
   const REEL_FETCH_MS = 3000;
   const REEL_FETCH_MAX = 40;
+  const REEL_FETCH_PARALLEL = 3;
   const reelDefault = saveData ? 'thumb' : 'preview';
   const reel = {
     items: [], times: [], heat: [], at: -1, playing: false, timer: 0, dragging: false, resume: false, from: 0, to: 0,
@@ -648,7 +650,9 @@
     frames: new Map(), // src -> promise settled once that frame is decoded or failed
     failed: new Set(), // frame URLs that did not load; playback shows that picture's thumbnail instead
     fetches: new Map(), // src -> AbortController while downloading ahead, null once done
+    fetchWant: [], // frames to download ahead, nearest first
     thumbsWarm: false, // the strip's thumbnails have been fetched once
+    warming: null, // the frames reelWarm is loading one by one; replaced or cleared to end that run
   };
   let overviewSeq = 0;
   async function loadOverview() {
@@ -760,38 +764,54 @@
     return entry.done;
   }
 
-  // Cancels the loads of frames not in keep (all of them without it): removing src aborts the download.
-  function reelForget(keep) {
+  // Lets go of the frames not in keep (all of them without it). A frame still downloading finishes into the browser
+  // cache first, since playback usually resumes; cancel aborts it instead (removing src aborts the download).
+  function reelForget(keep, cancel = false) {
     for (const [src, entry] of reel.frames) {
       if (keep && keep.has(src)) continue;
       reel.frames.delete(src);
-      entry.img.removeAttribute('src');
+      if (cancel || entry.img.complete) entry.img.removeAttribute('src');
+      else entry.done.then(() => entry.img.removeAttribute('src'));
     }
-    if (!keep) reelFetch(-1);
+    if (!keep) {
+      reel.warming = null;
+      reelFetch(-1, cancel);
+    }
   }
 
-  // Downloads the frames after i covering REEL_FETCH_MS of playback at the current speed into the browser cache, and
-  // aborts downloads that fell out of that range; i < 0 aborts them all.
-  function reelFetch(i) {
-    const keep = new Set();
+  // Downloads the frames after i covering REEL_FETCH_MS of playback at the current speed into the browser cache,
+  // nearest first. i < 0 starts no more; the downloads under way finish unless cancel aborts them.
+  function reelFetch(i, cancel = false) {
+    const want = [];
     const n = reel.items.length;
     const count = i < 0 || saveData ? 0 : Math.min(REEL_FETCH_MAX, Math.ceil((REEL_FETCH_MS * reel.speed) / REEL_FRAME));
     for (let k = 1; k <= count; k++) {
       const j = reel.loop ? (i + k) % n : i + k;
       if (j >= n) break;
-      const src = reelSrc(reel.items[j]);
-      keep.add(src);
+      want.push(reelSrc(reel.items[j]));
+    }
+    reel.fetchWant = want;
+    for (const [src, ctl] of reel.fetches) {
+      if (ctl && cancel) ctl.abort();
+      if ((ctl && cancel) || (!ctl && !want.includes(src))) reel.fetches.delete(src);
+    }
+    reelPump();
+  }
+  // Keeps up to REEL_FETCH_PARALLEL of the wanted downloads going; a failed one is not retried here, its frame falls
+  // back to the thumbnail when it is shown.
+  function reelPump() {
+    let busy = [...reel.fetches.values()].filter(Boolean).length;
+    for (const src of reel.fetchWant) {
+      if (busy >= REEL_FETCH_PARALLEL) break;
       if (reel.fetches.has(src) || reel.frames.has(src)) continue;
       const ctl = new AbortController();
       reel.fetches.set(src, ctl);
-      prefetch(src, ctl.signal).then(() => { if (reel.fetches.get(src) === ctl) reel.fetches.set(src, null); }, () => {
-        if (reel.fetches.get(src) === ctl) reel.fetches.delete(src);
+      busy++;
+      prefetch(src, ctl.signal).catch(() => {}).then(() => {
+        if (reel.fetches.get(src) !== ctl) return; // cancelled meanwhile
+        reel.fetches.set(src, null);
+        reelPump();
       });
-    }
-    for (const [src, ctl] of reel.fetches) {
-      if (keep.has(src)) continue;
-      if (ctl) ctl.abort();
-      reel.fetches.delete(src);
     }
   }
 
@@ -807,19 +827,24 @@
     for (let k = 0; k < 3; k++) next();
   }
 
-  // Keeps the frames from i to i + ahead loading (wrapping round when looping) and cancels the rest, so the requests
-  // in flight and the decoded images held stay few even for originals.
+  // Keeps the frames from i to i + ahead loading (wrapping round when looping) and lets go of the rest, so the decoded
+  // images held stay few even for originals. They load one after another, the frame due first at once, while
+  // reelFetch downloads the ones after it; a later call takes over from one still under way.
   function reelWarm(i) {
     const n = reel.items.length;
     const keep = new Set();
+    const queue = [];
     for (let k = 0; k <= REEL_QUALITY[reel.quality].ahead; k++) {
       const j = reel.loop ? (i + k) % n : i + k;
       if (j >= n) break;
       keep.add(reelSrc(reel.items[j]));
-      reelFrame(reel.items[j]);
+      queue.push(reel.items[j]);
     }
     reelForget(keep);
+    reel.warming = keep;
     reelFetch(i);
+    const next = () => { const it = queue.shift(); if (it && reel.warming === keep) reelFrame(it).then(next); };
+    next();
   }
 
   let reelBufferTimer = 0;
@@ -913,7 +938,7 @@
     reel.quality = v;
     el.reelQuality.value = v;
     store.set('reelQuality', v);
-    reelForget();
+    reelForget(null, true); // frames of the old quality are no longer wanted
     if (reel.playing) reelStart(reel.at >= 0 ? reel.at : 0);
   }
   function stepReelSpeed(d) {
@@ -977,8 +1002,20 @@
     reelSeek(cur + step);
   });
   el.reelPlay.addEventListener('click', reelPlay);
-  // Pointing at or tabbing to the play button starts loading the first frames; leaving it without playing lets them go.
-  const reelIntent = (on) => () => { if (!reel.playing && !reel.dragging) { if (on) reelWarm(reelFrom()); else reelForget(); } };
+  // Resting on or tabbing to the play button loads the first frame and starts downloading the next ones; passing over
+  // it loads nothing, and leaving it without playing lets the frame go.
+  let reelIntentTimer = 0;
+  const reelIntent = (on) => () => {
+    clearTimeout(reelIntentTimer);
+    if (reel.playing || reel.dragging) return;
+    if (!on) { reelForget(); return; }
+    reelIntentTimer = setTimeout(() => {
+      if (reel.playing || reel.dragging) return;
+      const from = reelFrom();
+      reelFrame(reel.items[from]);
+      reelFetch(from);
+    }, 150);
+  };
   el.reelPlay.addEventListener('pointerenter', reelIntent(true));
   el.reelPlay.addEventListener('focus', reelIntent(true));
   el.reelPlay.addEventListener('pointerleave', reelIntent(false));
