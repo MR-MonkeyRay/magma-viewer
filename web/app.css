@@ -490,7 +490,8 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 .now-facts dd { margin: 0; font-size: var(--fs-sm); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .now-actions { display: flex; gap: 8px; }
 .now-actions .btn { flex: 1; min-width: 0; padding: 0 10px; font-size: var(--fs-sm); }
-.now-back { align-self: flex-start; margin: -8px 0 0 -10px; color: var(--pigment); }
+/* Sits at the end of the state row; negative margins keep the row as tall as the badge. */
+.now-back { margin: -6px -10px -6px auto; color: var(--pigment); }
 .now-back svg { width: 14px; height: 14px; }
 
 /* ---------- archive status ---------- */
@@ -1214,8 +1215,6 @@ a.linkish { text-decoration: none; }
   .now-clock { grid-area: clock; }
   .now-facts { grid-area: facts; grid-template-columns: repeat(4, auto); justify-content: start; padding: 0 0 0 24px; border-block: 0; border-left: 2px dashed var(--line); }
   .now-actions { grid-area: actions; }
-  /* Start after the explicit grid so collapsed facts/task rows cannot take the return action. */
-  .now-back { position: static; grid-column: 1 / -1; grid-row: -1; justify-self: start; margin: 0; }
   .now-task { grid-area: task; display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px; padding-top: 10px; border-top: 2px dashed var(--line); }
   .now-task dd { text-align: left; margin-right: 12px; }
   .now-warn { grid-area: warn; margin-top: 8px; }
@@ -1267,7 +1266,6 @@ a.linkish { text-decoration: none; }
   .now-clock { font-size: 28px; }
   .now-actions .btn { height: 36px; padding: 0 10px; }
   .now-actions .btn svg { display: none; }
-  .now-back { min-height: 44px; }
   .now-task { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
   .now-task dd { text-align: right; margin-right: 0; }
   .view-grid .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }

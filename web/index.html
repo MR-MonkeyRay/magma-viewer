@@ -173,7 +173,7 @@
       </div>
     </div>
     <aside class="now-card">
-      <p class="now-state"><span class="now-badge" id="now-badge">最新</span><span class="now-ago" id="now-ago"></span></p>
+      <p class="now-state"><span class="now-badge" id="now-badge">最新</span><span class="now-ago" id="now-ago"></span><button type="button" class="linkish now-back" id="now-back" hidden><svg><use href="#i-right"/></svg><span data-i18n="now.back">回到最新</span></button></p>
       <button type="button" class="linkish now-more" id="now-more" aria-expanded="false" aria-controls="now-facts task"><span data-i18n="now.more">更多</span><svg aria-hidden="true"><use href="#i-down"/></svg></button>
       <p class="now-date" id="now-date"></p>
       <time class="now-clock" id="now-time"></time>
@@ -182,7 +182,6 @@
         <button type="button" class="btn primary" id="now-zoom"><svg><use href="#i-expand"/></svg><span data-i18n="now.zoom">查看大图</span></button>
         <a class="btn ghost" id="now-dl" href="#" download><svg><use href="#i-download"/></svg><span data-i18n="common.download">下载</span></a>
       </div>
-      <button type="button" class="linkish now-back" id="now-back" hidden><svg><use href="#i-right"/></svg><span data-i18n="now.back">回到最新</span></button>
       <dl class="now-task" id="task" hidden></dl>
       <div class="now-warn" id="now-warn" hidden></div>
     </aside>
