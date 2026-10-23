@@ -43,7 +43,7 @@
     now: $('#now'), nowImg: $('#now-img'), nowTime: $('#now-time'), nowAgo: $('#now-ago'), nowDate: $('#now-date'), nowFacts: $('#now-facts'), nowDl: $('#now-dl'),
     nowBadge: $('#now-badge'), nowView: $('#now-view'), nowPrev: $('#now-prev'), nowNext: $('#now-next'), nowBack: $('#now-back'), reel: $('#reel'), reelTrack: $('#reel-track'),
     reelHeat: $('#reel-heat'), reelFill: $('#reel-fill'), reelHead: $('#reel-head'), reelTip: $('#reel-tip'), reelPlay: $('#reel-play'),
-    reelLive: $('#reel-live'), reelPos: $('#reel-pos'), reelSpeed: $('#reel-speed'), reelQuality: $('#reel-quality'), reelLoop: $('#reel-loop'), reelTimed: $('#reel-timed'),
+    reelPos: $('#reel-pos'), reelSpeed: $('#reel-speed'), reelQuality: $('#reel-quality'), reelLoop: $('#reel-loop'), reelTimed: $('#reel-timed'),
     seg: $('.seg'), sort: $('#sort'), size: $('#size'), group: $('#group'), selectMode: $('#select-mode'),
     theme: $('#theme'), lang: $('#lang'), account: $('#account'), acctMenu: $('#acct-menu'), noticeBtn: $('#notice-btn'), foot: $('.foot'), version: $('#version'),
     selbar: $('#selbar'), selCount: $('#sel-count'), fresh: $('#fresh'),
@@ -686,7 +686,6 @@
     const it = reel.items[i];
     el.nowPrev.disabled = !it || i <= 0;
     el.nowNext.disabled = !it || i >= reel.items.length - 1;
-    el.reelLive.disabled = reel.at < 0 && !reel.playing;
     if (!it) return;
     const x = reelPct(reel.times[i]);
     el.reelHead.style.left = x;
@@ -921,7 +920,6 @@
     reelSeek(cur + step);
   });
   el.reelPlay.addEventListener('click', reelPlay);
-  el.reelLive.addEventListener('click', reelToLatest);
   el.reelSpeed.addEventListener('change', () => setReelSpeed(+el.reelSpeed.value));
   el.reelQuality.addEventListener('change', () => setReelQuality(el.reelQuality.value));
   el.reelLoop.addEventListener('click', () => {

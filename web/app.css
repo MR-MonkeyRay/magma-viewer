@@ -491,7 +491,7 @@ main { flex: 1; width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 16
 .now-actions { display: flex; gap: 8px; }
 .now-actions .btn { flex: 1; min-width: 0; padding: 0 10px; font-size: var(--fs-sm); }
 /* Sits at the end of the state row; negative margins keep the row as tall as the badge. */
-.now-back { margin: -6px -10px -6px auto; color: var(--pigment); }
+.now-state .now-back { margin: -6px -10px -6px auto; color: var(--pigment); }
 .now-back svg { width: 14px; height: 14px; }
 
 /* ---------- archive status ---------- */
