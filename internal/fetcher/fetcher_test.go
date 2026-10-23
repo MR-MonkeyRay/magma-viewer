@@ -61,6 +61,8 @@ func TestRunSavesOnlyWhenChanged(t *testing.T) {
 	// Every run lands in the same second, so ordering relies on the mtime tie-breaker.
 	f.now = func() time.Time { return clock }
 
+	green, white := pngBytes(t, color.RGBA{0, 255, 0, 255}), pngBytes(t, color.RGBA{255, 255, 255, 255})
+	black := pngBytes(t, color.RGBA{0, 0, 0, 255})
 	steps := []struct {
 		body []byte
 		want string
@@ -69,7 +71,11 @@ func TestRunSavesOnlyWhenChanged(t *testing.T) {
 		{red, ResultSaved, 1},
 		{red, ResultUnchanged, 1},
 		{blue, ResultSaved, 2},
-		{red, ResultSaved, 3}, // only compared with the previous image
+		{red, ResultUnchanged, 2}, // among the last recentSaves images: A -> B -> A is not saved again
+		{green, ResultSaved, 3},
+		{white, ResultSaved, 4},
+		{black, ResultSaved, 5},
+		{red, ResultSaved, 6}, // further back counts as a change; same second, so the name moves on by one
 	}
 	for i, s := range steps {
 		body.Store(s.body)
@@ -83,10 +89,13 @@ func TestRunSavesOnlyWhenChanged(t *testing.T) {
 		t.Fatalf("unexpected name %s", latest.Name)
 	}
 
-	// A new fetcher picks up the last md5 from disk.
+	// A new fetcher picks up the recent md5s from disk.
 	f2 := New(cfg, t.TempDir(), st)
-	if got := f2.Run(context.Background()); got.Result != ResultUnchanged {
-		t.Fatalf("restart: got %s", got.Result)
+	for _, b := range [][]byte{red, white} {
+		body.Store(b)
+		if got := f2.Run(context.Background()); got.Result != ResultUnchanged {
+			t.Fatalf("restart: got %s", got.Result)
+		}
 	}
 }
 

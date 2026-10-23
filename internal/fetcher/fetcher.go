@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -75,6 +76,11 @@ const (
 // where the backoff starts.
 const alertAfter = 3
 
+// recentSaves is how many of the latest saved images a download is compared
+// with. Magma at times alternates between two encodings of the same board
+// (A -> B -> A -> B); a longer gap is more likely a real change back.
+const recentSaves = 4
+
 type Fetcher struct {
 	cfg          config.Magma
 	configCookie string // magma.cookie as configured, before any page override
@@ -87,8 +93,9 @@ type Fetcher struct {
 	// expiring cookie. It must not block.
 	Alert func(event, message string)
 
-	runMu   sync.Mutex // serialises runs (cron + manual trigger)
-	lastMD5 string
+	runMu     sync.Mutex // serialises runs (cron + manual trigger)
+	lastMD5   string
+	recentMD5 []string // the last recentSaves saved images, newest first
 	// Validators of the last good response and the URL that sent them (the
 	// end of any redirect), so an unchanged image can be answered with 304.
 	etag, lastModified, validatorURL string
@@ -123,6 +130,12 @@ func New(cfg config.Magma, tempDir string, st *store.Store) *Fetcher {
 		}
 		f.lastMD5 = sum
 		f.status.LastSaved = it.Time
+	}
+	all := st.All()
+	for _, it := range all[:min(recentSaves, len(all))] {
+		if sum, err := st.FileMD5(it); err == nil {
+			f.recentMD5 = append(f.recentMD5, sum)
+		}
 	}
 	if data, err := os.ReadFile(f.statePath()); err == nil {
 		var s savedState
@@ -379,13 +392,13 @@ func (f *Fetcher) fetchOnce(ctx context.Context, now time.Time) (file string, in
 	}
 
 	sum := hex.EncodeToString(h.Sum(nil))
-	if sum == f.lastMD5 {
+	if sum == f.lastMD5 || slices.Contains(f.recentMD5, sum) {
 		remember()
 		return "", info, nil
 	}
 
 	name := f.store.FileName(now, sum, ext)
-	// The same content may come back within one second (A -> B -> A).
+	// Content from further back than recentSaves may come back within one second.
 	for _, exists := f.store.Get(name); exists; _, exists = f.store.Get(name) {
 		now = now.Add(time.Second)
 		name = f.store.FileName(now, sum, ext)
@@ -397,6 +410,7 @@ func (f *Fetcher) fetchOnce(ctx context.Context, now time.Time) (file string, in
 		return "", info, fail(CodeSave, fmt.Errorf("save: %w", err))
 	}
 	f.lastMD5 = sum
+	f.recentMD5 = append([]string{sum}, f.recentMD5[:min(len(f.recentMD5), recentSaves-1)]...)
 	remember()
 	// Render thumbnails now so the first visitor does not wait for a 4K decode.
 	go func() {

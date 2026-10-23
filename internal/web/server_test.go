@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -81,7 +82,7 @@ func newTestServerStore(t *testing.T, n int) (*httptest.Server, string, *store.S
 	}
 	f := fetcher.New(cfg.Magma, t.TempDir(), st)
 	static := fstest.MapFS{
-		"index.html":    {Data: []byte("<html></html>")},
+		"index.html":    {Data: []byte(`<html><script src="app.js"></script></html>`)},
 		"app.js":        {Data: []byte("// app\n" + strings.Repeat("console.log('padding so gzip pays off');\n", 20))},
 		"fonts/a.woff2": {Data: []byte("font")},
 	}
@@ -561,6 +562,22 @@ func TestStaticAssetsRevalidateAndCompress(t *testing.T) {
 	}
 	if r := rawGet(t, srv.URL+"/nope.js"); r.StatusCode != http.StatusNotFound {
 		t.Fatalf("missing asset: %s", r.Status)
+	}
+}
+
+func TestPageLinksAssetsByContentHash(t *testing.T) {
+	srv, _ := newTestServer(t, 0)
+	page, _ := io.ReadAll(rawGet(t, srv.URL+"/").Body)
+	m := regexp.MustCompile(`src="app\.js\?v=([0-9a-f]{16})"`).FindSubmatch(page)
+	if m == nil {
+		t.Fatalf("page does not version app.js: %s", page)
+	}
+	if r := rawGet(t, srv.URL+"/app.js?v="+string(m[1])); r.StatusCode != http.StatusOK || r.Header.Get("Cache-Control") != immutable {
+		t.Fatalf("current version: %s cache %q", r.Status, r.Header.Get("Cache-Control"))
+	}
+	// A page from before a release asks for its old version and must not pin the new file.
+	if r := rawGet(t, srv.URL+"/app.js?v=0123456789abcdef"); r.Header.Get("Cache-Control") != "no-cache" {
+		t.Fatalf("stale version: cache %q", r.Header.Get("Cache-Control"))
 	}
 }
 

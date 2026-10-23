@@ -21,10 +21,15 @@ import (
 type asset struct {
 	ctype, cache string
 	body, gz     []byte // gz is nil when compression does not pay off
+	tag          string // content hash, also the ?v= of links to this file
 	etag, gzEtag string
 }
 
 var compressible = map[string]bool{".html": true, ".js": true, ".css": true, ".svg": true, ".json": true, ".txt": true}
+
+// immutable is the cache policy of a stylesheet or script asked for with its
+// current ?v=: that URL names this exact content.
+const immutable = "public, max-age=31536000, immutable"
 
 func loadAssets(static fs.FS) (map[string]asset, error) {
 	assets := map[string]asset{}
@@ -36,36 +41,57 @@ func loadAssets(static fs.FS) (map[string]asset, error) {
 		if err != nil {
 			return err
 		}
-		sum := sha256.Sum256(body)
-		tag := hex.EncodeToString(sum[:8])
-		ext := path.Ext(p)
-		a := asset{
-			ctype: mime.TypeByExtension(ext),
-			// Revalidated on every load (answered 304 when unchanged), so a release shows up at once.
-			cache: "no-cache",
-			body:  body,
-			etag:  `"` + tag + `"`,
-		}
-		if a.ctype == "" {
-			a.ctype = http.DetectContentType(body)
-		}
-		if strings.HasPrefix(p, "fonts/") {
-			a.cache = "public, max-age=2592000" // 30 days: fonts change rarely
-
-		}
-		if compressible[ext] {
-			var buf bytes.Buffer
-			zw, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
-			zw.Write(body)
-			zw.Close()
-			if buf.Len() < len(body) {
-				a.gz, a.gzEtag = buf.Bytes(), `"`+tag+`-gz"`
-			}
-		}
-		assets[p] = a
+		assets[p] = newAsset(p, body)
 		return nil
 	})
-	return assets, err
+	if err != nil {
+		return nil, err
+	}
+	// The page links its stylesheets and scripts with their content hash, so
+	// a release reaches every browser at once even past a cache (a CDN's
+	// browser TTL, say) that keeps the plain URLs for hours.
+	if page, ok := assets["index.html"]; ok {
+		body := page.body
+		for p, a := range assets {
+			if ext := path.Ext(p); ext == ".js" || ext == ".css" {
+				for _, attr := range []string{`src="`, `href="`} {
+					body = bytes.ReplaceAll(body, []byte(attr+p+`"`), []byte(attr+p+"?v="+a.tag+`"`))
+				}
+			}
+		}
+		assets["index.html"] = newAsset("index.html", body)
+	}
+	return assets, nil
+}
+
+func newAsset(p string, body []byte) asset {
+	sum := sha256.Sum256(body)
+	tag := hex.EncodeToString(sum[:8])
+	ext := path.Ext(p)
+	a := asset{
+		ctype: mime.TypeByExtension(ext),
+		// Revalidated on every load (answered 304 when unchanged), so a release shows up at once.
+		cache: "no-cache",
+		body:  body,
+		tag:   tag,
+		etag:  `"` + tag + `"`,
+	}
+	if a.ctype == "" {
+		a.ctype = http.DetectContentType(body)
+	}
+	if strings.HasPrefix(p, "fonts/") {
+		a.cache = "public, max-age=2592000" // 30 days: fonts change rarely
+	}
+	if compressible[ext] {
+		var buf bytes.Buffer
+		zw, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+		zw.Write(body)
+		zw.Close()
+		if buf.Len() < len(body) {
+			a.gz, a.gzEtag = buf.Bytes(), `"`+tag+`-gz"`
+		}
+	}
+	return a
 }
 
 func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +106,11 @@ func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	h := w.Header()
 	h.Set("Content-Type", a.ctype)
-	h.Set("Cache-Control", a.cache)
+	if v := r.URL.Query().Get("v"); v != "" && v == a.tag {
+		h.Set("Cache-Control", immutable)
+	} else {
+		h.Set("Cache-Control", a.cache) // an old ?v= gets today's file, which must not stick
+	}
 	body, etag := a.body, a.etag
 	if a.gz != nil {
 		h.Add("Vary", "Accept-Encoding")
