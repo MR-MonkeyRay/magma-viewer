@@ -33,17 +33,30 @@ install -m 0644 deploy/systemd/magma-viewer.service deploy/systemd/config.exampl
 # The go directive in go.mod selects the required toolchain, including when a
 # developer invokes this with an older Go installation supporting toolchains.
 export GOTOOLCHAIN=auto CGO_ENABLED=0 GOOS=linux
+members=(magma-viewer config.example.yaml magma-viewer.service install.sh README.md LICENSE VERSION)
 archives=()
 for arch in amd64 arm64; do
   archive="magma-viewer_${version}_linux_${arch}.tar.gz"
   GOARCH="$arch" go build -trimpath -ldflags='-s -w' -o "$work/package/magma-viewer" .
   chmod 0755 "$work/package/magma-viewer"
-  tar -czf "$work/$archive" -C "$work/package" \
-    magma-viewer config.example.yaml magma-viewer.service install.sh README.md LICENSE VERSION
+  # The binary must be the static Linux build for this architecture: install.sh trusts the archive name.
+  info=$(go version -m "$work/package/magma-viewer")
+  for want in "GOOS=linux" "GOARCH=$arch" "CGO_ENABLED=0"; do
+    if ! grep -q "[[:space:]]$want\$" <<<"$info"; then
+      printf 'Built binary for %s lacks %s\n' "$arch" "$want" >&2
+      exit 1
+    fi
+  done
+  tar -czf "$work/$archive" -C "$work/package" "${members[@]}"
+  # install.sh refuses any other layout, so check it here rather than in a failed installation.
+  if [[ $(tar -tzf "$work/$archive" | sort) != $(printf '%s\n' "${members[@]}" | sort) ]]; then
+    printf 'Unexpected members in %s\n' "$archive" >&2
+    exit 1
+  fi
   archives+=("$archive")
 done
 
-(cd "$work" && sha256sum "${archives[@]}" > SHA256SUMS)
+(cd "$work" && sha256sum "${archives[@]}" > SHA256SUMS && sha256sum --quiet --check SHA256SUMS)
 # Only expose final outputs once both architectures built successfully.
 for archive in "${archives[@]}"; do
   install -m 0644 "$work/$archive" "$root/dist/$archive"

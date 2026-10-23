@@ -1,0 +1,19 @@
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      # Best-effort cleanup: a failed Close or Remove on these paths has nowhere useful to go, and writes to an
+      # in-memory gzip buffer cannot fail.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*compress/gzip.Writer).Close
+        - (*compress/gzip.Writer).Write
+        - os.Remove
+        - io.Copy
+        - io.WriteString
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [errcheck]

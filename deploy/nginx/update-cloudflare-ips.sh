@@ -13,16 +13,36 @@ reload=${RELOAD:-1}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
+# 每份列表单独下载、单独校验：任一份失败、为空或格式不对都保留旧文件，
+# 以免一份正常的列表掩盖另一份的问题（sh 的管道不会因 curl 失败而失败）。
+# check 文件 格式 最少行数
+check() {
+  if [ ! -s "$1" ] || grep -Evq "$2" "$1" || [ "$(wc -l <"$1")" -lt "$3" ]; then
+    echo "update-cloudflare-ips: unexpected $(basename "$1") list from cloudflare.com, keeping current list" >&2
+    exit 1
+  fi
+}
 for v in 4 6; do
-  curl -fsS --max-time 20 --retry 3 "https://www.cloudflare.com/ips-v$v" | tr -d '\r' | awk 'NF' >"$tmp/v$v"
+  if ! curl -fsS --max-time 20 --retry 3 -o "$tmp/raw$v" "https://www.cloudflare.com/ips-v$v"; then
+    echo "update-cloudflare-ips: download of ips-v$v failed, keeping current list" >&2
+    exit 1
+  fi
+  tr -d '\r' <"$tmp/raw$v" | awk 'NF' >"$tmp/v$v"
 done
-cat "$tmp/v4" "$tmp/v6" >"$tmp/all"
-
-# 空列表或异常内容会导致 IP 识别错误，宁可保留旧文件。
-if grep -Evq '^[0-9A-Fa-f:.]+/[0-9]{1,3}$' "$tmp/all" || [ "$(wc -l <"$tmp/all")" -lt 10 ]; then
-  echo "update-cloudflare-ips: unexpected response from cloudflare.com, keeping current list" >&2
+octet='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
+check "$tmp/v4" "^($octet\\.){3}$octet/([0-9]|[12][0-9]|3[0-2])\$" 5
+check "$tmp/v6" '^[0-9A-Fa-f]{1,4}(:[0-9A-Fa-f]{0,4})+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$' 3
+# 正则只限定字符和前缀长度；这里再检查组数、"::" 至多一次且不出现 ":::"，以及首尾没有单个冒号。
+if ! awk -F/ '{
+  a = $1; d = gsub(/::/, "&", a)
+  if (d > 1 || a ~ /:::/ || a ~ /^:[^:]/ || a ~ /[^:]:$/) exit 1
+  n = 0; k = split(a, g, ":"); for (i = 1; i <= k; i++) if (g[i] != "") n++
+  if (d ? n > 7 : n != 8) exit 1
+}' "$tmp/v6"; then
+  echo "update-cloudflare-ips: unexpected v6 list from cloudflare.com, keeping current list" >&2
   exit 1
 fi
+cat "$tmp/v4" "$tmp/v6" >"$tmp/all"
 
 stamp="# 由 update-cloudflare-ips.sh 生成于 $(date -u '+%Y-%m-%d %H:%M UTC')，请勿手动修改。"
 {

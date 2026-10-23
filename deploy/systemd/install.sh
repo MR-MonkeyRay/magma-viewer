@@ -18,7 +18,9 @@ Requires root, systemd, bash, curl, tar, sha256sum, and useradd (shadow-utils).
 Binary: /usr/local/bin/magma-viewer
 Config: /etc/magma-viewer/config.yaml (root:magma-viewer, 0640)
 Data:   /var/lib/magma-viewer/images
-Existing configuration and images are preserved on upgrade.
+Existing configuration and images are preserved on upgrade. The last binary known to work is
+kept as /usr/local/bin/magma-viewer.prev, and an upgrade that does not become ready within 30 seconds
+is rolled back to it.
 EOF
 }
 
@@ -49,7 +51,7 @@ done
 [[ $(id -u) == 0 ]] || fail 'Run this script as root (sudo bash install.sh)'
 [[ -d /run/systemd/system ]] || fail 'A running systemd system is required'
 [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail 'Invalid GitHub repository'
-for tool in curl tar sha256sum install mktemp useradd getent od tr; do
+for tool in curl tar sha256sum install mktemp useradd getent od tr flock; do
   command -v "$tool" >/dev/null || fail "Required command not found: $tool"
 done
 command -v systemctl >/dev/null || fail 'systemctl is required'
@@ -59,6 +61,10 @@ case "$(uname -m)" in
   *) fail "Unsupported architecture: $(uname -m) (supported: amd64, arm64)" ;;
 esac
 [[ -z "$initial_config" || -f "$initial_config" ]] || fail "Config not found: $initial_config"
+
+# Two runs at once would interleave the binary swap and the kept version, so a second run refuses to start.
+exec 9>/run/magma-viewer-install.lock
+flock -n 9 || fail 'Another magma-viewer install is already running'
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -136,15 +142,57 @@ if [[ ! -e /etc/magma-viewer/config.yaml ]]; then
 fi
 install -m 0644 -o root -g magma-viewer "$work/package/config.example.yaml" /etc/magma-viewer/config.example.yaml
 
+# Keep the last version known to work beside the new one; an upgrade that never becomes ready is rolled back to it.
+# The marker stands for "the installed binary has not passed the readiness check yet" (left by --no-start or a
+# failed upgrade), so such a binary never replaces the kept version.
+bin=/usr/local/bin/magma-viewer
+unit=/etc/systemd/system/magma-viewer.service
+unverified=/usr/local/bin/.magma-viewer.unverified
+if [[ -f "$bin" && ! -e "$unverified" ]]; then
+  install -m 0755 "$bin" "$bin.prev"
+  [[ -f "$unit" ]] && install -m 0644 "$unit" "$work/unit.prev"
+fi
+previous=false
+[[ -f "$bin.prev" ]] && previous=true
+touch "$unverified"
 # Replace via rename so a running executable is never truncated in place.
 install -m 0755 "$work/package/magma-viewer" /usr/local/bin/.magma-viewer.new
-mv -f /usr/local/bin/.magma-viewer.new /usr/local/bin/magma-viewer
-install -m 0644 "$work/package/magma-viewer.service" /etc/systemd/system/magma-viewer.service
+mv -f /usr/local/bin/.magma-viewer.new "$bin"
+install -m 0644 "$work/package/magma-viewer.service" "$unit"
 systemctl daemon-reload
+
+# Ready means answering /healthz on the configured listen address, not merely running.
+ready() {
+  # A deadline rather than a round count: one healthcheck can itself take seconds when the service hangs.
+  local deadline=$((SECONDS + 30))
+  while ((SECONDS < deadline)); do
+    if systemctl is-active --quiet magma-viewer.service \
+      && "$bin" -config /etc/magma-viewer/config.yaml healthcheck >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
 if "$start"; then
   systemctl enable magma-viewer.service
-  systemctl restart magma-viewer.service
-  systemctl is-active --quiet magma-viewer.service || fail 'Service failed; inspect journalctl -u magma-viewer.service -n 50'
+  # A failed restart is handled like one that never becomes ready: set -e must not skip the rollback.
+  if systemctl restart magma-viewer.service && ready; then
+    rm -f "$unverified"
+  else
+    if ! "$previous"; then
+      fail 'Service did not become ready; inspect journalctl -u magma-viewer.service -n 50'
+    fi
+    printf 'Version %s did not become ready; restoring the previous version.\n' "$version" >&2
+    mv -f "$bin.prev" "$bin"
+    [[ -f "$work/unit.prev" ]] && install -m 0644 "$work/unit.prev" "$unit"
+    systemctl daemon-reload
+    if systemctl restart magma-viewer.service && ready; then
+      rm -f "$unverified"
+      fail "Upgrade to $version rolled back; the previous version is running. Inspect journalctl -u magma-viewer.service -n 50"
+    fi
+    fail 'Upgrade failed and the previous version did not become ready either; inspect journalctl -u magma-viewer.service -n 50'
+  fi
 fi
 printf '\nInstalled magma-viewer %s (%s).\nConfig: /etc/magma-viewer/config.yaml\nData: /var/lib/magma-viewer/images\n' "$version" "$arch"
 if "$new_config"; then

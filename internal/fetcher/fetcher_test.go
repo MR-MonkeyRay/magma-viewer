@@ -598,7 +598,7 @@ func TestCancelledRunIsNotAFailure(t *testing.T) {
 }
 
 func TestCookieUpdateDropsOldOutageOnRestart(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no", 403) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no", http.StatusForbidden) }))
 	defer srv.Close()
 	st, _ := store.New(t.TempDir())
 	cfg := config.Magma{URL: srv.URL, Timeout: time.Second}

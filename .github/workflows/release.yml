@@ -73,9 +73,16 @@ jobs:
             }
             core.setOutput('publish', 'true');
 
-  package:
+  # The full checks run only when a release will be published; ordinary main pushes already ran them for the image.
+  ci:
     needs: prepare
     if: needs.prepare.outputs.publish == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  package:
+    needs: [prepare, ci]
     runs-on: ubuntu-latest
     steps:
       - name: Check out intended source
@@ -89,9 +96,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-
-      - name: Test before building release artifacts
-        run: go test ./...
 
       - name: Package both Linux architectures
         run: bash build/package.sh

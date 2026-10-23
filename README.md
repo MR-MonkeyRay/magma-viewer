@@ -37,6 +37,8 @@ docker compose up -d
 
 镜像默认 `ghcr.io/mr-monkeyray/magma-viewer:latest`；固定版本可在同目录 `.env` 设置 `MAGMA_VIEWER_TAG=<版本>`。GHCR 包为私有时先 `docker login ghcr.io`。
 
+示例 compose 已做加固：根文件系统只读（只写 `/data/images` 和 `/tmp`，`/tmp` 为 tmpfs）、禁止提权、去掉全部 Linux 能力，只保留 `DAC_OVERRIDE`。保留它的原因：容器以 root 运行，需要它才能写入属主不是 root 的 `images/`、读取仅属主可读的 `config.yaml`。两者都属于 root 时，可删除 compose 中的 `cap_add`。
+
 升级执行 `docker compose pull && docker compose up -d`；升级或迁移前备份 `config.yaml` 与 `images/`。
 
 ### Linux systemd
@@ -49,11 +51,12 @@ sudo vi /etc/magma-viewer/config.yaml    # 设置 magma.url、magma.cookie，查
 sudo systemctl restart magma-viewer.service
 ```
 
-安装器从 Release 下载固定版本压缩包，校验 `SHA256SUMS` 后才写入；首次安装生成随机管理员密码和会话密钥。默认只监听 `127.0.0.1:8080`，公网访问请配置 HTTPS 反向代理。
+安装器从 Release 下载固定版本压缩包，校验 `SHA256SUMS` 后才写入；首次安装生成随机管理员密码和会话密钥。默认只监听 `127.0.0.1:8080`，公网访问请配置 HTTPS 反向代理。升级时保留旧程序为 `/usr/local/bin/magma-viewer.prev`；重启后 30 秒内健康检查（`/healthz`）不通过，会自动恢复旧程序和旧单元，并以非零状态退出。
 
 | 路径 | 用途 |
 | --- | --- |
 | `/usr/local/bin/magma-viewer` | 程序 |
+| `/usr/local/bin/magma-viewer.prev` | 上一版程序（升级时保留，用于自动回滚） |
 | `/etc/magma-viewer/config.yaml` | 配置，升级时保留 |
 | `/var/lib/magma-viewer/images` | 图片与缓存，升级时保留 |
 | `/etc/systemd/system/magma-viewer.service` | systemd 单元 |
@@ -71,7 +74,7 @@ sudo bash install.sh --version <版本>
 sudo bash install.sh --config ./config.yaml --no-start
 ```
 
-已有配置不会被覆盖。服务使用专用用户 `magma-viewer`，持久写入仅限 `/var/lib/magma-viewer`（临时目录为私有 `/tmp`）；自定义单元参数用 `sudo systemctl edit magma-viewer.service`。卸载前执行 `sudo systemctl disable --now magma-viewer.service`，再删除程序和单元并 `sudo systemctl daemon-reload`；配置与图片按需保留或删除。
+已有配置不会被覆盖。服务使用专用用户 `magma-viewer`，持久写入仅限 `/var/lib/magma-viewer`（临时目录为私有 `/tmp`）；自定义单元参数用 `sudo systemctl edit magma-viewer.service`。单元另外启用了系统调用过滤、内存不可写可执行、隐藏其他进程等 systemd 沙箱选项；若自定义部署需要放宽，同样用上述命令覆盖。卸载前执行 `sudo systemctl disable --now magma-viewer.service`，再删除程序和单元并 `sudo systemctl daemon-reload`；配置与图片按需保留或删除。
 
 ### HTTPS 反向代理
 
@@ -180,6 +183,15 @@ go test ./...
 go run . -config ./config.yaml
 ```
 
+提交前可在本地运行与 CI 相同的检查：`gofmt` 检查、`go vet`、`go test -race`、golangci-lint（配置见 [`.golangci.yml`](.golangci.yml)）、govulncheck，以及前端脚本语法检查（`node --check`）和 shellcheck。golangci-lint 与 govulncheck 用 `go run` 运行，是为了使用与模块相同的 Go 版本：
+
+```bash
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./...
+go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+```
+
+`-race` 需要 cgo 和 C 编译器。
+
 本地运行时将 `storage.dir` 改为可写目录（如 `./data/images`），并确认 `listen` 端口可用。
 
 目录：
@@ -193,9 +205,13 @@ web/        前端页面、脚本、样式与字体（编译时内嵌）
 
 ## 版本与发布
 
-版本由 [`VERSION`](VERSION) 统一维护（无 `v` 前缀的 SemVer），递增并推送后由 [Release 工作流](.github/workflows/release.yml) 测试、打包并创建 `v<版本>` Release；资产为 Linux amd64 / arm64 压缩包、`SHA256SUMS`、`install.sh` 与 `VERSION`。已发布的 Release 不会被覆盖。
+版本由 [`VERSION`](VERSION) 统一维护（无 `v` 前缀的 SemVer），递增并推送后由 [Release 工作流](.github/workflows/release.yml) 创建 `v<版本>` Release。Release 工作流只在需要发布新版本时运行完整 CI，通过后才打包；打包脚本会核对每个二进制的目标系统 / 架构、压缩包内的文件清单和 `SHA256SUMS`。资产为 Linux amd64 / arm64 压缩包、`SHA256SUMS`、`install.sh` 与 `VERSION`。已发布的 Release 不会被覆盖。
 
-[GHCR 工作流](.github/workflows/docker.yml) 在分支推送时构建镜像：`main` 使用 `<版本>` 与 `latest`，其他分支使用 `<分支>-<7 位 commit>`。目标标签均已存在时跳过构建。
+[CI 工作流](.github/workflows/ci.yml) 在 Pull Request 上运行；镜像与 Release 工作流先调用它，通过后才构建和发布。
+
+[GHCR 工作流](.github/workflows/docker.yml) 构建的镜像同时包含 linux/amd64 与 linux/arm64，并附带 SBOM 与构建来源证明（provenance）。`main` 上，`<版本>` 标签只在首次出现时推送、之后不再覆盖；`latest` 随每次 `main` 提交更新；预发布版本（如 `1.2.0-rc.1`）不更新 `latest`；版本中的 `+构建元数据` 在镜像标签中写作 `_`（如 `1.2.0+build.5` → `1.2.0_build.5`），因此不会与预发布标签重名。其他分支使用 `<分支>-<7 位 commit>`，已存在时跳过。
+
+[Dependabot](.github/dependabot.yml) 每周检查 GitHub Actions 与 Go 模块更新。
 
 本地打包：
 
@@ -210,6 +226,7 @@ bash build/package.sh
 
 - `config.yaml` 含真实 Cookie 和管理员密码，不要提交；仓库只保留 `config.example.yaml`，`.gitignore` 已排除本地配置、`.env` 和运行数据。
 - API 与 ZIP 响应带 `Cache-Control: no-store`；公网部署按 [`deploy/nginx`](deploy/nginx/README.md) 配置 HTTPS 与登录限流（应用自身已设置安全响应头和跨站防护）。
+- nginx 示例中附有注释掉的 HSTS 配置（`Strict-Transport-Security`），确认该域名会一直使用 HTTPS 后再启用。
 - 归档图片（文件名含 md5）的原图、缩略图、预览图带一年期 `immutable` 缓存，手动放入的其他文件名缓存 1 天；页面、脚本、样式按内容哈希提供 ETag 并 gzip 压缩，每次访问重新验证（未变化返回 304）；API 的 JSON 响应在客户端支持时 gzip 压缩。
 - 应用自身设置 `X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy` 与 CSP 响应头，并拒绝浏览器发起的跨站 POST / PUT / DELETE 请求，以及跨站触发的“打包下载全部”；在纯 HTTP 部署下以 Origin / Referer 判断来源，无法证明同源时拒绝。
 - 停止服务时最多等待 8 秒，让进行中的下载和抓取完成（低于 Docker 默认 10 秒与 systemd 单元 15 秒的停止期限）。

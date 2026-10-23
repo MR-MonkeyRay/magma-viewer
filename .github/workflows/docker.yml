@@ -15,7 +15,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  ci:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
   publish:
+    needs: ci
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
@@ -23,59 +29,73 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Prepare image tag
+      # main: the VERSION tag is pushed once and never replaced; latest follows every main commit unless VERSION
+      # is a prerelease. Other branches: one tag per commit.
+      - name: Prepare image tags
         id: metadata
         shell: bash
         run: |
           version=$(<VERSION)
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          release='' latest=false branch_tag=''
           if [[ "$GITHUB_REF_NAME" == "main" ]]; then
-            tags=("$version" "latest")
+            release=${version//+/_} # Docker tags cannot hold "+"; "_" cannot occur in a SemVer, so tags stay distinct
+            [[ "${version%%+*}" == *-* ]] || latest=true
           else
             branch=$(printf '%s' "$GITHUB_REF_NAME" | LC_ALL=C sed -E 's/[^a-zA-Z0-9_.-]+/-/g; s/^[.-]+//')
             branch="${branch:0:120}"
-            tags=("${branch:-branch}-${GITHUB_SHA:0:7}")
+            branch_tag="${branch:-branch}-${GITHUB_SHA:0:7}"
           fi
           {
             echo "version=$version"
-            echo "tags<<EOF"
-            printf '%s\n' "${tags[@]}"
-            echo "EOF"
+            echo "image=$image"
+            echo "release=$release"
+            echo "latest=$latest"
+            echo "branch_tag=$branch_tag"
+          } >> "$GITHUB_OUTPUT"
+
+      # Ask the registry itself: the packages REST API lists only public packages of a personal account, so a
+      # private image would look empty and its VERSION tag would be pushed again. Only a 404 counts as missing.
+      - name: Choose tags to push
+        id: tags
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ steps.metadata.outputs.image }}
+          RELEASE_TAG: ${{ steps.metadata.outputs.release }}
+          LATEST: ${{ steps.metadata.outputs.latest }}
+          BRANCH_TAG: ${{ steps.metadata.outputs.branch_tag }}
+        run: |
+          repo=${IMAGE#ghcr.io/}
+          token=$(curl -fsS -u "$GITHUB_ACTOR:$GHCR_TOKEN" "https://ghcr.io/token?scope=repository:$repo:pull" | jq -er .token)
+          exists() {
+            local code
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --head -H "Authorization: Bearer $token" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+              "https://ghcr.io/v2/$repo/manifests/$1")
+            case $code in
+              200) return 0 ;;
+              404) return 1 ;;
+              *) echo "::error::Checking $IMAGE:$1 returned HTTP $code" >&2; exit 1 ;;
+            esac
+          }
+          tags=()
+          if [[ -n "$BRANCH_TAG" ]]; then
+            exists "$BRANCH_TAG" || tags+=("$BRANCH_TAG")
+          else
+            exists "$RELEASE_TAG" || tags+=("$RELEASE_TAG")
+            if [[ "$LATEST" == true ]]; then tags+=(latest); fi
+          fi
+          if ((${#tags[@]})); then build=true; echo "Pushing: ${tags[*]}"; else build=false; echo 'Nothing to push: the tags already exist.'; fi
+          {
+            echo "build=$build"
             echo "refs<<EOF"
-            printf '%s\n' "${tags[@]/#/$image:}"
+            printf '%s\n' "${tags[@]/#/$IMAGE:}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Check whether image exists
-        id: exists
-        uses: actions/github-script@v7
-        env:
-          TARGET_TAGS: ${{ steps.metadata.outputs.tags }}
-        with:
-          script: |
-            const targets = process.env.TARGET_TAGS.split('\n').map(tag => tag.trim()).filter(Boolean);
-            const ownerType = context.payload.repository.owner.type === 'Organization' ? 'orgs' : 'users';
-            const route = `GET /${ownerType}/{owner}/packages/container/{package_name}/versions`;
-            const present = new Set();
-            try {
-              for await (const {data} of github.paginate.iterator(route, {
-                owner: context.repo.owner,
-                package_name: context.repo.repo.toLowerCase(),
-                per_page: 100,
-              })) {
-                for (const version of data) {
-                  for (const tag of version.metadata.container.tags) present.add(tag);
-                }
-              }
-            } catch (error) {
-              if (error.status !== 404) throw error;
-            }
-            const missing = targets.filter(tag => !present.has(tag));
-            core.setOutput('exists', String(missing.length === 0));
-            core.info(missing.length === 0 ? 'All target tags already exist; skipping build and push.' : `Missing tags: ${missing.join(', ')}; building.`);
-
       - name: Log in to GHCR
-        if: steps.exists.outputs.exists == 'false'
+        if: steps.tags.outputs.build == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -83,17 +103,22 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        if: steps.exists.outputs.exists == 'false'
+        if: steps.tags.outputs.build == 'true'
         uses: docker/setup-buildx-action@v3
 
+      # The build stage cross-compiles on the runner's own architecture and the final stage only copies files,
+      # so both platforms build without emulation.
       - name: Build and push image
-        if: steps.exists.outputs.exists == 'false'
+        if: steps.tags.outputs.build == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
           file: build/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.metadata.outputs.refs }}
+          tags: ${{ steps.tags.outputs.refs }}
+          provenance: mode=max
+          sbom: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
           labels: |

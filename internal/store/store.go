@@ -776,7 +776,6 @@ func makeThumbs(src, previewDst, smallDst string) error {
 		return fmt.Errorf("%w: %v", errUndecodable, err)
 	}
 	preview := scale(img, sizeEdge[Preview])
-	img = nil // let the full-size decode be collected before encoding
 	if err := writeJPEG(previewDst, preview, 85); err != nil {
 		return err
 	}
