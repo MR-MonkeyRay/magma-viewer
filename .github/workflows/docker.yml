@@ -104,7 +104,7 @@ jobs:
 
       - name: Set up Docker Buildx
         if: steps.tags.outputs.build == 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # The build stage cross-compiles on the runner's own architecture and the final stage only copies files,
       # so both platforms build without emulation.
