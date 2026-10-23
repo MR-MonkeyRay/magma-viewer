@@ -319,6 +319,12 @@
   }
 
   // ---------- images ----------
+  // Data saver or a 2G/3G connection: the big picture stays a thumbnail, playback defaults to thumbnails and nothing
+  // is fetched far ahead.
+  const conn = navigator.connection;
+  const saveData = !!conn && (conn.saveData || /2g|3g/.test(conn.effectiveType || ''));
+  // Fetches src into the browser cache without decoding it; an <img> asking for it later gets it from there.
+  const prefetch = (src, signal) => fetch(src, { priority: 'low', signal }).then((r) => r.blob());
   function imageDone(img, failed) {
     img.classList.add('loaded');
     const box = img.closest('.tile-open');
@@ -527,6 +533,8 @@
     if (!el.now.dataset.name) { el.now.classList.remove('pending'); el.now.hidden = true; }
   }
 
+  // The first row loads at once; it is the top of the screen when the big picture is not shown, so it goes first then.
+  const tileLoading = (i) => (i >= 6 ? 'loading="lazy"' : `loading="eager"${onFirstPage() ? '' : ' fetchpriority="high"'}`);
   function tileHTML(it, i) {
     const d = new Date(it.time);
     const sel = state.selected.has(it.name);
@@ -534,7 +542,7 @@
     const list = state.view === 'list';
     return `<figure class="tile${sel ? ' selected' : ''}" data-i="${i}" style="--d:${i}">
       <button type="button" class="tile-check" aria-label="${esc(t('tile.selectAt', { time: fmtFull(d) }))}" aria-pressed="${sel}"><svg><use href="#i-check"/></svg></button>
-      <button type="button" class="tile-open" aria-label="${esc(t('tile.view', { time: fmtFull(d) }))}" title="${esc(fmtFull(d))}"><img loading="lazy" decoding="async" src="/thumb/${enc(it.name)}"${it.w ? ` width="${it.w}" height="${it.h}"` : ''} alt=""></button>
+      <button type="button" class="tile-open" aria-label="${esc(t('tile.view', { time: fmtFull(d) }))}" title="${esc(fmtFull(d))}"><img ${tileLoading(i)} decoding="async" src="/thumb/${enc(it.name)}"${it.w ? ` width="${it.w}" height="${it.h}"` : ''} alt=""></button>
       <figcaption class="tile-cap">
         <time datetime="${esc(it.time)}">${list ? fmtFull(d) : fmtTile(d)}</time>
         ${list ? `<span class="name" title="${name}">${name}</span><span class="size">${it.w ? `<span class="dims">${it.w}×${it.h} · </span>` : ''}${fmtSize(it.size)}</span>` : ''}
@@ -594,8 +602,10 @@
     const first = !el.now.dataset.name;
     const scrubbing = reel.at >= 0 || reel.playing;
     el.now.dataset.name = shown.name;
-    // Scrubbing swaps small thumbnails instantly; the preview replaces them once it has loaded.
-    const src = `/preview/${enc(shown.name)}`;
+    // The first picture and scrubbing show the small thumbnail at once; the preview replaces it once decoded. On the
+    // first picture the fade-in hides that swap when the preview comes straight from the cache.
+    const thumb = `/thumb/${enc(shown.name)}`;
+    const src = saveData ? thumb : `/preview/${enc(shown.name)}`;
     const swap = () => {
       if (ver !== nowVer) return;
       if (shown.w) { el.nowImg.width = shown.w; el.nowImg.height = shown.h; }
@@ -606,8 +616,10 @@
         el.nowImg.animate([{ opacity: 0.3, filter: 'blur(8px)' }, { opacity: 1, filter: 'blur(0)' }], { duration: 700, easing: 'ease-out' });
       }
     };
-    if (first) return swap();
-    if (scrubbing && !upgrade) el.nowImg.src = `/thumb/${enc(shown.name)}`;
+    if (first) {
+      if (shown.w) { el.nowImg.width = shown.w; el.nowImg.height = shown.h; }
+      el.nowImg.src = thumb;
+    } else if (scrubbing && !upgrade) el.nowImg.src = thumb;
     delete el.now.dataset.thumb;
     const pre = new Image();
     pre.src = src;
@@ -622,15 +634,21 @@
   // Playback quality: the 480px thumbnail, the 1600px preview (default) or the original file. Larger frames take
   // longer to arrive, so more of them are loaded ahead.
   const REEL_QUALITY = { thumb: { path: '/thumb/', ahead: 3 }, preview: { path: '/preview/', ahead: 6 }, original: { path: '/img/', ahead: 4 } };
+  // Beyond those, about this much playback is downloaded (not decoded) ahead, so fast speeds do not outrun the network.
+  const REEL_FETCH_MS = 3000;
+  const REEL_FETCH_MAX = 40;
+  const reelDefault = saveData ? 'thumb' : 'preview';
   const reel = {
     items: [], times: [], heat: [], at: -1, playing: false, timer: 0, dragging: false, resume: false, from: 0, to: 0,
     speed: REEL_SPEEDS.includes(+store.get('reelSpeed')) ? +store.get('reelSpeed') : 1,
-    quality: store.get('reelQuality', 'preview') in REEL_QUALITY ? store.get('reelQuality', 'preview') : 'preview',
+    quality: store.get('reelQuality', reelDefault) in REEL_QUALITY ? store.get('reelQuality', reelDefault) : reelDefault,
     loop: store.get('reelLoop') === '1',
     timed: store.get('reelTimed') === '1', // space pictures by their real gaps instead of evenly
     run: 0, // bumped whenever playback stops or restarts, so a frame still loading cannot advance an old run
     frames: new Map(), // src -> promise settled once that frame is decoded or failed
     failed: new Set(), // frame URLs that did not load; playback shows that picture's thumbnail instead
+    fetches: new Map(), // src -> AbortController while downloading ahead, null once done
+    thumbsWarm: false, // the strip's thumbnails have been fetched once
   };
   let overviewSeq = 0;
   async function loadOverview() {
@@ -749,6 +767,44 @@
       reel.frames.delete(src);
       entry.img.removeAttribute('src');
     }
+    if (!keep) reelFetch(-1);
+  }
+
+  // Downloads the frames after i covering REEL_FETCH_MS of playback at the current speed into the browser cache, and
+  // aborts downloads that fell out of that range; i < 0 aborts them all.
+  function reelFetch(i) {
+    const keep = new Set();
+    const n = reel.items.length;
+    const count = i < 0 || saveData ? 0 : Math.min(REEL_FETCH_MAX, Math.ceil((REEL_FETCH_MS * reel.speed) / REEL_FRAME));
+    for (let k = 1; k <= count; k++) {
+      const j = reel.loop ? (i + k) % n : i + k;
+      if (j >= n) break;
+      const src = reelSrc(reel.items[j]);
+      keep.add(src);
+      if (reel.fetches.has(src) || reel.frames.has(src)) continue;
+      const ctl = new AbortController();
+      reel.fetches.set(src, ctl);
+      prefetch(src, ctl.signal).then(() => { if (reel.fetches.get(src) === ctl) reel.fetches.set(src, null); }, () => {
+        if (reel.fetches.get(src) === ctl) reel.fetches.delete(src);
+      });
+    }
+    for (const [src, ctl] of reel.fetches) {
+      if (keep.has(src)) continue;
+      if (ctl) ctl.abort();
+      reel.fetches.delete(src);
+    }
+  }
+
+  // The first time the strip is approached, the thumbnails around the picture shown (at most 50) are fetched a few
+  // at a time, so scrubbing and the hover preview there show at once.
+  function warmReelThumbs() {
+    if (reel.thumbsWarm || saveData || el.reel.hidden) return;
+    reel.thumbsWarm = true;
+    const at = reel.at >= 0 ? reel.at : reel.items.length - 1;
+    const from = Math.max(0, Math.min(at - 25, reel.items.length - 50));
+    const queue = reel.items.slice(from, from + 50).map((it) => `/thumb/${enc(it.name)}`);
+    const next = () => { const src = queue.shift(); if (src) prefetch(src).catch(() => {}).finally(next); };
+    for (let k = 0; k < 3; k++) next();
   }
 
   // Keeps the frames from i to i + ahead loading (wrapping round when looping) and cancels the rest, so the requests
@@ -763,6 +819,7 @@
       reelFrame(reel.items[j]);
     }
     reelForget(keep);
+    reelFetch(i);
   }
 
   let reelBufferTimer = 0;
@@ -920,6 +977,13 @@
     reelSeek(cur + step);
   });
   el.reelPlay.addEventListener('click', reelPlay);
+  // Pointing at or tabbing to the play button starts loading the first frames; leaving it without playing lets them go.
+  const reelIntent = (on) => () => { if (!reel.playing && !reel.dragging) { if (on) reelWarm(reelFrom()); else reelForget(); } };
+  el.reelPlay.addEventListener('pointerenter', reelIntent(true));
+  el.reelPlay.addEventListener('focus', reelIntent(true));
+  el.reelPlay.addEventListener('pointerleave', reelIntent(false));
+  el.reelPlay.addEventListener('blur', reelIntent(false));
+  for (const type of ['pointerenter', 'pointerdown', 'focus']) el.reelTrack.addEventListener(type, warmReelThumbs);
   el.reelSpeed.addEventListener('change', () => setReelSpeed(+el.reelSpeed.value));
   el.reelQuality.addEventListener('change', () => setReelQuality(el.reelQuality.value));
   el.reelLoop.addEventListener('click', () => {
@@ -1597,7 +1661,9 @@
       if (!(zoom.on && img.getAttribute('src').startsWith('/img/'))) img.src = src;
     };
     pre.decode().then(done, done);
-    for (const n of [state.items[i + 1], state.items[i - 1]]) if (n) new Image().src = `/preview/${enc(n.name)}`;
+    // Both neighbours load ahead, and two more in the direction of travel.
+    const ahead = dir && !saveData ? [i + dir, i - dir, i + 2 * dir, i + 3 * dir] : [i + 1, i - 1];
+    for (const k of ahead) if (state.items[k]) new Image().src = fullSrc(state.items[k]);
     renderSelection();
     renderCmp();
   }
