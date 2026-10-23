@@ -572,7 +572,7 @@
     el.nowTime.title = fmtFull(d);
     el.nowTime.textContent = fmtHM(d);
     el.nowAgo.dataset.ago = shown.time;
-    el.nowAgo.textContent = fmtAgo(d);
+    el.nowAgo.textContent = fmtAgo(d, false); // the short form tickTimes keeps it in (no data-saved)
     const idx = reel.items.findIndex((it) => it.name === shown.name);
     const prev = idx >= 0 ? reel.items[idx - 1] : null;
     el.nowFacts.innerHTML = `
