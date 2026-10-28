@@ -114,7 +114,12 @@
         <button type="button" role="menuitem" data-open="cookie-dialog"><svg><use href="#i-shield"/></svg><span data-i18n="cookie.menu">更新 Cookie</span></button>
         <button type="button" role="menuitem" id="notify-test" hidden><svg><use href="#i-send"/></svg><span data-i18n="notify.test">测试通知</span></button>
         <button type="button" role="menuitem" data-open="notice-admin-dialog"><svg><use href="#i-bell"/></svg><span data-i18n="acct.notices">公告管理</span><em id="acct-notices"></em></button>
-        <a role="menuitem" id="download-all" href="/download/all" download><svg><use href="#i-download"/></svg><span data-i18n="acct.downloadAll">下载全部</span></a>
+        <hr>
+        <div class="acct-group" id="acct-exports" role="group" aria-labelledby="acct-exports-label">
+          <p class="acct-label" id="acct-exports-label" data-i18n="acct.exports">下载与导出</p>
+          <a role="menuitem" id="download-all" href="/download/all" download><svg><use href="#i-download"/></svg><span data-i18n="acct.downloadAll">下载全部</span><em>ZIP</em></a>
+          <button type="button" role="menuitem" id="acct-video"><svg><use href="#i-film"/></svg><span data-i18n="acct.video">导出延时视频</span></button>
+        </div>
         <hr>
         <button type="button" role="menuitem" id="logout"><svg><use href="#i-logout"/></svg><span data-i18n="acct.logout">退出登录</span></button>
       </div>
@@ -241,7 +246,10 @@
     <a class="linkish" href="https://github.com/MR-MonkeyRay/magma-viewer" target="_blank" rel="noopener" title="在 GitHub 查看项目" data-i18n-title="bar.repo"><svg><use href="#i-github"/></svg><span>magma-viewer</span></a>
     <span class="foot-version" id="version" hidden></span>
   </span>
-  <button type="button" class="linkish" id="show-keys" title="键盘快捷键（?）" aria-label="键盘快捷键" data-i18n-title="foot.keysTip" data-i18n-label="foot.keys"><svg><use href="#i-keyboard"/></svg><kbd>?</kbd></button>
+  <span class="foot-meta">
+    <button type="button" class="linkish" id="replay-tour" title="重新查看引导" aria-label="重新查看引导" data-i18n-title="tour.replay" data-i18n-label="tour.replay"><svg><use href="#i-refresh"/></svg><span data-i18n="tour.replay">重新查看引导</span></button>
+    <button type="button" class="linkish" id="show-keys" title="键盘快捷键（?）" aria-label="键盘快捷键" data-i18n-title="foot.keysTip" data-i18n-label="foot.keys"><svg><use href="#i-keyboard"/></svg><kbd>?</kbd></button>
+  </span>
 </footer>
 
 <div class="fresh" id="fresh" hidden><button type="button" id="fresh-btn" title="查看最新画面" data-i18n-title="fresh.tip"><svg><use href="#i-up"/></svg><span data-i18n="fresh.text">新画面</span></button></div>
@@ -255,6 +263,23 @@
   <button type="button" class="sel-icon" id="sel-video" title="导出选中图片为延时视频" aria-label="导出选中图片为延时视频" data-i18n-title="sel.video" data-i18n-label="sel.video" hidden><svg><use href="#i-film"/></svg></button>
   <button type="button" class="sel-icon" id="sel-page" title="选中本页" aria-label="选中本页" data-i18n-title="sel.page" data-i18n-label="sel.page"><svg><use href="#i-select-all"/></svg></button>
   <button type="button" class="sel-icon" id="sel-clear" title="取消选择（Esc）" aria-label="取消选择" data-i18n-title="sel.clearTip" data-i18n-label="sel.clear"><svg><use href="#i-close"/></svg></button>
+</div>
+
+<div class="tour" id="tour" role="dialog" aria-modal="true" aria-labelledby="tour-title" aria-describedby="tour-text" hidden>
+  <div class="tour-hole" id="tour-hole" aria-hidden="true"></div>
+  <div class="tour-tip" id="tour-tip">
+    <div class="tour-head">
+      <strong class="tour-title" id="tour-title"></strong>
+      <button type="button" class="icon-btn lang-btn" id="tour-lang" title="Switch to English (L)" aria-label="Switch to English" data-i18n="lang.switch" data-i18n-title="lang.switchTip" data-i18n-label="lang.switchLabel">EN</button>
+      <button type="button" class="icon-btn" id="tour-close" title="关闭引导" aria-label="关闭引导" data-i18n-title="tour.close" data-i18n-label="tour.close"><svg><use href="#i-close"/></svg></button>
+    </div>
+    <p class="tour-text" id="tour-text"></p>
+    <div class="tour-foot">
+      <span class="tour-dots" id="tour-dots" role="img"></span>
+      <button type="button" class="btn ghost" id="tour-back" data-i18n="tour.back">上一步</button>
+      <button type="button" class="btn primary" id="tour-next">下一步</button>
+    </div>
+  </div>
 </div>
 
 <div class="toast" id="toast" aria-hidden="true" hidden><svg><use href="#i-info"/></svg><span></span></div>

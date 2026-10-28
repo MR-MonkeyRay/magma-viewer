@@ -423,6 +423,7 @@
       if (scroll) scrollToTop();
       // The picture left this page: step() opens the right one itself; otherwise show the nearest one.
       if (lost && !stepping) { if (state.items.length) openLightbox(state.lbIndex); else closeLightbox(); }
+      maybeTour();
       return true;
     } catch (e) {
       if (seq !== loadSeq || (guard && !guard())) return null;
@@ -681,6 +682,7 @@
       reel.from = reel.to - 864e5;
       renderReel();
       renderOverview();
+      maybeTour();
     } catch (e) { /* the reel is optional */ }
   }
   const reelX = (ms) => (ms - reel.from) / (reel.to - reel.from);
@@ -1313,6 +1315,7 @@
     const bar = n > 0 || state.selectMode;
     if (bar) show(el.selbar); else hide(el.selbar);
     document.body.classList.toggle('has-selbar', bar);
+    if (bar && !tourSeen('select')) maybeTour();
     el.selCount.textContent = state.admin ? t('sel.count', { n }) : t('sel.countGuest', { n, max: state.guestLimit });
     if (Number(el.selCount.dataset.n || 0) !== n) replay(el.selCount, 'bump');
     el.selCount.dataset.n = n;
@@ -1603,6 +1606,7 @@
     cmp.on = true;
     resetZoom();
     renderCmp();
+    maybeTour();
   }
 
   const wideScreen = window.matchMedia('(min-width: 1100px)');
@@ -1672,6 +1676,7 @@
       if (lbHistory) history.replaceState(history.state, '', imgHash(it.name));
       else { writeHash(); lbBase = location.hash; history.pushState({ lightbox: true }, '', imgHash(it.name)); lbHistory = true; }
       $('#lb-close').focus({ preventScroll: true });
+      maybeTour();
     } else if (lbHistory) {
       history.replaceState(history.state, '', imgHash(it.name)); // the address follows the picture shown
     }
@@ -1733,6 +1738,7 @@
     if (back) back.focus({ preventScroll: true });
     lbReturn = null;
     lbFrom = null;
+    maybeTour();
     if (lbHistory) {
       lbHistory = false;
       if (!fromHistory) { expectPop = true; history.back(); }
@@ -2749,7 +2755,7 @@
   el.lbZoom.addEventListener('click', () => toggleZoom());
   el.lbCompare.addEventListener('click', () => {
     cmp.on = !cmp.on;
-    if (cmp.on) resetZoom();
+    if (cmp.on) { resetZoom(); maybeTour(); }
     renderCmp();
   });
   el.cmpBar.addEventListener('click', (e) => {
@@ -2799,7 +2805,7 @@
   });
   el.lbInfo.addEventListener('click', () => setInfo(!el.lb.classList.contains('info-open'), true));
   document.addEventListener('pointerdown', (e) => {
-    if (menuBtn && !menuBtn.parentElement.contains(e.target)) closeMenu();
+    if (menuBtn && !menuBtn.parentElement.contains(e.target) && !e.target.closest('#tour')) closeMenu();
   });
   el.lb.addEventListener('click', (e) => {
     if (!zoom.on && (e.target === el.lb || e.target === el.lbStage || e.target.classList.contains('lb-foot'))) closeLightbox();
@@ -3057,6 +3063,183 @@
     e.preventDefault();
   });
 
+  // ---------- first-visit tours ----------
+  // Each part of the page explains itself once: a spotlight walks over its controls the first time the viewer gets
+  // there. Closing it early counts as seen. Steps whose control is not on screen are left out. A step names its
+  // control by selector, or by a function when it depends on where the viewer is.
+  const firstTileInView = () => {
+    const tiles = [...el.gallery.querySelectorAll('.tile')];
+    return tiles.find((n) => { const r = n.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; }) || tiles[0];
+  };
+  const TOURS = {
+    home: [['#now-view', 'home.now'], ['#reel', 'home.reel'], ['#history-bar .controls', 'home.history'], ['.bar-actions', 'home.bar']],
+    admin: [['#account', 'admin.menu'], ['#acct-exports', 'admin.exports', { enter: openAcctMenu, leave: () => closeMenu() }],
+      ['#reel-video', 'admin.video']],
+    select: [[firstTileInView, 'sel.pick'], ['#selbar', 'sel.bar']],
+    lightbox: [['#lb-img', 'lb.stage'], ['#lb-compare', 'lb.compare'], ['.lb-actions', 'lb.tools']],
+    compare: [['#lb-cmpbar .lb-seg', 'cmp.modes'], ['#cmp-line', 'cmp.line']],
+  };
+  const tourEl = { root: $('#tour'), hole: $('#tour-hole'), tip: $('#tour-tip'), title: $('#tour-title'), text: $('#tour-text'),
+    dots: $('#tour-dots'), back: $('#tour-back'), next: $('#tour-next') };
+  // A tour whose content changed gets a new revision, so viewers who saw the old one are shown it again.
+  const TOUR_REV = { admin: '2' };
+  const tourSeen = (n) => store.get('tour.' + n) === (TOUR_REV[n] || '1');
+  let tour = null;
+  let tourTimer = 0;
+  let tourMoving = 0;
+  const coarse = window.matchMedia('(pointer: coarse)'); // touch screens get wording without keys
+
+  const pick = (sel) => (typeof sel === 'function' ? sel() : $(sel));
+  const onScreen = (n) => { if (!n) return false; const r = n.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  function pendingTour() {
+    const names = state.lbIndex >= 0 ? ['lightbox', ...(cmp.on ? ['compare'] : [])]
+      : state.latest === undefined ? [] : ['home', ...(state.admin ? ['admin'] : []), ...(el.selbar.hidden ? [] : ['select'])];
+    return names.find((n) => !tourSeen(n));
+  }
+  // Called whenever a part of the page may have appeared; waits for it to settle before looking.
+  function maybeTour(delay = 800) {
+    clearTimeout(tourTimer);
+    if (tour) return;
+    tourTimer = setTimeout(() => {
+      const name = !tour && pendingTour();
+      if (!name) return;
+      // An open dialog, menu or calendar covers the page; look again once it is gone.
+      if (document.querySelector('dialog[open]') || menuBtn || !calBox.hidden) { maybeTour(1000); return; }
+      startTour(name);
+    }, delay);
+  }
+
+  function startTour(name) {
+    if (name === 'lightbox' || name === 'compare') el.lb.classList.remove('chrome-off');
+    // A step that opens its own menu is checked once the menu is open.
+    const steps = TOURS[name].filter(([sel, , hook]) => hook || onScreen(pick(sel)));
+    if (!steps.length) return;
+    tour = { name, steps, i: 0, target: null, key: '', raf: 0, back: document.activeElement };
+    show(tourEl.root);
+    tourStep(0);
+    tourEl.next.focus({ preventScroll: true });
+    const follow = () => { if (!tour) return; placeTour(); tour.raf = requestAnimationFrame(follow); };
+    follow();
+  }
+
+  // done: the viewer closed or finished it, so it is not shown again; otherwise its controls went away and it waits.
+  function endTour(done) {
+    if (!tour) return;
+    const { name, raf, back } = tour;
+    leaveStep();
+    tour = null;
+    cancelAnimationFrame(raf);
+    if (done) store.set('tour.' + name, TOUR_REV[name] || '1');
+    hide(tourEl.root);
+    if (back && back.isConnected) back.focus({ preventScroll: true });
+    maybeTour(done ? 400 : 800); // the next part's tour, or this one again once its controls are back
+  }
+
+  function tourStep(i) {
+    if (!tour) return;
+    if (i >= tour.steps.length) { endTour(true); return; }
+    leaveStep();
+    tour.i = Math.max(0, i);
+    const [sel, , hook] = tour.steps[tour.i];
+    if (hook) { hook.enter(); tourEl.next.focus({ preventScroll: true }); } // the menu takes focus as it opens
+    tour.target = pick(sel);
+    // The page scrolls the control into view; the lightbox is fixed and needs none.
+    const r = tour.target.getBoundingClientRect();
+    if (!el.lb.contains(tour.target) && (r.top < el.bar.offsetHeight || r.bottom > innerHeight)) {
+      const top = r.height > innerHeight * 0.6 ? r.top - el.bar.offsetHeight - 24 : r.top + r.height / 2 - innerHeight / 2;
+      window.scrollBy({ top, behavior: reduced() ? 'auto' : 'smooth' });
+    }
+    renderTour();
+    // The spotlight glides to the next control; between steps it follows scrolling at once.
+    tourEl.root.classList.add('moving');
+    clearTimeout(tourMoving);
+    tourMoving = setTimeout(() => tourEl.root.classList.remove('moving'), 500);
+    replay(tourEl.tip, 'step');
+    placeTour(true);
+  }
+
+  function leaveStep() {
+    const hook = tour && tour.target && tour.steps[tour.i][2];
+    if (hook) hook.leave();
+  }
+
+  function renderTour() {
+    const { steps, i } = tour;
+    const key = steps[i][1];
+    tourEl.title.textContent = t(`tour.${key}.title`);
+    const touch = coarse.matches && t(`tour.${key}.touch`);
+    tourEl.text.textContent = touch && touch !== `tour.${key}.touch` ? touch : t(`tour.${key}.text`);
+    tourEl.dots.innerHTML = steps.map((s, k) => `<i${k === i ? ' class="on"' : ''}></i>`).join('');
+    tourEl.dots.setAttribute('aria-label', t('tour.step', { k: i + 1, n: steps.length }));
+    tourEl.dots.hidden = steps.length < 2;
+    tourEl.back.hidden = i === 0;
+    tourEl.next.textContent = t(i === steps.length - 1 ? 'tour.done' : 'tour.next');
+  }
+
+  // Runs every frame while open, so the spotlight stays on its control through scrolling, resizing and reflow.
+  function placeTour(force = false) {
+    if (!onScreen(tour.target)) { endTour(false); return; }
+    const r = tour.target.getBoundingClientRect();
+    const vw = innerWidth;
+    const vh = innerHeight;
+    const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+    const x = clamp(r.left - 6, 6, vw - 6);
+    const y = clamp(r.top - 6, 6, vh - 6);
+    const w = clamp(r.right + 6, 6, vw - 6) - x;
+    const h = clamp(r.bottom + 6, 6, vh - 6) - y;
+    const key = [x, y, w, h, vw, vh].map(Math.round).join();
+    if (key === tour.key && !force) return;
+    tour.key = key;
+    Object.assign(tourEl.hole.style, { left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` });
+    // Below the control if it fits, else above, else over the bottom of a control that fills the screen.
+    const tip = tourEl.tip;
+    const tw = tip.offsetWidth;
+    const th = tip.offsetHeight;
+    let side = 'below';
+    let ty = y + h + 14;
+    if (ty + th > vh - 16) {
+      if (y - 14 - th >= 16) { side = 'above'; ty = y - 14 - th; } else { side = 'over'; ty = vh - th - 16; }
+    }
+    const tx = clamp(x + w / 2 - tw / 2, 16, vw - tw - 16);
+    tip.dataset.side = side;
+    tip.style.left = `${tx}px`;
+    tip.style.top = `${ty}px`;
+    tip.style.setProperty('--ax', `${clamp(x + w / 2 - tx, 24, tw - 24)}px`);
+  }
+
+  function tourLang() {
+    toggleLang();
+    renderTour();
+    placeTour(true);
+  }
+  tourEl.next.addEventListener('click', () => tourStep(tour.i + 1));
+  tourEl.back.addEventListener('click', () => tourStep(tour.i - 1));
+  $('#tour-close').addEventListener('click', () => endTour(true));
+  $('#tour-lang').addEventListener('click', tourLang);
+  // Clears every tour, so each part explains itself again, starting with this one.
+  $('#replay-tour').addEventListener('click', () => {
+    Object.keys(TOURS).forEach((n) => store.set('tour.' + n, '0'));
+    maybeTour(0);
+  });
+  // The page underneath stays put: the tour scrolls to each control itself.
+  tourEl.root.addEventListener('wheel', (e) => e.preventDefault(), { passive: false });
+  tourEl.root.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+  // Ahead of the page's own shortcuts, which must not act on what lies under the tour.
+  window.addEventListener('keydown', (e) => {
+    if (!tour) return;
+    e.stopPropagation();
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (k === 'Tab') {
+      const btns = [...tourEl.root.querySelectorAll('button:not([hidden])')];
+      btns[(btns.indexOf(document.activeElement) + (e.shiftKey ? -1 : 1) + btns.length) % btns.length].focus();
+    } else if (k === 'Escape') endTour(true);
+    else if (k === 'ArrowRight') tourStep(tour.i + 1);
+    else if (k === 'ArrowLeft') tourStep(tour.i - 1);
+    else if (k === 'l' && !(e.ctrlKey || e.metaKey || e.altKey)) tourLang();
+    else return; // Enter and Space press the focused button
+    e.preventDefault();
+  }, true);
+
   // ---------- dialogs ----------
   document.querySelectorAll('dialog.modal').forEach((d) => {
     d.addEventListener('cancel', (e) => { e.preventDefault(); closeDialog(d); });
@@ -3119,6 +3302,7 @@
     const item = e.target.closest('[data-open]');
     if (item) { closeMenu(true); SECTIONS[item.dataset.open](); }
     else if (e.target.closest('#download-all')) closeMenu(true);
+    else if (e.target.closest('#acct-video')) { closeMenu(true); openVideo(state.selected.size >= 2 ? 'picked' : 'recent'); }
   });
 
   el.nowWarn.addEventListener('click', (e) => { if (e.target.closest('#now-warn-more')) openStatus(); });
