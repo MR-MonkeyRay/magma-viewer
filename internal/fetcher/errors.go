@@ -18,7 +18,7 @@ const (
 	CodeSave     = "save"      // the download worked, writing it to disk did not
 )
 
-// Run and SetURL reject operations that cannot start with these errors.
+// Run rejects operations that cannot start with these errors.
 var (
 	ErrBusy     = errors.New("board is fetching")
 	ErrInactive = errors.New("board is inactive")

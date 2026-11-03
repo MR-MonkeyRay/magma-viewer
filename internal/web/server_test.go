@@ -22,6 +22,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"magma-viewer/internal/board"
 	"magma-viewer/internal/config"
 	"magma-viewer/internal/fetcher"
 	"magma-viewer/internal/notice"
@@ -56,6 +57,34 @@ func openNotices(t *testing.T) *notice.Store {
 	return ns
 }
 
+func newTestWebServer(t *testing.T, cfg *config.Config, ensureLegacy bool) (*Server, *board.Manager, *board.Runtime) {
+	t.Helper()
+	root := t.TempDir()
+	if ensureLegacy {
+		if err := os.WriteFile(filepath.Join(root, "legacy.png"), []byte("img"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if cfg.Schedule == "" {
+		cfg.Schedule = "* * * * *"
+	}
+	cfg.Storage = config.Storage{Dir: root, TempDir: t.TempDir()}
+	creds := fetcher.NewCredentials(cfg.Magma.Cookie, filepath.Join(root, ".state", "cookie.json"))
+	boards, err := board.NewManager(board.Options{Root: root, TempDir: cfg.Storage.TempDir, Magma: cfg.Magma, Schedule: cfg.Schedule, Shared: creds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(boards.Stop)
+	var rt *board.Runtime
+	if id := boards.LegacyID(); id != "" {
+		rt, _, err = boards.Resolve(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return New(cfg, boards, creds, openNotices(t), fstest.MapFS{}), boards, rt
+}
+
 func newTestServer(t *testing.T, n int) (*httptest.Server, string) {
 	t.Helper()
 	srv, q, _ := newTestServerStore(t, n)
@@ -65,37 +94,44 @@ func newTestServer(t *testing.T, n int) (*httptest.Server, string) {
 // newTestServerStore serves n tiny images and returns the server, an f=... query naming them all, and the store.
 func newTestServerStore(t *testing.T, n int) (*httptest.Server, string, *store.Store) {
 	t.Helper()
-	dir := t.TempDir()
+	root := t.TempDir()
 	var names []string
 	for i := 0; i < n; i++ {
 		name := fmt.Sprintf("20261020-1200%02d_%032d.png", i, i)
 		names = append(names, name)
-		os.WriteFile(filepath.Join(dir, name), []byte("img"), 0o644)
-	}
-	st, err := store.New(dir)
-	if err != nil {
-		t.Fatal(err)
+		if err := os.WriteFile(filepath.Join(root, name), []byte("img"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	cfg := &config.Config{
 		Admin:    config.Admin{Username: "admin", Password: "pw", SessionTTL: time.Hour},
 		Magma:    config.Magma{URL: "http://127.0.0.1:1", Timeout: time.Second},
 		Schedule: "* * * * *",
+		Storage:  config.Storage{Dir: root, TempDir: t.TempDir()},
 	}
-	creds := fetcher.NewCredentials(cfg.Magma.Cookie, filepath.Join(t.TempDir(), "cookie.json"))
-	f := fetcher.New(cfg.Magma, t.TempDir(), st, creds)
+	creds := fetcher.NewCredentials(cfg.Magma.Cookie, filepath.Join(root, ".state", "cookie.json"))
+	boards, err := board.NewManager(board.Options{Root: root, TempDir: cfg.Storage.TempDir, Magma: cfg.Magma, Schedule: cfg.Schedule, Shared: creds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(boards.Stop)
+	rt, _, err := boards.Resolve(boards.LegacyID())
+	if err != nil {
+		t.Fatal(err)
+	}
 	static := fstest.MapFS{
 		"index.html":    {Data: []byte(`<html><script src="app.js"></script></html>`)},
 		"app.js":        {Data: []byte("// app\n" + strings.Repeat("console.log('padding so gzip pays off');\n", 20))},
 		"fonts/a.woff2": {Data: []byte("font")},
 	}
-	srv := httptest.NewServer(New(cfg, st, f, creds, openNotices(t), static).Handler())
+	srv := httptest.NewServer(New(cfg, boards, creds, openNotices(t), static).Handler())
 	t.Cleanup(srv.Close)
 
 	q := url.Values{}
 	for _, n := range names {
 		q.Add("f", n)
 	}
-	return srv, q.Encode(), st
+	return srv, q.Encode(), rt.Store
 }
 
 func login(t *testing.T, base string) *http.Cookie {
@@ -218,15 +254,17 @@ func TestSchedulePause(t *testing.T) {
 }
 
 func TestListReportsNextRunAndVersion(t *testing.T) {
-	st, err := store.New(t.TempDir())
+	root := t.TempDir()
+	cfg := &config.Config{Magma: config.Magma{URL: "http://127.0.0.1:1", Timeout: time.Second}, Schedule: "* * * * *", Storage: config.Storage{Dir: root, TempDir: t.TempDir()}}
+	creds := fetcher.NewCredentials(cfg.Magma.Cookie, filepath.Join(root, ".state", "cookie.json"))
+	boards, err := board.NewManager(board.Options{Root: root, TempDir: cfg.Storage.TempDir, Magma: cfg.Magma, Schedule: cfg.Schedule, Shared: creds})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{Magma: config.Magma{URL: "http://127.0.0.1:1", Timeout: time.Second}, Schedule: "* * * * *"}
-	creds := fetcher.NewCredentials(cfg.Magma.Cookie, filepath.Join(t.TempDir(), "cookie.json"))
-	s := New(cfg, st, fetcher.New(cfg.Magma, t.TempDir(), st, creds), creds, openNotices(t), fstest.MapFS{})
-	next := time.Date(2026, 10, 21, 12, 1, 0, 0, time.UTC)
-	s.NextRun = func() time.Time { return next }
+	ctx, cancel := context.WithCancel(context.Background())
+	boards.Start(ctx)
+	t.Cleanup(func() { cancel(); boards.Stop() })
+	s := New(cfg, boards, creds, openNotices(t), fstest.MapFS{})
 	s.Version = "1.2.3"
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
@@ -242,8 +280,8 @@ func TestListReportsNextRunAndVersion(t *testing.T) {
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if !body.Task.NextRun.Equal(next) {
-		t.Fatalf("next_run = %v, want %v", body.Task.NextRun, next)
+	if next := boards.NextRun(boards.LegacyID()); !body.Task.NextRun.Equal(next) || next.IsZero() {
+		t.Fatalf("next_run = %v, want non-zero %v", body.Task.NextRun, next)
 	}
 	if body.Version != "1.2.3" {
 		t.Fatalf("version = %q", body.Version)
@@ -636,10 +674,8 @@ func TestImageCacheHeaders(t *testing.T) {
 }
 
 func TestZoneAliasesNotCached(t *testing.T) {
-	st, _ := store.New(t.TempDir())
 	cfg := &config.Config{Admin: config.Admin{Username: "a", Password: "b", SessionTTL: time.Hour}}
-	creds := fetcher.NewCredentials(cfg.Magma.Cookie, filepath.Join(t.TempDir(), "cookie.json"))
-	s := New(cfg, st, fetcher.New(cfg.Magma, t.TempDir(), st, creds), creds, openNotices(t), fstest.MapFS{})
+	s, _, _ := newTestWebServer(t, cfg, true)
 	h := s.Handler()
 	for _, tz := range []string{"Europe/Paris", "Europe/./Paris", "Europe//Paris", "./Europe/Paris"} {
 		rec := httptest.NewRecorder()
@@ -781,14 +817,9 @@ func TestSetCookie(t *testing.T) {
 func TestHandleFetchConflicts(t *testing.T) {
 	newServer := func(t *testing.T, magma config.Magma) (*Server, *fetcher.Fetcher) {
 		t.Helper()
-		st, err := store.New(t.TempDir())
-		if err != nil {
-			t.Fatal(err)
-		}
 		cfg := &config.Config{Magma: magma}
-		creds := fetcher.NewCredentials("", filepath.Join(t.TempDir(), "cookie.json"))
-		f := fetcher.New(magma, t.TempDir(), st, creds)
-		return New(cfg, st, f, creds, openNotices(t), fstest.MapFS{}), f
+		s, _, rt := newTestWebServer(t, cfg, true)
+		return s, rt.Fetcher
 	}
 	check := func(t *testing.T, s *Server, code, message string) {
 		t.Helper()
@@ -925,13 +956,8 @@ func TestNotifyTestSends(t *testing.T) {
 		got <- m
 	}))
 	defer hook.Close()
-	st, err := store.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
 	cfg := &config.Config{Admin: config.Admin{Username: "admin", Password: "pw", SessionTTL: time.Hour}}
-	creds := fetcher.NewCredentials(cfg.Magma.Cookie, filepath.Join(t.TempDir(), "cookie.json"))
-	s := New(cfg, st, fetcher.New(cfg.Magma, t.TempDir(), st, creds), creds, openNotices(t), fstest.MapFS{})
+	s, _, _ := newTestWebServer(t, cfg, true)
 	s.Notifier = notify.New(config.Notify{Webhook: hook.URL, Format: "json"})
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
@@ -988,5 +1014,40 @@ func TestZipFormPostGuards(t *testing.T) {
 	}
 	if got := send("f="+strings.Repeat("x", 2<<20), "same-origin"); got != http.StatusBadRequest {
 		t.Errorf("oversized form: %d", got)
+	}
+}
+
+func TestStatusUsesManagerSummary(t *testing.T) {
+	cfg := &config.Config{
+		Admin:    config.Admin{Username: "admin", Password: "pw", SessionTTL: time.Hour},
+		Schedule: "* * * * *",
+		Storage:  config.Storage{Dir: t.TempDir(), TempDir: t.TempDir()},
+	}
+	creds := fetcher.NewCredentials("", filepath.Join(cfg.Storage.Dir, ".state", "cookie.json"))
+	now := time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC)
+	boards, err := board.NewManager(board.Options{
+		Root: cfg.Storage.Dir, TempDir: cfg.Storage.TempDir, Schedule: cfg.Schedule,
+		Shared: creds, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(boards.Stop)
+	b, err := boards.Create(board.Settings{
+		Name: "Window", URL: "http://example.invalid", SyncFrom: now.Add(-time.Hour), SyncUntil: now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := boards.SetPaused(b.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	s := New(cfg, boards, creds, openNotices(t), fstest.MapFS{})
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+	c := login(t, srv.URL)
+	body := decode(t, get(t, srv.URL+"/api/status?board="+b.ID, c))
+	if got := body["board"].(map[string]any)["state"]; got != "syncing" {
+		t.Fatalf("state = %v, want manager clock's syncing state", got)
 	}
 }

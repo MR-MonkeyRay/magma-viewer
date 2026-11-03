@@ -14,18 +14,15 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 	_ "time/tzdata" // the scratch image has no zoneinfo; honour TZ anyway
 
-	"github.com/robfig/cron/v3"
-
+	"magma-viewer/internal/board"
 	"magma-viewer/internal/config"
 	"magma-viewer/internal/fetcher"
 	"magma-viewer/internal/notice"
 	"magma-viewer/internal/notify"
-	"magma-viewer/internal/store"
 	"magma-viewer/internal/web"
 )
 
@@ -71,42 +68,31 @@ func run(configPath string) error {
 	if err := os.MkdirAll(cfg.Storage.TempDir, 0o755); err != nil {
 		return err
 	}
-	st, err := store.New(cfg.Storage.Dir)
-	if err != nil {
-		return fmt.Errorf("open storage dir: %w", err)
-	}
 	log.Printf("magma-viewer %s", strings.TrimSpace(version))
 	if cfg.Admin.SessionSecret == "" {
 		log.Printf("WARNING admin.session_secret is empty: a random key is used and every restart logs the admin out")
 	}
-	log.Printf("storage %s: %d images", cfg.Storage.Dir, st.Count())
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	creds := fetcher.NewCredentials(cfg.Magma.Cookie, filepath.Join(cfg.Storage.Dir, ".state", "cookie.json"))
-	f := fetcher.New(cfg.Magma, cfg.Storage.TempDir, st, creds)
 	n := notify.New(cfg.Notify)
+	var alert func(event, message string)
 	if n != nil {
-		f.Alert = n.Send
-		go creds.WatchToken(ctx.Done(), n.Send)
-		go f.WatchToken(ctx.Done(), n.Send)
+		alert = n.Send
 	}
-	c := cron.New(cron.WithChain(cron.SkipIfStillRunning(cron.DefaultLogger)))
-	entry, err := c.AddFunc(cfg.Schedule, func() { f.RunScheduled(ctx) })
+	mgr, err := board.NewManager(board.Options{
+		Root:     cfg.Storage.Dir,
+		TempDir:  cfg.Storage.TempDir,
+		Magma:    cfg.Magma,
+		Schedule: cfg.Schedule,
+		Shared:   creds,
+		Alert:    alert,
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("open boards: %w", err)
 	}
-	c.Start()
-	var startup sync.WaitGroup
-	startup.Go(func() { f.RunScheduled(ctx) })
-	log.Printf("fetch schedule: %q", cfg.Schedule)
-
-	go st.Watch(ctx.Done(), time.Minute)
-	go func() {
-		st.Cleanup(cfg.Storage.TempDir)
-		st.Warm(ctx.Done())
-	}()
+	for _, b := range mgr.List(true) {
+		log.Printf("board %q (%s): %d images", b.Name, b.ID, b.Count)
+	}
 
 	ns, err := notice.Open(filepath.Join(cfg.Storage.Dir, ".state", "notices.json"))
 	if err != nil {
@@ -117,10 +103,14 @@ func run(configPath string) error {
 	if err != nil {
 		return err
 	}
-	ws := web.New(cfg, st, f, creds, ns, static)
-	ws.NextRun = func() time.Time { return c.Entry(entry).Next }
+	ws := web.New(cfg, mgr, creds, ns, static)
 	ws.Version = strings.TrimSpace(version)
 	ws.Notifier = n
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	mgr.Start(ctx)
+
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           ws.Handler(),
@@ -136,25 +126,7 @@ func run(configPath string) error {
 		<-ctx.Done()
 		stopCtx, cancel := context.WithTimeout(context.Background(), stopBudget)
 		defer cancel()
-		cronDone := c.Stop().Done()
-		shutdownErr := srv.Shutdown(stopCtx)
-		if shutdownErr != nil {
-			log.Printf("shutdown: %v", shutdownErr)
-		}
-		fetches := make(chan struct{})
-		go func() {
-			<-cronDone
-			startup.Wait()
-			if shutdownErr == nil {
-				f.Drain()
-			}
-			close(fetches)
-		}()
-		select {
-		case <-fetches:
-		case <-stopCtx.Done():
-			log.Printf("shutdown: a fetch is still running")
-		}
+		shutdown(stopCtx, srv.Shutdown, mgr.Stop)
 	}()
 	log.Printf("listening on %s", cfg.Listen)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
@@ -162,6 +134,36 @@ func run(configPath string) error {
 	}
 	<-drained
 	return nil
+}
+
+// shutdown drains HTTP requests and board work concurrently within one deadline.
+func shutdown(ctx context.Context, shutdownServer func(context.Context) error, stop func()) {
+	httpDone := make(chan error, 1)
+	stopped := make(chan struct{})
+	go func() { httpDone <- shutdownServer(ctx) }()
+	go func() {
+		stop()
+		close(stopped)
+	}()
+	for httpDone != nil || stopped != nil {
+		select {
+		case err := <-httpDone:
+			if err != nil {
+				log.Printf("shutdown: %v", err)
+			}
+			httpDone = nil
+		case <-stopped:
+			stopped = nil
+		case <-ctx.Done():
+			if httpDone != nil {
+				log.Printf("shutdown: HTTP requests are still running")
+			}
+			if stopped != nil {
+				log.Printf("shutdown: a fetch is still running")
+			}
+			return
+		}
+	}
 }
 
 // healthcheck lets the scratch image run a Docker HEALTHCHECK without curl.

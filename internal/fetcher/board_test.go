@@ -219,9 +219,7 @@ func TestRunGates(t *testing.T) {
 					return false
 				}
 			case "no_url":
-				if err := f.SetURL(""); err != nil {
-					t.Fatal(err)
-				}
+				f.URL = func() string { return "" }
 				want = ErrNoURL
 			}
 			before := hits.Load()
@@ -244,7 +242,74 @@ func TestRunGates(t *testing.T) {
 	}
 }
 
-func TestBusyRunAndSetURL(t *testing.T) {
+func TestURLHookSelection(t *testing.T) {
+	img := pngBytes(t, color.White)
+	var fallbackHits, hookHits atomic.Int32
+	serve := func(hits *atomic.Int32) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			w.Write(img)
+		}))
+	}
+	fallback := serve(&fallbackHits)
+	defer fallback.Close()
+	hook := serve(&hookHits)
+	defer hook.Close()
+
+	t.Run("nil hook falls back to config", func(t *testing.T) {
+		st, _ := store.New(t.TempDir())
+		f := newTestFetcher(t, config.Magma{URL: fallback.URL}, t.TempDir(), st)
+		if got, err := f.Run(context.Background()); err != nil || got.Result != ResultSaved {
+			t.Fatalf("Run = %+v, %v", got, err)
+		}
+		if fallbackHits.Load() != 1 {
+			t.Fatalf("fallback hits = %d", fallbackHits.Load())
+		}
+	})
+
+	t.Run("hook overrides config", func(t *testing.T) {
+		st, _ := store.New(t.TempDir())
+		f := newTestFetcher(t, config.Magma{URL: fallback.URL}, t.TempDir(), st)
+		calls := 0
+		f.URL = func() string {
+			calls++
+			return hook.URL
+		}
+		if got, err := f.Run(context.Background()); err != nil || got.Result != ResultSaved {
+			t.Fatalf("Run = %+v, %v", got, err)
+		}
+		if calls != 1 || hookHits.Load() != 1 || fallbackHits.Load() != 1 {
+			t.Fatalf("hook calls=%d, hook hits=%d, fallback hits=%d", calls, hookHits.Load(), fallbackHits.Load())
+		}
+	})
+
+	t.Run("hook supplies missing config URL", func(t *testing.T) {
+		st, _ := store.New(t.TempDir())
+		f := newTestFetcher(t, config.Magma{}, t.TempDir(), st)
+		f.URL = func() string { return hook.URL }
+		if got, err := f.Run(context.Background()); err != nil || got.Result != ResultSaved {
+			t.Fatalf("Run = %+v, %v", got, err)
+		}
+		if hookHits.Load() != 2 {
+			t.Fatalf("hook hits = %d", hookHits.Load())
+		}
+	})
+
+	t.Run("empty hook suppresses config URL", func(t *testing.T) {
+		st, _ := store.New(t.TempDir())
+		f := newTestFetcher(t, config.Magma{URL: fallback.URL}, t.TempDir(), st)
+		f.URL = func() string { return "" }
+		f.RunScheduled(context.Background())
+		if _, err := f.Run(context.Background()); !errors.Is(err, ErrNoURL) {
+			t.Fatalf("Run error = %v", err)
+		}
+		if fallbackHits.Load() != 1 || len(f.History()) != 0 {
+			t.Fatalf("empty hook fetched: hits=%d history=%+v", fallbackHits.Load(), f.History())
+		}
+	})
+}
+
+func TestBusyRun(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	img := pngBytes(t, color.White)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -259,18 +324,17 @@ func TestBusyRunAndSetURL(t *testing.T) {
 	go func() { f.Run(context.Background()); close(done) }()
 	<-entered
 	_, runErr := f.Run(context.Background())
-	urlErr := f.SetURL("http://unused.example")
 	close(release)
 	<-done
-	if !errors.Is(runErr, ErrBusy) || !errors.Is(urlErr, ErrBusy) {
-		t.Fatalf("Run error = %v, SetURL error = %v", runErr, urlErr)
+	if !errors.Is(runErr, ErrBusy) {
+		t.Fatalf("Run error = %v", runErr)
 	}
 	if len(f.History()) != 1 || f.cfg.URL != srv.URL {
-		t.Fatalf("busy operations changed state: %q, %+v", f.cfg.URL, f.History())
+		t.Fatalf("busy run changed state: %q, %+v", f.cfg.URL, f.History())
 	}
 }
 
-func TestSetURLClearsValidatorsAndKeepsDeduplication(t *testing.T) {
+func TestURLHookKeepsValidatorsWithActualURLAndDeduplication(t *testing.T) {
 	red, blue := pngBytes(t, color.RGBA{255, 0, 0, 255}), pngBytes(t, color.RGBA{0, 0, 255, 255})
 	seen := make(chan http.Header, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -285,23 +349,25 @@ func TestSetURLClearsValidatorsAndKeepsDeduplication(t *testing.T) {
 	}))
 	defer srv.Close()
 	st, _ := store.New(t.TempDir())
-	f := newTestFetcher(t, config.Magma{URL: srv.URL}, t.TempDir(), st)
+	f := newTestFetcher(t, config.Magma{URL: "http://unused.example"}, t.TempDir(), st)
+	path := ""
+	f.URL = func() string { return srv.URL + path }
 	f.Run(context.Background())
 	<-seen
 	last, recent := f.lastMD5, slices.Clone(f.recentMD5)
-	for i, path := range []string{"", "/blue", ""} {
-		if err := f.SetURL(srv.URL + path); err != nil {
-			t.Fatal(err)
-		}
+	for i, next := range []string{"", "/blue", ""} {
+		path = next
 		if i == 0 && (f.lastMD5 != last || !slices.Equal(f.recentMD5, recent)) {
-			t.Fatal("SetURL cleared deduplication state")
+			t.Fatal("URL hook changed deduplication state")
 		}
 		got, err := f.Run(context.Background())
 		if err != nil || (i == 1 && got.Result != ResultSaved) || (i != 1 && got.Result != ResultUnchanged) {
 			t.Fatalf("step %d: %+v, %v", i, got, err)
 		}
-		if h := <-seen; h.Get("If-None-Match") != "" || h.Get("If-Modified-Since") != "" {
-			t.Fatalf("step %d sent old validators: %v", i, h)
+		h := <-seen
+		conditional := h.Get("If-None-Match") != "" || h.Get("If-Modified-Since") != ""
+		if conditional != (i == 0) {
+			t.Fatalf("step %d: validators = %v, conditional = %v", i, h, conditional)
 		}
 	}
 	if st.Count() != 2 {
@@ -309,7 +375,7 @@ func TestSetURLClearsValidatorsAndKeepsDeduplication(t *testing.T) {
 	}
 }
 
-func TestSetURLClearsBackoffForScheduledRun(t *testing.T) {
+func TestURLHookAndResetBackoffAllowScheduledRun(t *testing.T) {
 	img := pngBytes(t, color.White)
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -322,7 +388,9 @@ func TestSetURLClearsBackoffForScheduledRun(t *testing.T) {
 	}))
 	defer srv.Close()
 	st, _ := store.New(t.TempDir())
-	f := newTestFetcher(t, config.Magma{URL: srv.URL + "/old"}, t.TempDir(), st)
+	f := newTestFetcher(t, config.Magma{URL: "http://unused.example"}, t.TempDir(), st)
+	path := "/old"
+	f.URL = func() string { return srv.URL + path }
 	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
 	f.now = func() time.Time { return now }
 	for range alertAfter {
@@ -335,11 +403,10 @@ func TestSetURLClearsBackoffForScheduledRun(t *testing.T) {
 	if hits.Load() != alertAfter {
 		t.Fatal("scheduled run ignored backoff")
 	}
-	if err := f.SetURL(srv.URL + "/new"); err != nil {
-		t.Fatal(err)
-	}
+	path = "/new"
+	f.ResetBackoff()
 	if !f.Status().RetryAt.IsZero() {
-		t.Fatalf("SetURL kept old backoff: %+v", f.Status())
+		t.Fatalf("ResetBackoff kept old backoff: %+v", f.Status())
 	}
 	f.RunScheduled(context.Background())
 	if hits.Load() != alertAfter+1 || f.Status().Result != ResultSaved || f.Status().Failures != 0 {

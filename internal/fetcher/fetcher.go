@@ -90,8 +90,9 @@ type Fetcher struct {
 	now     func() time.Time
 	ensure  func(string) error
 
-	// Active gates all runs; InWindow gates only scheduled runs.
-	// Set these hooks before starting runs.
+	// URL overrides cfg.URL when set. Active gates all runs; InWindow gates
+	// only scheduled runs. Set these hooks before starting runs.
+	URL      func() string
 	Active   func() bool
 	InWindow func(now time.Time) bool
 
@@ -195,13 +196,21 @@ func (f *Fetcher) saveLastFetched() {
 	}
 }
 
+func (f *Fetcher) sourceURL() string {
+	if f.URL != nil {
+		return f.URL()
+	}
+	return f.cfg.URL
+}
+
 // RunScheduled is the cron entry point; it does nothing while paused or while
 // backing off after repeated failures. The checks happen under runMu so a run
 // queued behind a manual fetch still honours a pause made in the meantime.
 func (f *Fetcher) RunScheduled(ctx context.Context) {
 	f.runMu.Lock()
 	defer f.runMu.Unlock()
-	if (f.Active != nil && !f.Active()) || f.cfg.URL == "" || (f.InWindow != nil && !f.InWindow(f.now())) {
+	u := f.sourceURL()
+	if (f.Active != nil && !f.Active()) || u == "" || (f.InWindow != nil && !f.InWindow(f.now())) {
 		return
 	}
 	st := f.Status()
@@ -210,7 +219,7 @@ func (f *Fetcher) RunScheduled(ctx context.Context) {
 	if st.Paused || f.now().Add(2*time.Second).Before(st.RetryAt) {
 		return
 	}
-	f.run(ctx, false)
+	f.run(ctx, false, u)
 }
 
 // backoff is how long scheduled runs pause after the given number of
@@ -239,27 +248,14 @@ func (f *Fetcher) Run(ctx context.Context) (Status, error) {
 	if f.Active != nil && !f.Active() {
 		return f.Status(), ErrInactive
 	}
-	if f.cfg.URL == "" {
+	u := f.sourceURL()
+	if u == "" {
 		return f.Status(), ErrNoURL
 	}
-	return f.run(ctx, true), nil
+	return f.run(ctx, true, u), nil
 }
 
-// SetURL changes the source without forgetting this board's saved images.
-func (f *Fetcher) SetURL(u string) error {
-	if !f.runMu.TryLock() {
-		return ErrBusy
-	}
-	defer f.runMu.Unlock()
-	f.cfg.URL = u
-	f.etag, f.lastModified, f.validatorURL, f.validatorCookie = "", "", "", ""
-	f.statusMu.Lock()
-	f.status.RetryAt = time.Time{}
-	f.statusMu.Unlock()
-	return nil
-}
-
-// ResetBackoff lets the next scheduled run try updated shared credentials.
+// ResetBackoff lets the next scheduled run try an updated URL or shared credentials.
 // An in-flight fetch may recalculate backoff from its result afterward;
 // that race is acceptable so credential updates do not wait for a fetch.
 func (f *Fetcher) ResetBackoff() {
@@ -284,10 +280,10 @@ type response struct {
 }
 
 // run does the work of Run; the caller holds runMu.
-func (f *Fetcher) run(ctx context.Context, manual bool) Status {
+func (f *Fetcher) run(ctx context.Context, manual bool, u string) Status {
 	started := f.now()
 	cookie, _ := f.effectiveCookie()
-	file, resp, err := f.fetchOnce(ctx, started, cookie)
+	file, resp, err := f.fetchOnce(ctx, started, cookie, u)
 	ended := f.now()
 	if err != nil && errors.Is(ctx.Err(), context.Canceled) {
 		// Shutting down, or the admin's request went away: an abort, not a
@@ -353,8 +349,8 @@ func (f *Fetcher) run(ctx context.Context, manual bool) Status {
 }
 
 // fetchOnce returns the stored file name, or "" when the image is unchanged.
-func (f *Fetcher) fetchOnce(ctx context.Context, now time.Time, cookie string) (file string, info response, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.cfg.URL, nil)
+func (f *Fetcher) fetchOnce(ctx context.Context, now time.Time, cookie, u string) (file string, info response, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return "", info, err
 	}
