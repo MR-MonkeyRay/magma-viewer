@@ -1,13 +1,10 @@
 package fetcher
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,35 +14,25 @@ import (
 	"magma-viewer/internal/fsutil"
 )
 
-// cookieFile holds a cookie pasted on the admin page, which replaces
-// magma.cookie without a restart.
-const cookieFile = ".state/cookie.json"
+const cookieFile = ".state/board-cookie.json"
 
 // ErrInvalidCookie rejects a pasted value that cannot be sent as a Cookie header.
 var ErrInvalidCookie = errors.New("invalid cookie")
 
 type cookieOverride struct {
-	Cookie string `json:"cookie"`
-	// ConfigSHA identifies the magma.cookie it replaced: once the config is
-	// edited the operator's newer choice wins and the override is dropped.
-	ConfigSHA string    `json:"config_sha256"`
-	Updated   time.Time `json:"updated"`
+	Cookie  string    `json:"cookie"`
+	Updated time.Time `json:"updated"`
 }
 
 // CookieInfo tells admins which cookie is in use.
 type CookieInfo struct {
-	Source  string    `json:"source"` // "config" or "page"
+	Source  string    `json:"source"` // "config", "page" or "board"
 	Updated time.Time `json:"updated,omitzero"`
 }
 
 func (f *Fetcher) cookiePath() string { return filepath.Join(f.store.Dir(), cookieFile) }
 
-func sha(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])
-}
-
-// loadCookie applies a saved override that still matches the config.
+// loadCookie restores a board override independently of the shared config.
 func (f *Fetcher) loadCookie() {
 	data, err := os.ReadFile(f.cookiePath())
 	if errors.Is(err, os.ErrNotExist) {
@@ -59,12 +46,7 @@ func (f *Fetcher) loadCookie() {
 		log.Printf("fetcher: ignoring unreadable %s: %v", cookieFile, err)
 		return
 	}
-	if o.ConfigSHA != sha(f.cfg.Cookie) {
-		log.Printf("fetcher: magma.cookie changed since the cookie was updated on the page; using the config")
-		os.Remove(f.cookiePath())
-		return
-	}
-	f.cfg.Cookie, f.cookie = o.Cookie, CookieInfo{Source: "page", Updated: o.Updated}
+	f.boardCookie, f.cookie = o.Cookie, CookieInfo{Source: "board", Updated: o.Updated}
 }
 
 // normalizeCookie accepts what an admin is likely to paste: a full Cookie
@@ -92,8 +74,7 @@ func normalizeCookie(s string) (string, error) {
 	return "", ErrInvalidCookie
 }
 
-// SetCookie switches to a new cookie at once and keeps it across restarts.
-// A pending backoff is lifted so the next scheduled run tries it.
+// SetCookie saves a board override and lets the next scheduled run try it.
 func (f *Fetcher) SetCookie(raw string) error {
 	cookie, err := normalizeCookie(raw)
 	if err != nil {
@@ -101,89 +82,47 @@ func (f *Fetcher) SetCookie(raw string) error {
 	}
 	f.runMu.Lock()
 	defer f.runMu.Unlock()
-	o := cookieOverride{Cookie: cookie, ConfigSHA: sha(f.configCookie), Updated: f.now().UTC()} // full precision: history entries are compared against it
+	o := cookieOverride{Cookie: cookie, Updated: f.now().UTC()}
 	data, _ := json.Marshal(o)
 	if err := fsutil.WriteFile(f.cookiePath(), data, 0o600); err != nil {
 		return fmt.Errorf("save cookie: %w", err)
 	}
-	f.cfg.Cookie = cookie
-	tok, _ := tokenFromCookie(cookie)
-	// One critical section, so WatchToken never pairs the old token with a reset reminder.
 	f.statusMu.Lock()
-	f.cookie = CookieInfo{Source: "page", Updated: o.Updated}
-	f.token, f.tokenAlerted = tok, time.Time{}
-	f.status.RetryAt = time.Time{}
+	f.boardCookie, f.cookie = cookie, CookieInfo{Source: "board", Updated: o.Updated}
+	f.tokenAlerted, f.status.RetryAt = time.Time{}, time.Time{}
 	f.statusMu.Unlock()
-	f.logToken(tok)
-	log.Printf("fetcher: cookie updated from the admin page")
+	tok, _ := tokenFromCookie(cookie)
+	logToken(tok, f.now())
+	log.Printf("fetcher: board cookie updated")
 	return nil
 }
 
-// Cookie reports where the cookie in use came from.
-func (f *Fetcher) Cookie() CookieInfo {
+// ClearCookie removes the board override and resumes sharing credentials.
+func (f *Fetcher) ClearCookie() error {
+	f.runMu.Lock()
+	defer f.runMu.Unlock()
+	if err := os.Remove(f.cookiePath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("clear cookie: %w", err)
+	}
+	f.statusMu.Lock()
+	f.boardCookie, f.cookie = "", CookieInfo{}
+	f.tokenAlerted, f.status.RetryAt = time.Time{}, time.Time{}
+	f.statusMu.Unlock()
+	return nil
+}
+
+func (f *Fetcher) effectiveCookie() (string, CookieInfo) {
 	f.statusMu.RLock()
-	defer f.statusMu.RUnlock()
-	return f.cookie
+	cookie, info := f.boardCookie, f.cookie
+	f.statusMu.RUnlock()
+	if cookie != "" {
+		return cookie, info
+	}
+	return f.shared.Cookie()
 }
 
-// setToken reads the JWT expiry out of cookie and logs how long it has left.
-func (f *Fetcher) setToken(cookie string) {
-	tok, _ := tokenFromCookie(cookie)
-	f.statusMu.Lock()
-	f.token = tok // zero when the cookie holds no JWT
-	f.statusMu.Unlock()
-	f.logToken(tok)
-}
-
-func (f *Fetcher) logToken(tok TokenInfo) {
-	if tok.Cookie == "" {
-		return
-	}
-	switch left := tok.Expires.Sub(f.now()); {
-	case left <= 0:
-		log.Printf("fetcher: WARNING cookie %s expired at %s, update magma.cookie", tok.Cookie, tok.Expires.Format(time.DateTime))
-	case left < tokenWarning:
-		log.Printf("fetcher: WARNING cookie %s expires at %s", tok.Cookie, tok.Expires.Format(time.DateTime))
-	default:
-		log.Printf("fetcher: cookie %s valid until %s", tok.Cookie, tok.Expires.Format(time.DateTime))
-	}
-}
-
-// tokenWarning is how early an expiring cookie is flagged.
-const tokenWarning = 7 * 24 * time.Hour
-
-// WatchToken alerts once a day while the cookie expires within tokenWarning.
-func (f *Fetcher) WatchToken(stop <-chan struct{}) {
-	t := time.NewTicker(time.Hour)
-	defer t.Stop()
-	for {
-		f.checkToken()
-		select {
-		case <-stop:
-			return
-		case <-t.C:
-		}
-	}
-}
-
-func (f *Fetcher) checkToken() {
-	if f.Alert == nil {
-		return
-	}
-	now := f.now()
-	f.statusMu.Lock()
-	tok, last := f.token, f.tokenAlerted
-	due := tok.Cookie != "" && tok.Expires.Sub(now) < tokenWarning && now.Sub(last) >= 24*time.Hour
-	if due {
-		f.tokenAlerted = now
-	}
-	f.statusMu.Unlock()
-	if !due {
-		return
-	}
-	if left := tok.Expires.Sub(now); left <= 0 {
-		f.Alert(AlertCookieExpiring, fmt.Sprintf("Cookie %s 已于 %s 过期，请在管理面板更新。", tok.Cookie, tok.Expires.Format(time.DateTime)))
-	} else {
-		f.Alert(AlertCookieExpiring, fmt.Sprintf("Cookie %s 将在 %s 过期（约 %d 天后），请及时更新。", tok.Cookie, tok.Expires.Format(time.DateTime), int(math.Ceil(left.Hours()/24))))
-	}
+// Cookie reports the effective source, including inherited credentials.
+func (f *Fetcher) Cookie() CookieInfo {
+	_, info := f.effectiveCookie()
+	return info
 }

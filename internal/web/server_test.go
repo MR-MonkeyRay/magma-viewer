@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -80,13 +81,14 @@ func newTestServerStore(t *testing.T, n int) (*httptest.Server, string, *store.S
 		Magma:    config.Magma{URL: "http://127.0.0.1:1", Timeout: time.Second},
 		Schedule: "* * * * *",
 	}
-	f := fetcher.New(cfg.Magma, t.TempDir(), st)
+	creds := fetcher.NewCredentials(cfg.Magma.Cookie, filepath.Join(t.TempDir(), "cookie.json"))
+	f := fetcher.New(cfg.Magma, t.TempDir(), st, creds)
 	static := fstest.MapFS{
 		"index.html":    {Data: []byte(`<html><script src="app.js"></script></html>`)},
 		"app.js":        {Data: []byte("// app\n" + strings.Repeat("console.log('padding so gzip pays off');\n", 20))},
 		"fonts/a.woff2": {Data: []byte("font")},
 	}
-	srv := httptest.NewServer(New(cfg, st, f, openNotices(t), static).Handler())
+	srv := httptest.NewServer(New(cfg, st, f, creds, openNotices(t), static).Handler())
 	t.Cleanup(srv.Close)
 
 	q := url.Values{}
@@ -221,7 +223,8 @@ func TestListReportsNextRunAndVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{Magma: config.Magma{URL: "http://127.0.0.1:1", Timeout: time.Second}, Schedule: "* * * * *"}
-	s := New(cfg, st, fetcher.New(cfg.Magma, t.TempDir(), st), openNotices(t), fstest.MapFS{})
+	creds := fetcher.NewCredentials(cfg.Magma.Cookie, filepath.Join(t.TempDir(), "cookie.json"))
+	s := New(cfg, st, fetcher.New(cfg.Magma, t.TempDir(), st, creds), creds, openNotices(t), fstest.MapFS{})
 	next := time.Date(2026, 10, 21, 12, 1, 0, 0, time.UTC)
 	s.NextRun = func() time.Time { return next }
 	s.Version = "1.2.3"
@@ -635,7 +638,8 @@ func TestImageCacheHeaders(t *testing.T) {
 func TestZoneAliasesNotCached(t *testing.T) {
 	st, _ := store.New(t.TempDir())
 	cfg := &config.Config{Admin: config.Admin{Username: "a", Password: "b", SessionTTL: time.Hour}}
-	s := New(cfg, st, fetcher.New(cfg.Magma, t.TempDir(), st), openNotices(t), fstest.MapFS{})
+	creds := fetcher.NewCredentials(cfg.Magma.Cookie, filepath.Join(t.TempDir(), "cookie.json"))
+	s := New(cfg, st, fetcher.New(cfg.Magma, t.TempDir(), st, creds), creds, openNotices(t), fstest.MapFS{})
 	h := s.Handler()
 	for _, tz := range []string{"Europe/Paris", "Europe/./Paris", "Europe//Paris", "./Europe/Paris"} {
 		rec := httptest.NewRecorder()
@@ -774,6 +778,67 @@ func TestSetCookie(t *testing.T) {
 	}
 }
 
+func TestHandleFetchConflicts(t *testing.T) {
+	newServer := func(t *testing.T, magma config.Magma) (*Server, *fetcher.Fetcher) {
+		t.Helper()
+		st, err := store.New(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := &config.Config{Magma: magma}
+		creds := fetcher.NewCredentials("", filepath.Join(t.TempDir(), "cookie.json"))
+		f := fetcher.New(magma, t.TempDir(), st, creds)
+		return New(cfg, st, f, creds, openNotices(t), fstest.MapFS{}), f
+	}
+	check := func(t *testing.T, s *Server, code, message string) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		s.handleFetch(rec, httptest.NewRequest(http.MethodPost, "/api/fetch", nil))
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["code"] != code || body["error"] != message {
+			t.Fatalf("body = %v", body)
+		}
+	}
+
+	t.Run("no URL", func(t *testing.T) {
+		s, _ := newServer(t, config.Magma{Timeout: time.Second})
+		check(t, s, "no_url", "未设置画板地址")
+	})
+	t.Run("inactive", func(t *testing.T) {
+		s, f := newServer(t, config.Magma{URL: "http://example.invalid", Timeout: time.Second})
+		f.Active = func() bool { return false }
+		check(t, s, "board_inactive", "画板当前不可抓取")
+	})
+	t.Run("busy", func(t *testing.T) {
+		s, f := newServer(t, config.Magma{URL: "http://example.invalid", Timeout: time.Second})
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		var once sync.Once
+		f.Active = func() bool {
+			once.Do(func() {
+				close(entered)
+				<-release
+			})
+			return false
+		}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _ = f.Run(context.Background())
+		}()
+		<-entered
+		check(t, s, "board_busy", "正在抓取，请稍后再试")
+		close(release)
+		<-done
+	})
+}
+
 func postZip(t *testing.T, base, form string, c *http.Cookie) *http.Response {
 	t.Helper()
 	return postForm(t, base+"/download/zip", form, c)
@@ -865,7 +930,8 @@ func TestNotifyTestSends(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{Admin: config.Admin{Username: "admin", Password: "pw", SessionTTL: time.Hour}}
-	s := New(cfg, st, fetcher.New(cfg.Magma, t.TempDir(), st), openNotices(t), fstest.MapFS{})
+	creds := fetcher.NewCredentials(cfg.Magma.Cookie, filepath.Join(t.TempDir(), "cookie.json"))
+	s := New(cfg, st, fetcher.New(cfg.Magma, t.TempDir(), st, creds), creds, openNotices(t), fstest.MapFS{})
 	s.Notifier = notify.New(config.Notify{Webhook: hook.URL, Format: "json"})
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()

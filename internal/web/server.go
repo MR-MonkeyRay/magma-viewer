@@ -39,6 +39,7 @@ type Server struct {
 	cfg     *config.Config
 	store   *store.Store
 	fetcher *fetcher.Fetcher
+	creds   *fetcher.Credentials
 	notices *notice.Store
 	auth    *auth
 	assets  map[string]asset // embedded page files by path
@@ -61,7 +62,7 @@ type Server struct {
 // Go's built-in table lacks woff2, and slim images ship no /etc/mime.types.
 func init() { _ = mime.AddExtensionType(".woff2", "font/woff2") }
 
-func New(cfg *config.Config, st *store.Store, f *fetcher.Fetcher, ns *notice.Store, static fs.FS) *Server {
+func New(cfg *config.Config, st *store.Store, f *fetcher.Fetcher, creds *fetcher.Credentials, ns *notice.Store, static fs.FS) *Server {
 	a := newAuth(cfg.Admin.Username, cfg.Admin.Password, cfg.Admin.SessionSecret, cfg.Admin.SessionTTL)
 	a.proxies = cfg.TrustedProxyPrefixes()
 	assets, err := loadAssets(static)
@@ -72,6 +73,7 @@ func New(cfg *config.Config, st *store.Store, f *fetcher.Fetcher, ns *notice.Sto
 		cfg:     cfg,
 		store:   st,
 		fetcher: f,
+		creds:   creds,
 		notices: ns,
 		auth:    a,
 		assets:  assets,
@@ -355,9 +357,13 @@ func (s *Server) statusBody() map[string]any {
 	if d != nil {
 		d.Archive = s.store.Bytes()
 	}
+	var token any
+	if tok := s.fetcher.Token(); tok.Cookie != "" {
+		token = tok
+	}
 	return map[string]any{
 		"fetch":    s.fetcher.Status(),
-		"token":    s.fetcher.Token(),
+		"token":    token,
 		"cookie":   s.fetcher.Cookie(),
 		"history":  s.fetcher.History(),
 		"notify":   s.Notifier != nil,
@@ -407,7 +413,7 @@ func (s *Server) handleCookie(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, 16<<10, &body) {
 		return
 	}
-	if err := s.fetcher.SetCookie(body.Cookie); err != nil {
+	if err := s.creds.Set(body.Cookie); err != nil {
 		if errors.Is(err, fetcher.ErrInvalidCookie) {
 			writeError(w, http.StatusBadRequest, "invalid_cookie", "Cookie 格式不正确")
 			return
@@ -416,6 +422,7 @@ func (s *Server) handleCookie(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "cookie_save_failed", "保存 Cookie 失败")
 		return
 	}
+	s.fetcher.ResetBackoff()
 	writeJSON(w, http.StatusOK, s.statusBody())
 }
 
@@ -426,7 +433,20 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.Magma.Timeout+10*time.Second)
 	defer cancel()
-	s.fetcher.Run(ctx)
+	if _, err := s.fetcher.Run(ctx); err != nil {
+		switch {
+		case errors.Is(err, fetcher.ErrBusy):
+			writeError(w, http.StatusConflict, "board_busy", "正在抓取，请稍后再试")
+		case errors.Is(err, fetcher.ErrNoURL):
+			writeError(w, http.StatusConflict, "no_url", "未设置画板地址")
+		case errors.Is(err, fetcher.ErrInactive):
+			writeError(w, http.StatusConflict, "board_inactive", "画板当前不可抓取")
+		default:
+			log.Printf("fetch: %v", err)
+			writeError(w, http.StatusInternalServerError, "fetch_failed", "抓取失败")
+		}
+		return
+	}
 	writeJSON(w, http.StatusOK, s.statusBody())
 }
 

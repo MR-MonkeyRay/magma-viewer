@@ -84,11 +84,13 @@ func run(configPath string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	f := fetcher.New(cfg.Magma, cfg.Storage.TempDir, st)
+	creds := fetcher.NewCredentials(cfg.Magma.Cookie, filepath.Join(cfg.Storage.Dir, ".state", "cookie.json"))
+	f := fetcher.New(cfg.Magma, cfg.Storage.TempDir, st, creds)
 	n := notify.New(cfg.Notify)
 	if n != nil {
 		f.Alert = n.Send
-		go f.WatchToken(ctx.Done())
+		go creds.WatchToken(ctx.Done(), n.Send)
+		go f.WatchToken(ctx.Done(), n.Send)
 	}
 	c := cron.New(cron.WithChain(cron.SkipIfStillRunning(cron.DefaultLogger)))
 	entry, err := c.AddFunc(cfg.Schedule, func() { f.RunScheduled(ctx) })
@@ -115,7 +117,7 @@ func run(configPath string) error {
 	if err != nil {
 		return err
 	}
-	ws := web.New(cfg, st, f, ns, static)
+	ws := web.New(cfg, st, f, creds, ns, static)
 	ws.NextRun = func() time.Time { return c.Entry(entry).Next }
 	ws.Version = strings.TrimSpace(version)
 	ws.Notifier = n
@@ -134,15 +136,20 @@ func run(configPath string) error {
 		<-ctx.Done()
 		stopCtx, cancel := context.WithTimeout(context.Background(), stopBudget)
 		defer cancel()
+		cronDone := c.Stop().Done()
+		shutdownErr := srv.Shutdown(stopCtx)
+		if shutdownErr != nil {
+			log.Printf("shutdown: %v", shutdownErr)
+		}
 		fetches := make(chan struct{})
 		go func() {
-			<-c.Stop().Done()
+			<-cronDone
 			startup.Wait()
+			if shutdownErr == nil {
+				f.Drain()
+			}
 			close(fetches)
 		}()
-		if err := srv.Shutdown(stopCtx); err != nil {
-			log.Printf("shutdown: %v", err)
-		}
 		select {
 		case <-fetches:
 		case <-stopCtx.Done():

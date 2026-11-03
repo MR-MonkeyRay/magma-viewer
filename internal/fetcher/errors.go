@@ -18,6 +18,13 @@ const (
 	CodeSave     = "save"      // the download worked, writing it to disk did not
 )
 
+// Run and SetURL reject operations that cannot start with these errors.
+var (
+	ErrBusy     = errors.New("board is fetching")
+	ErrInactive = errors.New("board is inactive")
+	ErrNoURL    = errors.New("board has no URL")
+)
+
 var errTooManyRedirects = errors.New("stopped after 10 redirects")
 
 type fetchError struct {
