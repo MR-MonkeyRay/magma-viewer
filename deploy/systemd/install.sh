@@ -20,7 +20,7 @@ Config: /etc/magma-viewer/config.yaml (root:magma-viewer, 0640)
 Data:   /var/lib/magma-viewer/images
 Existing configuration and images are preserved on upgrade. The last binary known to work is
 kept as /usr/local/bin/magma-viewer.prev, and an upgrade that does not become ready within 30 seconds
-is rolled back to it.
+is rolled back to it unless the upgrade migrated the data to the multi-board layout.
 EOF
 }
 
@@ -142,12 +142,40 @@ if [[ ! -e /etc/magma-viewer/config.yaml ]]; then
 fi
 install -m 0644 -o root -g magma-viewer "$work/package/config.example.yaml" /etc/magma-viewer/config.example.yaml
 
+# checkconfig only validates, so read the storage.dir scalar from the service config.
+storage_dir=/var/lib/magma-viewer/images
+in_storage=false
+while IFS= read -r line || [[ -n "$line" ]]; do
+  if [[ "$line" =~ ^storage:[[:space:]]*(#.*)?$ ]]; then
+    in_storage=true
+    continue
+  fi
+  [[ "$line" =~ ^[^[:space:]#] ]] && in_storage=false
+  if "$in_storage" && [[ "$line" =~ ^[[:space:]]+dir:[[:space:]]*(.*)$ ]]; then
+    value=${BASH_REMATCH[1]}
+    case "$value" in
+      \"*) value=${value#\"}; value=${value%%\"*} ;;
+      \'*) value=${value#\'}; value=${value%%\'*} ;;
+      \#*) value='' ;;
+      *) value=${value%%[[:space:]]#*}; value=${value%"${value##*[![:space:]]}"} ;;
+    esac
+    [[ -n "$value" ]] && storage_dir=$value
+    break
+  fi
+done < /etc/magma-viewer/config.yaml
+boards_registry="$storage_dir/.state/boards.json"
+had_boards_registry=false
+[[ -e "$boards_registry" ]] && had_boards_registry=true
+
 # Keep the last version known to work beside the new one; an upgrade that never becomes ready is rolled back to it.
 # The marker stands for "the installed binary has not passed the readiness check yet" (left by --no-start or a
 # failed upgrade), so such a binary never replaces the kept version.
 bin=/usr/local/bin/magma-viewer
 unit=/etc/systemd/system/magma-viewer.service
 unverified=/usr/local/bin/.magma-viewer.unverified
+if "$start" && ! "$had_boards_registry" && [[ -f "$bin" ]]; then
+  printf 'Notice: data will be migrated to the multi-board layout on first start and the old version cannot use it afterwards; back up %s first if you have not.\n' "$storage_dir"
+fi
 if [[ -f "$bin" && ! -e "$unverified" ]]; then
   install -m 0755 "$bin" "$bin.prev"
   [[ -f "$unit" ]] && install -m 0644 "$unit" "$work/unit.prev"
@@ -180,6 +208,10 @@ if "$start"; then
   if systemctl restart magma-viewer.service && ready; then
     rm -f "$unverified"
   else
+    # The registry is written last by migration; the old binary cannot safely use the new layout.
+    if ! "$had_boards_registry" && [[ -e "$boards_registry" ]]; then
+      fail "The data directory ($storage_dir) was migrated to the multi-board layout; the previous version cannot use it. The new version remains installed but unverified. Inspect journalctl -u magma-viewer.service -n 50. To go back to the old version, stop the service, restore the storage directory from the backup taken before upgrading, then reinstall the old version."
+    fi
     if ! "$previous"; then
       fail 'Service did not become ready; inspect journalctl -u magma-viewer.service -n 50'
     fi
