@@ -47,7 +47,7 @@
     reelHeat: $('#reel-heat'), reelFill: $('#reel-fill'), reelHead: $('#reel-head'), reelTip: $('#reel-tip'), reelPlay: $('#reel-play'),
     reelPos: $('#reel-pos'), reelSpeed: $('#reel-speed'), reelQuality: $('#reel-quality'), reelLoop: $('#reel-loop'), reelTimed: $('#reel-timed'),
     seg: $('.seg'), sort: $('#sort'), size: $('#size'), group: $('#group'), selectMode: $('#select-mode'),
-    theme: $('#theme'), lang: $('#lang'), account: $('#account'), acctMenu: $('#acct-menu'), noticeBtn: $('#notice-btn'), foot: $('.foot'), version: $('#version'),
+    theme: $('#theme'), lang: $('#lang'), account: $('#account'), acctMenu: $('#acct-menu'), acctFetch: $('#acct-fetch'), noticeBtn: $('#notice-btn'), foot: $('.foot'), version: $('#version'),
     selbar: $('#selbar'), selCount: $('#sel-count'), fresh: $('#fresh'),
     toast: $('#toast'), toastText: $('#toast span'), toastIcon: $('#toast use'), announce: $('#announce'), alert: $('#alert'),
     lb: $('#lightbox'), lbStage: $('#lb-stage'), lbImg: $('#lb-img'), lbTime: $('#lb-time'), lbSub: $('#lb-sub'),
@@ -56,18 +56,12 @@
     lbpDate: $('#lbp-date'), lbpTime: $('#lbp-time'), lbpAgo: $('#lbp-ago'), lbpDownload: $('#lbp-download'),
     lbpSize: $('#lbp-size'), lbpSizeMenu: $('#lbp-size-menu'), lbpGrid: $('#lbp-grid'), lbpName: $('#lbp-name'), lbpZone: $('#lbp-zone'),
     loginDialog: $('#login-dialog'), loginForm: $('#login-form'), loginError: $('#login-error'), loginSubmit: $('#login-submit'),
-    statusDialog: $('#status-dialog'), adminStats: $('#admin-stats'), fetchNow: $('#fetch-now'),
-    adminRuns: $('#admin-runs'), runsList: $('#runs-list'), notifyTest: $('#notify-test'),
     lbCompare: $('#lb-compare'), cmp: $('#lb-cmp'), cmpOld: $('#cmp-old'), cmpDiff: $('#cmp-diff'), cmpLine: $('#cmp-line'),
     cmpBar: $('#lb-cmpbar'), cmpNote: $('#cmp-note'), selCompare: $('#sel-compare'), selVideo: $('#sel-video'), reelVideo: $('#reel-video'),
     videoDialog: $('#video-dialog'), videoForm: $('#video-form'), videoFrame: $('#video-frame'), videoEst: $('#video-est'),
     videoProgress: $('#video-progress'), videoBar: $('#video-bar'), videoStep: $('#video-step'), videoError: $('#video-error'), videoStart: $('#video-start'),
-    cookieDialog: $('#cookie-dialog'), cookieForm: $('#cookie-form'), cookieState: $('#cookie-state'), cookieError: $('#cookie-error'), cookieSave: $('#cookie-save'),
-    scheduleDialog: $('#schedule-dialog'), scheduleStats: $('#schedule-stats'), toggleSchedule: $('#toggle-schedule'), scheduleHint: $('#schedule-hint'),
     noticeDialog: $('#notice-dialog'), noticeList: $('#notice-list'), noticeActions: $('#notice-actions'),
     noticeBanner: $('#notice-banner'), noticeBannerTitle: $('#notice-banner-title'),
-    naDialog: $('#notice-admin-dialog'), naList: $('#na-list'), naForm: $('#na-form'), naState: $('#na-state'), naCount: $('#na-count'),
-    naError: $('#na-error'), naDelete: $('#na-delete'), naDraft: $('#na-draft'), naPublish: $('#na-publish'),
     keysDialog: $('#keys-dialog'), task: $('#task'), nowWarn: $('#now-warn'),
   };
 
@@ -263,7 +257,7 @@
     awaitRun = '';
     awaitUntil = 0;
     stopVideo();
-    [el.statusDialog, el.scheduleDialog, el.videoDialog].forEach((d) => closeDialog(d, true));
+    closeDialog(el.videoDialog, true);
     Object.assign(state, { board: id, page: 1, date: null, items: [], total: 0, pages: 1, latest: undefined, task: null, lastIndex: null });
     el.gallery.innerHTML = '';
     clearSelection();
@@ -275,6 +269,7 @@
     el.empty.hidden = true;
     el.historyBar.hidden = !id;
     renderBoard();
+    renderAcct();
     renderReel();
     if (!id) { renderNoBoards(); return; }
     loadOverview();
@@ -1207,7 +1202,7 @@
   el.nowBack.addEventListener('click', reelToLatest);
 
   // Repeated failures mean the picture may be out of date. Guests are told just that; admins get the reason and a
-  // way to the run history.
+  // link to the run history in the admin console.
   function renderFail(task) {
     const failing = !!task && task.result === 'error' && task.failures > 0;
     el.nowWarn.hidden = !failing;
@@ -1219,12 +1214,13 @@
     const key = `fail.${task.code}`;
     el.nowWarn.innerHTML = `<p class="now-warn-title"><svg><use href="#i-alert"/></svg>${t('fail.title', { n: task.failures })}</p>
       <p>${t(key) !== key ? t(key) : t('fail.other')}</p>
-      <button type="button" class="linkish" id="now-warn-more">${t('fail.details')}</button>`;
+      <a class="linkish" href="/admin#boards/${encodeURIComponent(state.board)}/history">${t('fail.details')}</a>`;
   }
 
   function renderTask() {
     const task = state.task;
     renderFail(task);
+    renderAcct();
     el.task.hidden = !task;
     if (!task) return;
     const at = validTime(task.last_fetched) ? new Date(task.last_fetched) : null;
@@ -1436,11 +1432,7 @@
     if (state.lbIndex >= 0) { updateLightboxMeta(); applyZoom(); renderSelection(); renderCmp(); }
     setPasswordVisible(el.loginForm.elements.password.type === 'text');
     if (el.noticeDialog.open) renderNotices();
-    if (el.naDialog.open) { resetDelete(); renderNaForm(); renderNaList(); }
-    if (el.statusDialog.open || el.scheduleDialog.open) refreshStatus();
     if (el.videoDialog.open) renderVideoText();
-    const res = $('#acct-result');
-    if (res.textContent) res.textContent = t('status.error');
   }
 
   // ---------- selection ----------
@@ -2079,208 +2071,35 @@
     return ok;
   }
 
-  // ---------- admin ----------
-  // The avatar opens a menu of admin sections; each section is its own dialog.
+  // ---------- account menu ----------
+  const fetchingBoards = new Set();
+
   function renderAcct() {
     $('#acct-sub').textContent = t('acct.archived', { n: fmtNum(state.total) });
-    const task = state.task;
-    const sch = $('#acct-schedule');
-    sch.textContent = task ? t(task.paused ? 'task.paused' : 'task.running') : '';
-    sch.className = task && !task.paused ? 'ok' : '';
-    const count = na.items.length || notices.items.length;
-    $('#acct-notices').textContent = count ? t('acct.noticeCount', { n: count }) : '';
+    const fetching = fetchingBoards.has(state.board);
+    el.acctFetch.disabled = !state.board || fetching;
+    el.acctFetch.classList.toggle('loading', fetching);
+    el.acctFetch.querySelector('svg').toggleAttribute('hidden', fetching);
+    const label = el.acctFetch.querySelector('[data-i18n]');
+    label.dataset.i18n = fetching ? 'acct.fetching' : 'acct.fetchBoard';
+    label.textContent = t(label.dataset.i18n);
+    const result = state.task && state.task.result;
+    const res = $('#acct-result');
+    // Only a failure is worth a hint here; a fetch that worked already showed a toast.
+    res.textContent = result === 'error' ? t('status.error') : '';
+    res.className = result === 'error' ? 'bad' : '';
   }
 
   function openAcctMenu() {
     renderAcct();
     openMenu(el.account);
-    // Fill in the last fetch result and catch an expired session without waiting for a click.
-    if (!state.board) return;
-    const board = state.board;
-    api(boardURL('/api/status')).then((s) => { if (board === state.board) renderStats(s); }, (e) => { if (e.status === 401) handleAuthError(e); });
   }
-
-  async function refreshStatus() {
-    if (!state.board) return;
-    const board = state.board;
-    try {
-      const s = await api(boardURL('/api/status'));
-      if (board === state.board) renderStats(s);
-    } catch (e) { handleAuthError(e); }
-  }
-
-  function openStatus() {
-    el.adminStats.innerHTML = `<dt class="loading-row">${t('status.loadingRow')}</dt><dd class="loading-row">${t('dialog.loading')}</dd>`;
-    openDialog(el.statusDialog);
-    refreshStatus();
-  }
-
-  function openSchedule() {
-    el.scheduleStats.innerHTML = `<dt class="loading-row">${t('schedule.plan')}</dt><dd class="loading-row">${t('dialog.loading')}</dd>`;
-    el.toggleSchedule.disabled = true;
-    el.scheduleHint.textContent = t('dialog.loading');
-    openDialog(el.scheduleDialog);
-    refreshStatus();
-  }
-
-  function renderStats(s) {
-    const f = s.fetch;
-    const at = (v) => (validTime(v) ? fmtFull(new Date(v)) : t('status.none'));
-    const result = { saved: `<span class="ok">${t('status.saved')}</span>`, unchanged: t('status.unchanged'), error: `<span class="bad">${t('status.error')}</span>` }[f.result] || t('status.never');
-    el.adminStats.innerHTML = `
-      <dt>${t('status.count')}</dt><dd>${t('status.countValue', { n: fmtNum(s.count) })}</dd>
-      <dt>${t('status.lastRun')}</dt><dd>${at(f.last_run)}</dd>
-      <dt>${t('status.lastFetched')}</dt><dd>${at(f.last_fetched)}</dd>
-      <dt>${t('status.result')}</dt><dd>${result}${f.message ? `<br><span class="bad">${esc(f.message)}</span>` : ''}</dd>
-      <dt>${t('status.lastSaved')}</dt><dd>${at(f.last_saved)}</dd>
-      <dt>${t('status.session')}</dt><dd>${t('status.sessionValue', { runs: f.runs, saved: f.saved })}</dd>${tokenRow(s.token)}${cookieRow(s.cookie)}${diskRow(s.disk)}`;
-    renderRuns(s.history || []);
-    state.cookie = s.cookie;
-    renderCookieState();
-    el.notifyTest.hidden = !s.notify;
-    const next = !f.paused && validTime(s.next_run) ? s.next_run : '';
-    const plan = describeSchedule(s.schedule);
-    el.scheduleStats.innerHTML = `
-      <dt>${t('schedule.plan')}</dt><dd>${plan ? `${esc(plan)} ` : ''}<code>${esc(s.schedule)}</code></dd>
-      <dt>${t('schedule.next')}</dt><dd>${next ? `<span data-until="${esc(next)}">${fmtUntil(new Date(next))}</span>` : f.paused ? t('schedule.paused') : '—'}</dd>
-      <dt>${t('schedule.lastFetched')}</dt><dd>${at(f.last_fetched)}</dd>`;
-    el.toggleSchedule.disabled = false;
-    el.toggleSchedule.setAttribute('aria-checked', String(!f.paused));
-    el.scheduleHint.textContent = t(f.paused ? 'schedule.pausedHint' : 'schedule.activeHint');
-    const res = $('#acct-result');
-    res.textContent = f.result === 'error' ? t('status.error') : '';
-    res.className = f.result === 'error' ? 'bad' : '';
-    state.task = Object.assign({}, state.task, {
-      paused: f.paused, last_fetched: f.last_fetched, next_run: s.next_run, last_run: f.last_run,
-      result: f.result, code: f.code || '', failures: f.failures || 0, retry_at: f.retry_at || '',
-    });
-    renderTask();
-    renderAcct();
-    schedulePoll();
-  }
-
-  // Common schedules in words beside the expression; '' for the rest. Times of day follow the server's clock.
-  function describeSchedule(spec) {
-    spec = String(spec).trim();
-    const every = /^@every\s+(\S+)$/.exec(spec);
-    if (every) {
-      const sec = goDuration(every[1]);
-      return sec >= 1 ? t('cron.every', { gap: fmtGap(sec) }) : '';
-    }
-    if (spec === '@hourly') return t('cron.hourlyAt', { m: '00' });
-    if (spec === '@daily' || spec === '@midnight') return t('cron.dailyAt', { time: '00:00' });
-    const f = spec.split(/\s+/);
-    if (f.length !== 5 || f.slice(2).some((x) => x !== '*')) return '';
-    const [m, h] = f;
-    const num = (x, max) => /^\d+$/.test(x) && Number(x) <= max;
-    const step = /^\*\/(\d+)$/.exec(m);
-    if (h === '*' && m === '*') return t('cron.everyMinute');
-    // */N restarts at each full hour, so only a divisor of 60 gives an even interval.
-    if (h === '*' && step && Number(step[1]) >= 1 && 60 % Number(step[1]) === 0) return t('cron.every', { gap: fmtGap(step[1] * 60) });
-    if (h === '*' && num(m, 59)) return t('cron.hourlyAt', { m: pad(Number(m)) });
-    if (num(h, 23) && num(m, 59)) return t('cron.dailyAt', { time: `${pad(Number(h))}:${pad(Number(m))}` });
-    return '';
-  }
-
-  // Seconds in a Go duration such as 90s, 5m or 1h30m; NaN when it is not one.
-  function goDuration(v) {
-    const units = { h: 3600, m: 60, s: 1, ms: 1e-3 };
-    let sec = 0;
-    const rest = v.replace(/(\d+(?:\.\d+)?)(ms|h|m|s)/g, (_, n, u) => { sec += n * units[u]; return ''; });
-    return rest === '' && v !== '' ? sec : NaN;
-  }
-
-  function tokenRow(tok) {
-    if (!tok) return '';
-    const exp = new Date(tok.expires);
-    const days = Math.floor((exp - Date.now()) / 86400000);
-    const left = days < 0 ? `<span class="bad">${t('token.expired')}</span>`
-      : `<span class="${days < 7 ? 'bad' : 'ok'}">${t('token.daysLeft', { n: days })}</span>`;
-    return `<dt>${t('token.label')}</dt><dd>${t('token.value', { cookie: esc(tok.cookie), time: fmtShort(exp), left })}</dd>`;
-  }
-
-  function cookieRow(c) {
-    if (!c) return '';
-    const value = c.source === 'page' && validTime(c.updated) ? t('cookie.fromPage', { time: fmtShort(new Date(c.updated)) }) : t('cookie.fromConfig');
-    return `<dt>${t('cookie.label')}</dt><dd>${value}</dd>`;
-  }
-
-  function diskRow(d) {
-    if (!d || !d.total) return '';
-    const pct = Math.round((1 - d.free / d.total) * 100);
-    return `<dt>${t('disk.label')}</dt><dd><span class="meter${pct >= 90 ? ' bad' : ''}" aria-hidden="true"><span style="width: ${pct}%"></span></span>${t('disk.value', { pct, archive: fmtSize(d.archive), free: fmtSize(d.free) })}</dd>`;
-  }
-
-  // The recorded runs, newest first: what each attempt got, so an outage can be read without the server log.
-  function renderRuns(runs) {
-    el.adminRuns.hidden = !runs.length;
-    el.runsList.innerHTML = runs.map((r) => {
-      const key = `fail.${r.code}`;
-      const what = r.result === 'saved' ? t('status.saved') : r.result === 'unchanged' ? t('status.unchanged') : t(key) !== key ? t(key) : t('fail.other');
-      const meta = [r.http ? `HTTP ${r.http}` : '', r.bytes ? fmtSize(r.bytes) : '', t('runs.took', { s: fmtNum(r.ms / 1000, 1) })].filter(Boolean).join(' · ');
-      const d = new Date(r.time);
-      return `<li class="run ${esc(r.result)}"${r.message ? ` title="${esc(r.message)}"` : ''}>
-        <time datetime="${esc(r.time)}" title="${esc(fmtFull(d))}">${fmtShort(d)}</time>
-        <span class="run-what">${what}${r.manual ? ` <em>${t('runs.manual')}</em>` : ''}</span>
-        <span class="run-meta">${meta}</span></li>`;
-    }).join('');
-  }
-
-  function renderCookieState() {
-    const c = state.cookie;
-    el.cookieState.textContent = !c ? '' : c.source === 'page' && validTime(c.updated)
-      ? t('cookie.fromPage', { time: fmtShort(new Date(c.updated)) }) : t('cookie.fromConfig');
-  }
-
-  function openCookie() {
-    el.cookieForm.reset();
-    showCookieError('');
-    renderCookieState();
-    openDialog(el.cookieDialog);
-    el.cookieForm.elements.cookie.focus();
-    api('/api/cookie').then((c) => { state.cookie = c; renderCookieState(); }, handleAuthError);
-  }
-
-  function showCookieError(msg) {
-    el.cookieError.hidden = !msg;
-    el.cookieError.textContent = msg;
-    el.cookieForm.elements.cookie.toggleAttribute('aria-invalid', !!msg);
-    if (msg) announce(msg, true);
-  }
-
-  el.cookieForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const value = el.cookieForm.elements.cookie.value.trim();
-    if (!value) { showCookieError(t('err.invalid_cookie')); el.cookieForm.elements.cookie.focus(); return; }
-    el.cookieSave.disabled = true;
-    el.cookieSave.classList.add('loading');
-    try {
-      await api('/api/cookie', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cookie: value }) });
-      await refreshStatus();
-      closeDialog(el.cookieDialog, true);
-      toast(t('cookie.saved'), 'ok');
-    } catch (err) {
-      if (err.status === 401) handleAuthError(err); else showCookieError(err.message);
-    } finally {
-      el.cookieSave.disabled = false;
-      el.cookieSave.classList.remove('loading');
-    }
-  });
-  el.cookieForm.elements.cookie.addEventListener('input', () => { if (!el.cookieError.hidden) showCookieError(''); });
-
-  el.notifyTest.addEventListener('click', async () => {
-    closeMenu(true);
-    try {
-      await api('/api/notify/test', { method: 'POST' });
-      toast(t('notify.sent'), 'ok');
-    } catch (e) { handleAuthError(e); }
-  });
 
   function handleAuthError(e) {
     if (e.status === 401) {
       state.admin = false;
       closeMenu();
-      [el.statusDialog, el.scheduleDialog, el.naDialog, el.cookieDialog, el.videoDialog].forEach((d) => closeDialog(d, true));
+      closeDialog(el.videoDialog, true);
       renderControls();
       toast(t('login.expired'), 'error');
     } else {
@@ -2599,144 +2418,6 @@
     store.set('noticeSeen', new Date(notices.seen).toISOString());
     renderBell();
     if (el.noticeDialog.open) renderNotices();
-  }
-
-  // ---------- notice editor (admin) ----------
-  const na = { items: [], id: null, base: { title: '', body: '' }, delTimer: 0, discardUntil: 0 };
-  const naFields = () => el.naForm.elements;
-  const naCurrent = () => na.items.find((n) => n.id === na.id) || null;
-  const naDirty = () => naFields().title.value !== na.base.title || naFields().body.value !== na.base.body;
-  // Leaving unsaved edits takes a second try within 4 seconds; the first one explains why nothing happened.
-  function naDiscard() {
-    if (!naDirty() || Date.now() < na.discardUntil) { na.discardUntil = 0; return true; }
-    na.discardUntil = Date.now() + 4000;
-    showNaError(t('na.discard'));
-    return false;
-  }
-  el.naDialog.beforeClose = naDiscard;
-
-  async function openNoticeAdmin() {
-    editNotice(null);
-    openDialog(el.naDialog);
-    try {
-      na.items = (await api('/api/notices/all')).items;
-    } catch (e) { handleAuthError(e); return; }
-    if (!naDirty() && na.items.length) editNotice(na.items[0].id); else renderNaList();
-    renderAcct();
-    if (!na.id) naFields().title.focus();
-  }
-
-  function editNotice(id) {
-    const n = na.items.find((x) => x.id === id) || null;
-    na.id = n && n.id;
-    na.base = { title: n ? n.title : '', body: n ? n.body : '' };
-    naFields().title.value = na.base.title;
-    naFields().body.value = na.base.body;
-    clearNaError();
-    resetDelete();
-    renderNaForm();
-    renderNaList();
-  }
-
-  function renderNaList() {
-    el.naList.innerHTML = na.items.length ? na.items.map((n) => {
-      const pub = validTime(n.published);
-      return `<li><button type="button" class="na-item" data-id="${esc(n.id)}"${n.id === na.id ? ' aria-current="true"' : ''}>
-        <strong>${esc(n.title)}</strong>
-        <span><span class="na-tag${pub ? ' on' : ''}">${t(pub ? 'na.tagPublished' : 'na.tagDraft')}</span>${fmtShort(new Date(pub ? n.published : n.updated))}</span></button></li>`;
-    }).join('') : `<li class="na-empty">${t('na.empty')}</li>`;
-  }
-
-  function renderNaForm() {
-    const n = naCurrent();
-    const pub = n && validTime(n.published);
-    el.naState.innerHTML = !n ? t('na.stateNew')
-      : pub ? `<span class="na-tag on">${t('na.tagPublished')}</span>${t('na.statePublished', { time: fmtShort(new Date(n.published)) })}`
-        : `<span class="na-tag">${t('na.tagDraft')}</span>${t('na.stateDraft', { time: fmtShort(new Date(n.updated)) })}`;
-    el.naDelete.hidden = !n;
-    el.naDraft.textContent = t(pub ? 'na.unpublish' : 'na.saveDraft');
-    el.naPublish.lastElementChild.textContent = t(pub ? 'na.update' : 'na.publish');
-    renderNaCount();
-  }
-
-  function renderNaCount() {
-    const len = naFields().body.value.length;
-    el.naCount.textContent = `${len} / 5000`;
-    el.naCount.classList.toggle('near', len > 4500);
-  }
-
-  function showNaError(msg, field) {
-    el.naError.innerHTML = `<svg><use href="#i-alert"/></svg>${esc(msg)}`;
-    el.naError.hidden = false;
-    if (field) field.setAttribute('aria-invalid', 'true');
-    announce(msg, true);
-  }
-
-  function clearNaError() {
-    el.naError.hidden = true;
-    na.discardUntil = 0;
-    naFields().title.removeAttribute('aria-invalid');
-  }
-
-  function resetDelete() {
-    clearTimeout(na.delTimer);
-    el.naDelete.classList.remove('confirm');
-    el.naDelete.textContent = t('na.delete');
-  }
-
-  async function saveNotice(publish) {
-    const f = naFields();
-    if (!f.title.value.trim()) {
-      showNaError(t('na.titleRequired'), f.title);
-      f.title.focus();
-      return;
-    }
-    const n = naCurrent();
-    const wasPub = !!n && validTime(n.published);
-    const btn = publish ? el.naPublish : el.naDraft;
-    el.naPublish.disabled = el.naDraft.disabled = true;
-    btn.classList.add('loading');
-    try {
-      const d = await api(n ? `/api/notices/${enc(n.id)}` : '/api/notices', {
-        method: n ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: f.title.value, body: f.body.value, publish }),
-      });
-      na.items = d.items;
-      editNotice(d.notice.id);
-      renderAcct();
-      toast(t(publish ? (wasPub ? 'na.updated' : 'na.published') : (wasPub ? 'na.unpublished' : 'na.draftSaved')), 'ok');
-      // The author has read what they just published; their own bell stays calm.
-      if (publish && !wasPub) setNoticesSeen(noticeTime(d.notice));
-      loadNotices();
-    } catch (e) {
-      if (e.status === 401) handleAuthError(e); else showNaError(e.message);
-    } finally {
-      el.naPublish.disabled = el.naDraft.disabled = false;
-      btn.classList.remove('loading');
-    }
-  }
-
-  // Deleting takes a second click within 3 seconds.
-  async function deleteNotice() {
-    const n = naCurrent();
-    if (!n) return;
-    if (!el.naDelete.classList.contains('confirm')) {
-      el.naDelete.classList.add('confirm');
-      el.naDelete.textContent = t('na.confirmDelete');
-      na.delTimer = setTimeout(resetDelete, 3000);
-      return;
-    }
-    resetDelete();
-    try {
-      na.items = (await api(`/api/notices/${enc(n.id)}`, { method: 'DELETE' })).items;
-      editNotice(na.items.length ? na.items[0].id : null);
-      renderAcct();
-      toast(t('na.deleted'), 'ok');
-      loadNotices();
-    } catch (e) {
-      if (e.status === 401) handleAuthError(e); else showNaError(e.message);
-    }
   }
 
   // ---------- events: header & gallery ----------
@@ -3248,8 +2929,9 @@
   };
   const TOURS = {
     home: [['#board-switch', 'board'], ['#now-view', 'home.now'], ['#reel', 'home.reel'], ['#history-bar .controls', 'home.history'], ['.bar-actions', 'home.bar']],
-    admin: [['#account', 'admin.menu'], ['#acct-exports', 'admin.exports', { enter: openAcctMenu, leave: () => closeMenu() }],
-      ['#reel-video', 'admin.video']],
+    admin: [['#acct-console', 'admin.console', { enter: openAcctMenu, leave: () => closeMenu() }],
+      ['#acct-fetch', 'admin.fetch', { enter: openAcctMenu, leave: () => closeMenu() }],
+      ['#acct-exports', 'admin.exports', { enter: openAcctMenu, leave: () => closeMenu() }], ['#board-switch', 'board']],
     select: [[firstTileInView, 'sel.pick'], ['#selbar', 'sel.bar']],
     lightbox: [['#lb-img', 'lb.stage'], ['#lb-compare', 'lb.compare'], ['.lb-actions', 'lb.tools']],
     compare: [['#lb-cmpbar .lb-seg', 'cmp.modes'], ['#cmp-line', 'cmp.line']],
@@ -3257,7 +2939,7 @@
   const tourEl = { root: $('#tour'), hole: $('#tour-hole'), tip: $('#tour-tip'), title: $('#tour-title'), text: $('#tour-text'),
     dots: $('#tour-dots'), back: $('#tour-back'), next: $('#tour-next') };
   // A tour whose content changed gets a new revision, so viewers who saw the old one are shown it again.
-  const TOUR_REV = { admin: '2' };
+  const TOUR_REV = { admin: '3' };
   const tourSeen = (n) => store.get('tour.' + n) === (TOUR_REV[n] || '1');
   let tour = null;
   let tourTimer = 0;
@@ -3479,16 +3161,11 @@
     }
   });
 
-  // Focus goes back to the avatar first, so closing the section's dialog returns it there.
-  const SECTIONS = { 'status-dialog': openStatus, 'schedule-dialog': openSchedule, 'notice-admin-dialog': openNoticeAdmin, 'cookie-dialog': openCookie };
   el.acctMenu.addEventListener('click', (e) => {
-    const item = e.target.closest('[data-open]');
-    if (item) { closeMenu(true); SECTIONS[item.dataset.open](); }
-    else if (e.target.closest('#download-all')) closeMenu(true);
+    if (e.target.closest('#download-all, #acct-console')) closeMenu(true);
     else if (e.target.closest('#acct-video')) { closeMenu(true); openVideo(state.selected.size >= 2 ? 'picked' : 'recent'); }
   });
 
-  el.nowWarn.addEventListener('click', (e) => { if (e.target.closest('#now-warn-more')) openStatus(); });
   $('#now-more').addEventListener('click', (e) => {
     const open = el.now.querySelector('.now-card').classList.toggle('expanded');
     const b = e.currentTarget;
@@ -3496,26 +3173,6 @@
     b.querySelector('span').textContent = t(open ? 'now.less' : 'now.more');
     b.querySelector('span').dataset.i18n = open ? 'now.less' : 'now.more';
   });
-
-  el.naList.addEventListener('click', (e) => {
-    const b = e.target.closest('.na-item');
-    if (b && b.dataset.id !== na.id && naDiscard()) editNotice(b.dataset.id);
-  });
-  $('#na-new').addEventListener('click', () => {
-    if (!naDiscard()) return;
-    editNotice(null);
-    naFields().title.focus();
-  });
-  el.naForm.addEventListener('submit', (e) => { e.preventDefault(); saveNotice(true); });
-  // Enter in the title would submit, and so publish; move on to the body instead.
-  naFields().title.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); naFields().body.focus(); }
-  });
-  naFields().body.addEventListener('input', renderNaCount);
-  // Typing answers whatever the message asked for.
-  el.naForm.addEventListener('input', () => { if (!el.naError.hidden) clearNaError(); });
-  el.naDraft.addEventListener('click', () => saveNotice(false));
-  el.naDelete.addEventListener('click', deleteNotice);
 
   $('#logout').addEventListener('click', async () => {
     closeMenu(true);
@@ -3528,51 +3185,29 @@
     if (!boards.items.some((b) => b.id === state.board)) switchBoard(boardFromURL());
     else { renderBoard(); await load(); }
   });
-  el.fetchNow.addEventListener('click', async () => {
-    if (!state.board) return;
+  el.acctFetch.addEventListener('click', async () => {
+    if (!state.board || fetchingBoards.has(state.board)) return;
     const board = state.board;
-    const label = el.fetchNow.querySelector('span');
-    el.fetchNow.disabled = true;
-    el.fetchNow.classList.add('loading');
-    label.textContent = t('status.fetching');
+    fetchingBoards.add(board);
+    renderAcct();
     try {
       const s = await api(boardURL('/api/fetch'), { method: 'POST' });
       if (board !== state.board) return;
-      renderStats(s);
-      if (s.fetch.result === 'saved') { toast(t('fetch.saved'), 'ok'); await goNewest(); }
-      else if (s.fetch.result === 'unchanged') toast(t('fetch.unchanged'));
-      else toast(t('fetch.failed', { msg: s.fetch.message }), 'error');
-    } catch (e) {
-      handleAuthError(e);
-    } finally {
-      el.fetchNow.disabled = false;
-      el.fetchNow.classList.remove('loading');
-      label.textContent = t('status.fetchNow');
-    }
-  });
-
-  el.toggleSchedule.addEventListener('click', async () => {
-    if (!state.board) return;
-    const board = state.board;
-    const sw = el.toggleSchedule;
-    if (sw.dataset.busy) return;
-    const paused = sw.getAttribute('aria-checked') === 'true';
-    sw.dataset.busy = '1';
-    sw.setAttribute('aria-checked', String(!paused)); // flip now; the response confirms or reverts
-    try {
-      const s = await api(boardURL('/api/schedule'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paused }),
+      const f = s.fetch;
+      state.task = Object.assign({}, state.task, {
+        paused: f.paused, last_fetched: f.last_fetched, next_run: s.next_run, last_run: f.last_run,
+        result: f.result, code: f.code || '', failures: f.failures || 0, retry_at: f.retry_at || '',
       });
-      if (board !== state.board) return;
-      renderStats(s);
-      toast(t(paused ? 'schedule.pausedToast' : 'schedule.resumedToast'), 'ok');
+      renderTask();
+      schedulePoll();
+      if (f.result === 'saved') { toast(t('fetch.saved'), 'ok'); await goNewest(); }
+      else if (f.result === 'unchanged') toast(t('fetch.unchanged'));
+      else toast(t('fetch.failed', { msg: f.message }), 'error');
     } catch (e) {
-      sw.setAttribute('aria-checked', String(paused));
-      handleAuthError(e);
+      if (board === state.board || e.status === 401) handleAuthError(e);
     } finally {
-      delete sw.dataset.busy;
+      fetchingBoards.delete(board);
+      renderAcct();
     }
   });
 

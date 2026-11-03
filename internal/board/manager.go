@@ -46,12 +46,14 @@ type Runtime struct {
 
 // Operation is the most recent maintenance result for a board.
 type Operation struct {
-	Kind              string
-	BoardID           string
-	Phase             string
-	Done, Total       int
-	Err               string
-	Started, Finished time.Time
+	Kind     string    `json:"kind"`
+	BoardID  string    `json:"board_id"`
+	Phase    string    `json:"phase"`
+	Done     int       `json:"done"`
+	Total    int       `json:"total"`
+	Err      string    `json:"error,omitempty"`
+	Started  time.Time `json:"started"`
+	Finished time.Time `json:"finished,omitzero"`
 }
 
 var ErrMaintenanceBusy = errors.New("画板维护任务进行中")

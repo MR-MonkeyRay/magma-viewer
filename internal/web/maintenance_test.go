@@ -36,7 +36,7 @@ func TestZipAbortsAfterBoardArchived(t *testing.T) {
 	if err := boards.Archive(b.ID); err != nil {
 		t.Fatal(err)
 	}
-	if op := waitOperation(t, srv.URL, b.ID, cookie); op["Phase"] != "done" {
+	if op := waitOperation(t, srv.URL, b.ID, cookie); op["phase"] != "done" {
 		t.Fatalf("archive: %v", op)
 	}
 	if _, _, err := boards.Resolve(b.ID); err == nil {

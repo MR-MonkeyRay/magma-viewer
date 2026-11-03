@@ -124,7 +124,7 @@ func TestAdminArchiveLifecycle(t *testing.T) {
 	}
 
 	op := waitOperation(t, srv.URL, archived.ID, cookie)
-	if op["Kind"] != "archive" || op["Phase"] != "done" || op["Err"] != "" {
+	if op["kind"] != "archive" || op["phase"] != "done" || op["error"] != nil {
 		t.Fatalf("archive operation: %v", op)
 	}
 
@@ -275,7 +275,7 @@ func TestAdminDeleteBoard(t *testing.T) {
 		t.Fatalf("delete: %s %v", accepted.Status, acceptedBody)
 	}
 	op := waitOperation(t, srv.URL, deleted.ID, cookie)
-	if op["Kind"] != "delete" || op["Phase"] != "done" || op["Err"] != "" {
+	if op["kind"] != "delete" || op["phase"] != "done" || op["error"] != nil {
 		t.Fatalf("delete operation: %v", op)
 	}
 	if _, ok := boards.Board(deleted.ID); ok {
@@ -361,7 +361,7 @@ func TestFailedArchiveAppearsOnActiveBoard(t *testing.T) {
 		t.Fatalf("archive: %s", archiveResponse.Status)
 	}
 	op := waitOperation(t, srv.URL, target.ID, cookie)
-	if op["Phase"] != "failed" || op["Err"] == "" {
+	if op["phase"] != "failed" || op["error"] == "" {
 		t.Fatalf("failed operation: %v", op)
 	}
 	b, ok := boards.Board(target.ID)
@@ -374,7 +374,7 @@ func TestFailedArchiveAppearsOnActiveBoard(t *testing.T) {
 		item := raw.(map[string]any)
 		if item["id"] == target.ID {
 			operation, exists := item["operation"].(map[string]any)
-			found = exists && operation["Phase"] == "failed"
+			found = exists && operation["phase"] == "failed"
 		}
 	}
 	if !found {
@@ -494,7 +494,7 @@ func waitOperation(t *testing.T, base, id string, cookie *http.Cookie) map[strin
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("operation: %s %v", resp.Status, body)
 		}
-		if finished, ok := body["Finished"].(string); ok && finished != "0001-01-01T00:00:00Z" {
+		if _, ok := body["finished"].(string); ok {
 			return body
 		}
 		time.Sleep(10 * time.Millisecond)

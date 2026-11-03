@@ -642,7 +642,7 @@ func TestAdminAssets(t *testing.T) {
 	if page.Code != http.StatusOK || !strings.HasPrefix(page.Header().Get("Content-Type"), "text/html") {
 		t.Fatalf("admin: %d type %q", page.Code, page.Header().Get("Content-Type"))
 	}
-	if !strings.Contains(page.Body.String(), `<main id="admin-root">`) || strings.Contains(page.Body.String(), `src="app.js`) {
+	if !strings.Contains(page.Body.String(), `<main id="admin-content"`) || strings.Contains(page.Body.String(), `src="app.js`) {
 		t.Fatal("admin page must have its own root and script")
 	}
 	sum := sha256.Sum256(page.Body.Bytes())
@@ -665,7 +665,7 @@ func TestAdminAssets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"app.css", "theme.js", "i18n.js", "admin.js"} {
+	for _, name := range []string{"app.css", "admin.css", "theme.js", "i18n.js", "admin.js"} {
 		t.Run(name, func(t *testing.T) {
 			plain := request("/" + name)
 			if plain.Code != http.StatusOK {
