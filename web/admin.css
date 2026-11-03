@@ -150,12 +150,10 @@
   .admin-boards:not(.has-detail) .admin-board-detail, .admin-boards.has-detail .admin-board-side { display: none; }
   .admin-board-back { display: inline-flex; }
   .admin-window { grid-template-columns: minmax(0, 1fr); }
+  .admin-inline { flex-wrap: wrap; }
   .admin-danger-row { flex-direction: column; align-items: stretch; }
   .admin-archive-item { grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .admin-archive-actions { justify-content: flex-start; }
-}
-@media (max-width: 599px) {
-  .admin-inline { flex-direction: column; align-items: flex-start; gap: 6px; }
 }
 @media (max-width: 420px) {
   .admin-board-actions > .btn { flex: 1 1 100%; }
