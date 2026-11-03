@@ -23,12 +23,22 @@
   let confirmPending = null;
   const setUnsavedGuard = (fn = () => false) => { unsavedGuard = fn; };
   const guardUnsaved = async () => !unsavedGuard() || await confirmDialog(t('admin.unsavedConfirm'));
+  const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const TOAST_ICON = { info: '#i-info', ok: '#i-ok', error: '#i-alert' };
+  // The gallery toast, plus a separate live region because a node that was hidden is not reliably announced.
   function toast(message, kind = 'info') {
-    const node = $('#admin-status');
-    node.className = `admin-status ${kind}`;
-    node.textContent = message;
+    const node = $('#admin-toast');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { node.textContent = ''; }, kind === 'error' ? 7000 : 4000);
+    node.className = `toast ${kind}`;
+    $('use', node).setAttribute('href', TOAST_ICON[kind] || TOAST_ICON.info);
+    $('span', node).textContent = message;
+    // Replay the entrance when one toast replaces another.
+    node.hidden = true; void node.offsetWidth; node.hidden = false;
+    $('#admin-status').textContent = message;
+    toastTimer = setTimeout(() => {
+      node.classList.add('leaving');
+      toastTimer = setTimeout(() => { node.hidden = true; node.classList.remove('leaving'); }, reducedMotion() ? 0 : 200);
+    }, kind === 'error' ? 7000 : 4000);
   }
   function finishConfirm(value = 'cancel') {
     const dialog = $('#admin-confirm');
@@ -104,13 +114,25 @@
   function diskRow(disk) {
     if (!disk?.total) return `<dt>${esc(t('disk.label'))}</dt><dd>${esc(t('admin.unknown'))}</dd>`;
     const pct = Math.max(0, Math.min(100, Math.round((1 - disk.free / disk.total) * 100)));
-    return `<dt>${esc(t('disk.label'))}</dt><dd><progress max="100" value="${pct}" class="${pct >= 90 ? 'admin-disk-warn' : ''}" aria-label="${esc(t('disk.label'))}"></progress>${esc(t('disk.value', { pct, archive: bytes(disk.archive), free: bytes(disk.free) }))}</dd>`;
+    return `<dt>${esc(t('disk.label'))}</dt><dd>${meter(pct, 100, t('disk.label'), pct >= 90)}${esc(t('disk.value', { pct, archive: bytes(disk.archive), free: bytes(disk.free) }))}</dd>`;
   }
-  function loading(container) { container.replaceChildren(el('p', { className: 'admin-loading', role: 'status', textContent: t('admin.loading') })); }
+  const icon = (id) => `<svg aria-hidden="true"><use href="#${id}"/></svg>`;
+  function meter(done, total, label, warn = false) {
+    const pct = Math.max(0, Math.min(100, Math.round((Number(done) || 0) / Math.max(1, Number(total) || 0) * 100)));
+    return `<span class="meter${warn ? ' bad' : ''}" role="progressbar" aria-label="${esc(label)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${pct}%"></span></span>`;
+  }
+  // Shimmering placeholders; they fade in late so quick loads never flash them.
+  function loading(container) {
+    container.replaceChildren(el('div', { className: 'admin-skeleton', role: 'status' }, el('span', { className: 'sr-only', textContent: t('admin.loading') }), el('i'), el('i'), el('i')));
+  }
+  // A floating mascot over one short line, like the gallery's empty page.
+  const stateHTML = (mascot, text, extra = '') => `<div class="admin-state"><svg class="mascot" aria-hidden="true"><use href="#${mascot}"/></svg><p>${esc(text)}</p>${extra}</div>`;
+  const emptyHTML = (text, extra) => stateHTML('mascot-sleep', text, extra);
   function showError(container, error, retry) {
-    const button = el('button', { type: 'button', className: 'btn ghost', textContent: t('admin.retry') });
-    button.addEventListener('click', retry);
-    container.replaceChildren(el('div', { className: 'admin-error', role: 'alert' }, el('p', { className: 'form-error', textContent: error.message || t('admin.loadFailed') }), button));
+    container.innerHTML = stateHTML('mascot-oops', error.message || t('admin.loadFailed'), `<button type="button" class="btn ghost">${icon('i-refresh')}<span>${esc(t('admin.retry'))}</span></button>`);
+    const node = container.firstElementChild;
+    node.classList.add('admin-error'); node.setAttribute('role', 'alert');
+    $('button', node).addEventListener('click', retry);
   }
   function busy(button, on) { button.disabled = on; button.classList.toggle('loading', on); }
   async function getOverview() {
@@ -123,7 +145,7 @@
   const stat = (key, value) => `<dt>${esc(t(key))}</dt><dd>${esc(value)}</dd>`;
   function boardState(board) {
     const value = ['syncing', 'paused', 'pending', 'ended'].includes(board.state) ? board.state : board.paused ? 'paused' : 'syncing';
-    return `<span class="na-tag${value === 'syncing' ? ' on' : ''}">${esc(t(`admin.${value}`))}</span>`;
+    return `<span class="na-tag state-${value}${value === 'syncing' ? ' on' : ''}">${esc(t(`admin.${value}`))}</span>`;
   }
   async function renderOverview(container, route, context) {
     const data = context.overview || await getOverview();
@@ -137,12 +159,12 @@
       ['admin.freeDisk', data.disk ? bytes(data.disk.free) : t('admin.unknown')],
     ];
     container.innerHTML = `<div class="admin-cards">${cards.map(([key, value, sub]) => `<dl class="admin-card"><dt>${esc(t(key))}</dt><dd>${esc(value)}${sub ? `<small>${esc(sub)}</small>` : ''}</dd></dl>`).join('')}</div>`;
-    const table = boards.length ? `<div class="admin-table-wrap"><table class="admin-table"><thead><tr>${['admin.boardName', 'admin.state', 'admin.images', 'admin.latest', 'admin.nextRun'].map((k) => `<th scope="col">${esc(t(k))}</th>`).join('')}</tr></thead><tbody>${boards.map((b) => `<tr><td><a href="#boards/${encodeURIComponent(b.id)}">${esc(b.name)}</a></td><td>${boardState(b)}</td><td>${fmtNum(b.count)}</td><td title="${esc(dateTime(b.latest))}">${esc(relTime(b.latest))}</td><td>${esc(b.state === 'syncing' && !b.paused ? dateTime(b.next_run) : '—')}</td></tr>`).join('')}</tbody></table></div>` : `<p class="admin-empty">${esc(t('admin.emptyBoards'))}</p>`;
+    const table = boards.length ? `<div class="admin-table-wrap"><table class="admin-table"><thead><tr>${['admin.boardName', 'admin.state', 'admin.images', 'admin.latest', 'admin.nextRun'].map((k) => `<th scope="col">${esc(t(k))}</th>`).join('')}</tr></thead><tbody>${boards.map((b) => `<tr><td><a href="#boards/${encodeURIComponent(b.id)}">${esc(b.name)}</a></td><td>${boardState(b)}</td><td>${fmtNum(b.count)}</td><td title="${esc(dateTime(b.latest))}">${esc(relTime(b.latest))}</td><td>${esc(b.state === 'syncing' && !b.paused ? dateTime(b.next_run) : '—')}</td></tr>`).join('')}</tbody></table></div>` : emptyHTML(t('admin.emptyBoards'));
     container.insertAdjacentHTML('beforeend', panel('admin.boards', table) + panel('admin.sharedCredentials', stats(cookieRow(data.shared_cookie) + tokenRow(data.shared_token))));
     if (data.maintenance) {
       const op = data.maintenance;
       const label = (v) => t(`admin.operation.${v}`) !== `admin.operation.${v}` ? t(`admin.operation.${v}`) : t('admin.operation.working');
-      container.insertAdjacentHTML('beforeend', panel('admin.maintenance', `<div class="admin-maintenance"><p>${esc(label(op.kind))} · ${esc(boards.find((b) => b.id === op.board_id)?.name || op.board_id)} ·${esc(label(op.phase))}</p><progress max="${Math.max(1, Number(op.total) || 0)}" value="${Math.max(0, Number(op.done) || 0)}" aria-label="${esc(t('admin.maintenance'))}"></progress><p>${esc(t('admin.maintenanceProgress', { done: fmtNum(op.done), total: fmtNum(op.total) }))}</p>${op.error ? `<p class="form-error">${esc(op.error)}</p>` : ''}</div>`));
+      container.insertAdjacentHTML('beforeend', panel('admin.maintenance', `<div class="admin-maintenance"><p>${esc(label(op.kind))} · ${esc(boards.find((b) => b.id === op.board_id)?.name || op.board_id)} · ${esc(label(op.phase))}</p>${meter(op.done, op.total, t('admin.maintenance'))}<p>${esc(t('admin.maintenanceProgress', { done: fmtNum(op.done), total: fmtNum(op.total) }))}</p>${op.error ? `<p class="form-error">${esc(op.error)}</p>` : ''}</div>`));
     }
   }
   function historyHTML(runs, showBoard = true) {
@@ -151,7 +173,7 @@
           const result = r.result === 'saved' ? t('status.saved') : r.result === 'unchanged' ? t('status.unchanged') : t(key) !== key ? t(key) : t('fail.other');
           const meta = [r.http ? `HTTP ${Number(r.http)}` : '', r.bytes ? bytes(r.bytes) : '', t('runs.took', { s: fmtNum(r.ms / 1000, 1) })].filter(Boolean).join(' · ');
           return `<li class="run ${r.result === 'saved' ? 'saved' : r.result === 'error' ? 'error' : ''}" title="${esc(r.message || '')}"><time datetime="${esc(r.time)}">${esc(dateTime(r.time))}</time>${showBoard ? `<a class="admin-run-board" href="#boards/${encodeURIComponent(r.board_id)}">${esc(r.board_name)}</a>` : ''}<span class="run-what">${esc(result)}${r.manual ? ` <em>${esc(t('runs.manual'))}</em>` : ''}</span><span class="run-meta">${esc(meta)}</span></li>`;
-        }).join('')}</ol>` : `<p class="admin-empty">${esc(t('admin.emptyHistory'))}</p>`;
+        }).join('')}</ol>` : emptyHTML(t('admin.emptyHistory'));
   }
   async function renderHistory(container, route, context) {
     const overview = await getOverview();
@@ -175,7 +197,7 @@
   async function renderCookie(container, route, context) {
     let cookie = await api('/api/cookie');
     if (!context.isCurrent()) return;
-    container.innerHTML = `<section class="admin-panel"><p class="admin-hint">${esc(t('admin.cookieSharedHint'))}</p><dl class="stats" id="cookie-state"></dl><form class="admin-form" id="cookie-form"><label><span>${esc(t('cookie.field'))}</span><textarea class="admin-cookie" name="cookie" rows="5" maxlength="8192" spellcheck="false" autocomplete="off" required aria-describedby="cookie-error cookie-hint"></textarea></label><p class="admin-hint" id="cookie-hint">${esc(t('cookie.hint'))}</p><p class="form-error" id="cookie-error" role="alert" hidden></p><div class="modal-actions spread"><button type="button" class="btn ghost danger" id="cookie-clear">${esc(t('admin.cookieClear'))}</button><button class="btn primary" type="submit"><span class="spinner" aria-hidden="true"></span><span>${esc(t('cookie.save'))}</span></button></div></form></section>`;
+    container.innerHTML = `<section class="admin-panel"><p class="admin-hint">${esc(t('admin.cookieSharedHint'))}</p><dl class="stats" id="cookie-state"></dl><form class="admin-form" id="cookie-form"><label><span>${esc(t('cookie.field'))}</span><textarea class="admin-cookie" name="cookie" rows="5" maxlength="8192" spellcheck="false" autocomplete="off" required aria-describedby="cookie-error cookie-hint"></textarea></label><p class="admin-hint" id="cookie-hint">${esc(t('cookie.hint'))}</p><p class="form-error" id="cookie-error" role="alert" hidden></p><div class="modal-actions spread"><button type="button" class="btn ghost danger" id="cookie-clear">${esc(t('admin.cookieClear'))}</button><button class="btn primary" type="submit"><span class="spinner" aria-hidden="true"></span>${icon('i-check')}<span>${esc(t('cookie.save'))}</span></button></div></form></section>`;
     const form = $('#cookie-form', container);
     const input = form.elements.cookie;
     const save = $('[type=submit]', form);
@@ -207,13 +229,15 @@
   async function renderSystem(container, route, context) {
     const data = await getOverview();
     if (!context.isCurrent()) return;
-    container.innerHTML = panel('admin.notify', `<p>${esc(t(data.notify ? 'admin.enabled' : 'admin.disabled'))}</p><button type="button" class="btn primary" id="notify-test" ${data.notify ? '' : 'disabled'}><span class="spinner" aria-hidden="true"></span><span>${esc(t('notify.test'))}</span></button><p id="notify-result" role="status"></p>`) + panel('admin.schedule', `<code>${esc(data.schedule)}</code><p class="admin-hint">${esc(t('admin.scheduleHint'))}</p>`) + panel('admin.storage', stats(diskRow(data.disk) + stat('admin.version', data.version || t('status.none'))));
+    container.innerHTML = `<div class="admin-system"><section class="admin-panel"><h2 class="admin-title-row">${esc(t('admin.notify'))}<span class="na-tag${data.notify ? ' on' : ''}">${esc(t(data.notify ? 'admin.enabled' : 'admin.disabled'))}</span></h2><button type="button" class="btn ghost" id="notify-test" ${data.notify ? '' : 'disabled'}><span class="spinner" aria-hidden="true"></span>${icon('i-send')}<span>${esc(t('notify.test'))}</span></button><p class="form-error" id="notify-result" role="alert" hidden></p></section>`
+      + panel('admin.schedule', `<code class="admin-code">${esc(data.schedule)}</code><p class="admin-hint">${esc(t('admin.scheduleHint'))}</p>`)
+      + `<section class="admin-panel admin-wide"><h2>${esc(t('admin.storage'))}</h2>${stats(diskRow(data.disk) + stat('admin.version', data.version || t('status.none')))}</section></div>`;
     const button = $('#notify-test', container);
     button.addEventListener('click', async () => {
       busy(button, true);
-      const result = $('#notify-result', container); result.textContent = ''; result.className = '';
-      try { await api('/api/notify/test', { method: 'POST' }); if (context.isCurrent()) { result.textContent = t('notify.sent'); toast(t('notify.sent'), 'ok'); } }
-      catch (error) { if (context.isCurrent()) { result.className = 'form-error'; result.textContent = error.message; } }
+      const result = $('#notify-result', container); result.hidden = true;
+      try { await api('/api/notify/test', { method: 'POST' }); if (context.isCurrent()) toast(t('notify.sent'), 'ok'); }
+      catch (error) { if (context.isCurrent()) { result.textContent = error.message; result.hidden = false; } }
       finally { busy(button, false); }
     });
   }
@@ -230,17 +254,11 @@
     const notice = () => state.items.find((item) => item.id === state.id) || null;
     const fmtShort = dateTime;
 
-    container.replaceChildren(el('div', { className: 'admin-loading', textContent: t('admin.loading') }));
-
     let data;
     try {
       data = await api('/api/notices/all');
     } catch (error) {
-      if (!current()) return;
-      const retry = el('button', { type: 'button', className: 'btn ghost', textContent: t('admin.retry') });
-      retry.addEventListener('click', () => renderNotices(container, route, context));
-      container.replaceChildren(el('div', { className: 'admin-inline-error' },
-        el('p', { className: 'form-error', role: 'alert', textContent: error.message || t('admin.loadFailed') }), retry));
+      if (current()) showError(container, error, () => { loading(container); renderNotices(container, route, context); });
       return;
     }
     if (!current()) return;
@@ -275,12 +293,12 @@
       el('div', { className: 'modal-actions spread' }, deleteButton,
         el('div', { className: 'row' }, draftButton, publishButton)));
 
-    container.replaceChildren(el('div', { className: 'na' }, side, form));
+    container.replaceChildren(el('div', { className: 'admin-panel' }, el('div', { className: 'na' }, side, form)));
 
     const dirty = () => titleInput.value !== state.base.title || bodyInput.value !== state.base.body;
     setUnsavedGuard(dirty);
 
-    function showError(message, field) {
+    function showFormError(message, field) {
       errorLine.textContent = message;
       errorLine.hidden = false;
       if (field) field.setAttribute('aria-invalid', 'true');
@@ -368,7 +386,7 @@
     async function save(publish) {
       if (state.busy) return;
       if (!titleInput.value.trim()) {
-        showError(t('na.titleRequired'), titleInput);
+        showFormError(t('na.titleRequired'), titleInput);
         titleInput.focus();
         return;
       }
@@ -390,7 +408,7 @@
           ? (wasPublished ? 'na.updated' : 'na.published')
           : (wasPublished ? 'na.unpublished' : 'na.draftSaved')), 'ok');
       } catch (error) {
-        if (current()) showError(error.message || t('admin.saveFailed'), ['title_required', 'title_too_long'].includes(error.code) ? titleInput : error.code === 'body_too_long' ? bodyInput : null);
+        if (current()) showFormError(error.message || t('admin.saveFailed'), ['title_required', 'title_too_long'].includes(error.code) ? titleInput : error.code === 'body_too_long' ? bodyInput : null);
       } finally {
         if (current()) setBusy(false, button);
       }
@@ -408,7 +426,7 @@
         editNotice(state.items.length ? state.items[0].id : null);
         toast(t('na.deleted'), 'ok');
       } catch (error) {
-        if (current()) showError(error.message || t('admin.deleteFailed'));
+        if (current()) showFormError(error.message || t('admin.deleteFailed'));
       } finally {
         if (current()) setBusy(false, deleteButton);
       }
@@ -436,7 +454,7 @@
     return t(key) === key ? t('admin.operation.working') : t(key);
   };
   function operationHTML(op) {
-    return `<div class="admin-operation" role="status"><p>${esc(operationLabel(op.kind))} · ${esc(operationLabel(op.phase))}</p><progress max="${Math.max(1, Number(op.total) || 0)}" value="${Math.max(0, Number(op.done) || 0)}" aria-label="${esc(t('admin.maintenance'))}"></progress><p>${esc(t('admin.maintenanceProgress', { done: fmtNum(op.done), total: fmtNum(op.total) }))}</p>${op.error ? `<p class="form-error">${esc(op.error)}</p>` : ''}</div>`;
+    return `<div class="admin-operation${operationRunning(op) ? ' running' : ''}" role="status"><p>${esc(operationLabel(op.kind))} · ${esc(operationLabel(op.phase))}</p>${meter(op.done, op.total, t('admin.maintenance'))}<p>${esc(t('admin.maintenanceProgress', { done: fmtNum(op.done), total: fmtNum(op.total) }))}</p>${op.error ? `<p class="form-error">${esc(op.error)}</p>` : ''}</div>`;
   }
   function routeTimer(context, fn, delay) {
     const timer = setTimeout(() => { removeCleanup(); if (context.isCurrent()) fn(); }, delay);
@@ -461,7 +479,7 @@
       <fieldset class="admin-group"><legend>${esc(t('admin.board.window'))}</legend><div class="admin-window">${['sync_from', 'sync_until'].map((name) => `<div><label class="admin-sublabel" for="board-${name}">${esc(t(name === 'sync_from' ? 'admin.board.start' : 'admin.board.end'))}</label><div class="admin-input-clear"><input id="board-${name}" name="${name}" type="datetime-local" step="1" aria-describedby="board-window-error board-window-hint"><button type="button" class="btn ghost" data-clear="${name}">${esc(t('admin.board.clear'))}</button></div></div>`).join('')}</div><p class="admin-hint" id="board-window-hint" aria-live="polite"></p><p class="form-error" id="board-window-error" role="alert" hidden></p></fieldset>
       <div class="admin-group"><label class="admin-choice"><input name="visible" type="checkbox" aria-describedby="board-visible-hint">${esc(t('admin.board.visible'))}</label><p class="admin-hint" id="board-visible-hint">${esc(t('admin.board.hiddenHint'))}</p></div>
       <div class="admin-group"><label for="board-sort">${esc(t('admin.board.sort'))}</label><div class="admin-inline"><input id="board-sort" name="sort" type="number" min="-100000" max="100000" step="1" required aria-describedby="board-sort-hint board-sort-error"><p class="admin-hint" id="board-sort-hint">${esc(t('admin.board.sortHint'))}</p></div><p class="form-error" id="board-sort-error" role="alert" hidden></p></div>
-      <p class="form-error" id="board-save-error" role="alert" hidden></p><div class="modal-actions"><button type="submit" class="btn primary"><span class="spinner" aria-hidden="true"></span><span>${esc(t(isNew ? 'admin.board.create' : 'admin.board.save'))}</span></button></div>
+      <p class="form-error" id="board-save-error" role="alert" hidden></p><div class="modal-actions"><button type="submit" class="btn primary"><span class="spinner" aria-hidden="true"></span>${icon(isNew ? 'i-plus' : 'i-check')}<span>${esc(t(isNew ? 'admin.board.create' : 'admin.board.save'))}</span></button></div>
     </form></section>`;
     const form = $('form', container), f = form.elements, save = $('[type=submit]', form);
     let saving = false;
@@ -542,7 +560,7 @@
   }
   function renderBoardCookie(container, board, context) {
     let cookie = board.cookie || {}, token = board.token, saving = false;
-    container.innerHTML = `<section class="admin-panel admin-board-cookie"><h2>${esc(t('admin.cookie'))}</h2><dl class="stats" id="board-cookie-state"></dl><form class="admin-form" novalidate><fieldset class="admin-group"><legend>${esc(t('admin.board.cookieMode'))}</legend><div class="admin-choices"><label class="admin-choice"><input type="radio" name="cookie_mode" value="shared">${esc(t('admin.board.cookieShared'))}</label><label class="admin-choice"><input type="radio" name="cookie_mode" value="override">${esc(t('admin.board.cookieOverride'))}</label></div></fieldset><div id="board-cookie-entry"><label>${esc(t('cookie.field'))}<textarea name="cookie" class="admin-cookie" rows="4" maxlength="8192" autocomplete="off" spellcheck="false" aria-describedby="board-cookie-error"></textarea></label><p class="admin-hint">${esc(t('cookie.hint'))}</p><button type="submit" class="btn primary">${esc(t('admin.board.save'))}</button></div><p class="form-error" id="board-cookie-error" role="alert" hidden></p></form></section>`;
+    container.innerHTML = `<section class="admin-panel admin-board-cookie"><h2>${esc(t('admin.cookie'))}</h2><dl class="stats" id="board-cookie-state"></dl><form class="admin-form" novalidate><fieldset class="admin-group"><legend>${esc(t('admin.board.cookieMode'))}</legend><div class="admin-choices"><label class="admin-choice"><input type="radio" name="cookie_mode" value="shared">${esc(t('admin.board.cookieShared'))}</label><label class="admin-choice"><input type="radio" name="cookie_mode" value="override">${esc(t('admin.board.cookieOverride'))}</label></div></fieldset><div id="board-cookie-entry"><label>${esc(t('cookie.field'))}<textarea name="cookie" class="admin-cookie" rows="4" maxlength="8192" autocomplete="off" spellcheck="false" aria-describedby="board-cookie-error"></textarea></label><p class="admin-hint">${esc(t('cookie.hint'))}</p><button type="submit" class="btn primary">${icon('i-check')}<span>${esc(t('admin.board.save'))}</span></button></div><p class="form-error" id="board-cookie-error" role="alert" hidden></p></form></section>`;
     const form = $('form', container), input = form.elements.cookie, mode = form.elements.cookie_mode, error = $('#board-cookie-error', container);
     const path = `/api/cookie?board=${encodeURIComponent(board.id)}`;
     const save = $('[type=submit]', form);
@@ -599,16 +617,16 @@
     const layout = el('div', { className: `admin-boards${route.id ? ' has-detail' : ''}` }, side, detail);
     container.replaceChildren(layout);
     function paintList() {
-      side.innerHTML = `<a class="btn primary" href="#boards/new">${esc(t('admin.board.new'))}</a><ul class="admin-board-list">${items.map((item) => `<li><a class="admin-board-item" href="${boardURL(item.id)}" ${route.id === item.id ? 'aria-current="page"' : ''}><strong>${esc(item.name)}</strong>${boardState(item)}<span class="admin-board-meta">${esc(t('status.countValue', { n: item.count }))} · ${esc(relTime(item.latest))}${item.hidden ? ` · ${esc(t('board.hidden'))}` : ''}</span></a></li>`).join('')}</ul>${!items.length ? `<p class="admin-empty">${esc(t('admin.emptyBoards'))}</p>` : ''}`;
+      side.innerHTML = `<a class="btn primary" href="#boards/new">${icon('i-plus')}<span>${esc(t('admin.board.new'))}</span></a><ul class="admin-board-list">${items.map((item) => `<li><a class="admin-board-item" href="${boardURL(item.id)}" ${route.id === item.id ? 'aria-current="page"' : ''}><strong>${esc(item.name)}</strong>${boardState(item)}<span class="admin-board-meta">${esc(t('status.countValue', { n: item.count }))} · ${esc(relTime(item.latest))}${item.hidden ? ` · ${esc(t('board.hidden'))}` : ''}</span></a></li>`).join('')}</ul>${!items.length ? emptyHTML(t('admin.emptyBoards')) : ''}`;
       const maintaining = others.filter((item) => ['archiving', 'deleting'].includes(item.lifecycle));
       if (maintaining.length) side.insertAdjacentHTML('beforeend', `<section><h2>${esc(t('admin.board.maintenance'))}</h2>${maintaining.map((item) => `<div class="admin-panel"><strong>${esc(item.name)}</strong>${item.operation ? operationHTML(item.operation) : `<p>${esc(t('admin.operation.working'))}</p>`}</div>`).join('')}</section>`);
     }
     const back = () => el('a', { className: 'admin-board-back', href: '#boards', textContent: t('admin.board.back') });
     paintList();
     if (!route.id) {
-      detail.append(el('p', { className: 'admin-empty', textContent: t('admin.board.choose') }), el('a', { className: 'btn primary', href: '#boards/new', textContent: t('admin.board.new') }));
+      detail.innerHTML = emptyHTML(t(items.length ? 'admin.board.choose' : 'admin.emptyBoards'), `<a class="btn primary" href="#boards/new">${icon('i-plus')}<span>${esc(t('admin.board.new'))}</span></a>`);
     } else if (!isNew && !board) {
-      detail.append(el('p', { className: 'admin-empty', textContent: t('admin.board.notFound') }), el('a', { href: '#boards', textContent: t('admin.board.back') }));
+      detail.innerHTML = stateHTML('mascot-oops', t('admin.board.notFound'), `<a class="btn ghost" href="#boards">${esc(t('admin.board.back'))}</a>`);
     } else if (isNew) {
       detail.append(back(), el('h2', { textContent: t('admin.board.new') }));
       const form = el('div'); detail.append(form);
@@ -630,7 +648,7 @@
         if (signature === headerSignature) return;
         headerSignature = signature;
         const focused = header.contains(document.activeElement) ? document.activeElement.id || '.switch' : '';
-        header.innerHTML = `<h2>${esc(board.name)} ${boardState(board)}</h2><div class="admin-board-actions"><div class="switch-row"><span class="switch-text"><strong>${esc(t('schedule.auto'))}</strong><span>${esc(t(board.paused ? 'admin.paused' : 'admin.enabled'))}</span></span><button type="button" class="switch" role="switch" aria-checked="${!board.paused}" aria-label="${esc(t('schedule.auto'))}" ${headerBusy ? 'disabled' : ''}></button></div><button type="button" class="btn ghost" id="board-fetch" ${headerBusy ? 'disabled' : ''}>${esc(t('status.fetchNow'))}</button><a href="/?board=${encodeURIComponent(board.id)}">${esc(t('admin.board.gallery'))}</a></div>`;
+        header.innerHTML = `<h2>${esc(board.name)} ${boardState(board)}</h2><div class="admin-board-actions"><div class="switch-row"><span class="switch-text"><strong>${esc(t('schedule.auto'))}</strong><span>${esc(t(board.paused ? 'admin.paused' : 'admin.enabled'))}</span></span><button type="button" class="switch" role="switch" aria-checked="${!board.paused}" aria-label="${esc(t('schedule.auto'))}" ${headerBusy ? 'disabled' : ''}></button></div><button type="button" class="btn ghost${headerBusy === 'fetch' ? ' loading' : ''}" id="board-fetch" ${headerBusy ? 'disabled' : ''}>${icon('i-refresh')}<span>${esc(t('status.fetchNow'))}</span></button><a href="/?board=${encodeURIComponent(board.id)}">${esc(t('admin.board.gallery'))}</a></div>`;
         $('.switch', header).addEventListener('click', () => headerAction('schedule'));
         $('#board-fetch', header).addEventListener('click', () => headerAction('fetch'));
         if (focused) $(focused === '.switch' ? focused : `#${focused}`, header)?.focus({ preventScroll: true });
@@ -648,7 +666,7 @@
       }
       async function headerAction(kind) {
         if (headerBusy) return;
-        headerBusy = true; paintHeader();
+        headerBusy = kind; paintHeader();
         try {
           const result = await api(`/api/${kind}?board=${encodeURIComponent(board.id)}`, kind === 'schedule' ? json('POST', { paused: !board.paused }) : { method: 'POST' });
           if (!context.isCurrent()) return;
@@ -675,7 +693,7 @@
         };
         await load();
       } else if (tab === 'data') {
-        content.innerHTML = panel('admin.board.data', stats(dataStats()) + `<a class="btn ghost" href="/download/all?board=${encodeURIComponent(board.id)}" download>${esc(t('admin.board.downloadAll'))}</a>`) + `<section class="admin-panel admin-danger"><h2>${esc(t('admin.board.danger'))}</h2><div class="admin-danger-row"><p class="admin-hint">${esc(t('admin.board.archiveHint'))}</p><button type="button" class="btn ghost danger" data-maintenance="archive">${esc(t('admin.board.archive'))}</button></div><div class="admin-danger-row"><p class="admin-hint">${esc(t('admin.board.deleteHint'))}</p><button type="button" class="btn ghost danger" data-maintenance="delete">${esc(t('admin.board.delete'))}</button></div><div id="board-operation" aria-live="polite"></div><p class="form-error" id="board-operation-error" role="alert" hidden></p></section>`;
+        content.innerHTML = panel('admin.board.data', stats(dataStats()) + `<a class="btn ghost" href="/download/all?board=${encodeURIComponent(board.id)}" download>${icon('i-download')}<span>${esc(t('admin.board.downloadAll'))}</span></a>`) + `<section class="admin-panel admin-danger"><h2>${esc(t('admin.board.danger'))}</h2><div class="admin-danger-row"><p class="admin-hint">${esc(t('admin.board.archiveHint'))}</p><button type="button" class="btn ghost danger" data-maintenance="archive">${esc(t('admin.board.archive'))}</button></div><div class="admin-danger-row"><p class="admin-hint">${esc(t('admin.board.deleteHint'))}</p><button type="button" class="btn ghost danger" data-maintenance="delete">${esc(t('admin.board.delete'))}</button></div><div id="board-operation" aria-live="polite"></div><p class="form-error" id="board-operation-error" role="alert" hidden></p></section>`;
         $('.stats', content).id = 'board-data-stats';
         const progress = $('#board-operation', content), error = $('#board-operation-error', content);
         let operation = board.operation, polling = false, submitting = false;
@@ -743,7 +761,7 @@
     const data = await api('/api/admin/archives');
     if (!context.isCurrent()) return;
     const items = data.items || [];
-    container.innerHTML = `<p class="admin-muted">${esc(t('admin.archive.total', { size: bytes(data.bytes) }))}</p><div class="admin-archive-list">${items.map((item) => `<article class="admin-panel admin-archive-item"><h2>${esc(item.board_name)}</h2>${stats(stat('admin.archive.created', dateTime(item.created)) + stat('admin.images', fmtNum(item.images)) + stat('admin.archive.size', bytes(item.size)))}<div class="admin-archive-actions"><a class="btn ghost" href="/api/admin/archives/${encodeURIComponent(item.id)}/download" download>${esc(t('common.download'))}</a><button type="button" class="btn ghost danger" data-archive="${esc(item.id)}">${esc(t('admin.archive.delete'))}</button></div></article>`).join('')}</div>${items.length ? '' : `<p class="admin-empty">${esc(t('admin.archive.empty'))}</p>`}`;
+    container.innerHTML = items.length ? `<p class="admin-summary">${esc(t('admin.archive.total', { n: fmtNum(items.length), size: bytes(data.bytes) }))}</p><ul class="admin-panel admin-archive-list">${items.map((item) => `<li class="admin-archive-item"><div class="admin-archive-main"><strong>${esc(item.board_name)}</strong><span class="admin-board-meta">${esc([dateTime(item.created), t('status.countValue', { n: item.images }), bytes(item.size)].join(' · '))}</span></div><div class="admin-archive-actions"><a class="btn ghost" href="/api/admin/archives/${encodeURIComponent(item.id)}/download" download>${icon('i-download')}<span>${esc(t('common.download'))}</span></a><button type="button" class="btn ghost danger" data-archive="${esc(item.id)}"><span class="spinner" aria-hidden="true"></span><span>${esc(t('admin.archive.delete'))}</span></button></div></li>`).join('')}</ul>` : emptyHTML(t('admin.archive.empty'));
     let deleting = false;
     const deleteButtons = [...container.querySelectorAll('[data-archive]')];
     deleteButtons.forEach((button) => button.addEventListener('click', async () => {
@@ -799,10 +817,12 @@
     const body = el('div', { className: 'admin-page' });
     root.replaceChildren(el('h1', { tabindex: '-1', textContent: t(PAGES[route.page].title) }), body);
     root.setAttribute('aria-busy', 'true');
+    document.body.classList.add('busy');
     loading(body);
     try { await PAGES[route.page].render(body, route, context); }
     catch (error) { if (context.isCurrent()) showError(body, error, () => renderRoute()); }
     finally {
+      if (context.isCurrent() || !state.admin) document.body.classList.remove('busy');
       if (context.isCurrent()) {
         root.removeAttribute('aria-busy');
         if (focusHeading) $('h1', root).focus({ preventScroll: true });
@@ -883,6 +903,7 @@
     $('#admin-shell').hidden = true;
     $('#admin-logout').hidden = true;
     $('#admin-boot').hidden = true;
+    document.body.classList.remove('busy');
     const login = $('#admin-login');
     const wasHidden = login.hidden;
     login.hidden = false;
@@ -938,9 +959,21 @@
     document.querySelectorAll('meta[name="theme-color"]').forEach((node) => { node.content = style.getPropertyValue('--board').trim(); });
   }
   function toggleTheme() {
-    document.documentElement.dataset.theme = getComputedStyle(document.documentElement).colorScheme === 'dark' ? 'light' : 'dark';
-    try { localStorage.setItem('mv.theme', document.documentElement.dataset.theme); } catch (error) { /* private mode */ }
-    renderTheme();
+    const apply = () => {
+      document.documentElement.dataset.theme = getComputedStyle(document.documentElement).colorScheme === 'dark' ? 'light' : 'dark';
+      try { localStorage.setItem('mv.theme', document.documentElement.dataset.theme); } catch (error) { /* private mode */ }
+      renderTheme();
+    };
+    if (!document.startViewTransition || reducedMotion()) return apply();
+    // Reveal the new theme as a circle growing from the toggle button, as the gallery does.
+    const r = $('#admin-theme').getBoundingClientRect();
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    const radius = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
+    document.startViewTransition(apply).ready.then(() => {
+      document.documentElement.animate(
+        { clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${radius}px at ${x}px ${y}px)`] },
+        { duration: 480, easing: 'cubic-bezier(.4, 0, .2, 1)', pseudoElement: '::view-transition-new(root)' });
+    }).catch(() => {});
   }
   async function toggleLang() {
     if (!await guardUnsaved()) return;
