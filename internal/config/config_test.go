@@ -36,6 +36,22 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadWithoutMagmaURL(t *testing.T) {
+	for _, yaml := range []string{
+		`admin: {username: admin, password: secret}`,
+		`admin: {username: admin, password: secret}
+magma: {url: ""}`,
+	} {
+		c, err := load(t, yaml)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Magma.URL != "" {
+			t.Fatalf("expected empty magma.url, got %q", c.Magma.URL)
+		}
+	}
+}
+
 func TestLoadRejects(t *testing.T) {
 	cases := map[string]string{
 		"placeholder password": `
@@ -48,6 +64,9 @@ magma: {url: "https://"}`,
 		"bad scheme": `
 admin: {username: admin, password: secret}
 magma: {url: "ftp://magma.com/x"}`,
+		"malformed url": `
+admin: {username: admin, password: secret}
+magma: {url: "https://%zz"}`,
 		"bad proxy":    minimal + `trusted_proxies: ["nope"]`,
 		"bad schedule": minimal + `schedule: "every minute"`,
 	}

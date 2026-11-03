@@ -42,6 +42,10 @@ var (
 	namePattern = regexp.MustCompile(`^(\d{8}-\d{6})_([0-9a-f]{32})\.[a-z]+$`)
 
 	allowedExt = map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".webp": true, ".gif": true}
+
+	// Decoding a 4K image needs ~35 MB. This is shared across all stores so
+	// several boards cannot multiply decode memory.
+	thumbSem = make(chan struct{}, min(2, runtime.NumCPU()))
 )
 
 type Item struct {
@@ -69,7 +73,6 @@ type Store struct {
 	gen    uint64    // bumped on every index change
 	synced time.Time // when the last full rescan finished
 
-	thumbSem   chan struct{}
 	thumbLocks sync.Map // name -> *sync.Mutex, held while rendering
 	undecoded  sync.Map // name -> fileStamp of a source that failed to decode, so it is not retried on every request
 }
@@ -79,8 +82,6 @@ func New(dir string) (*Store, error) {
 		dir:      dir,
 		thumbDir: filepath.Join(dir, ".thumbs"),
 		tmpDir:   filepath.Join(dir, ".state", "tmp"),
-		// Decoding a 4K image needs ~35 MB, so keep concurrency low.
-		thumbSem: make(chan struct{}, min(2, runtime.NumCPU())),
 	}
 	for _, d := range []string{s.thumbDir, s.tmpDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -566,8 +567,8 @@ func (s *Store) Ensure(name string) error {
 		return fmt.Errorf("thumbnail %s: %w", name, errUndecodable)
 	}
 
-	s.thumbSem <- struct{}{}
-	defer func() { <-s.thumbSem }()
+	thumbSem <- struct{}{}
+	defer func() { <-thumbSem }()
 	if err := makeThumbs(src, preview, small); err != nil {
 		if errors.Is(err, errUndecodable) {
 			s.undecoded.Store(name, stamp)
