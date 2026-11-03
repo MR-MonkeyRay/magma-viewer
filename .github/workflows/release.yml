@@ -30,7 +30,7 @@ jobs:
 
       - name: Inspect version and release
         id: release
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('node:fs');
@@ -126,7 +126,7 @@ jobs:
           path: dist
 
       - name: Publish or resume draft release
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
           RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
