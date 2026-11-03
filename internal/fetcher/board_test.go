@@ -561,3 +561,39 @@ func TestResetBackoffDoesNotWaitForOldCookieFetch(t *testing.T) {
 		t.Fatalf("old cookie failure was not recorded: %+v", history)
 	}
 }
+
+func TestCookieMutationsRejectInactive(t *testing.T) {
+	for _, kind := range []string{"set", "clear"} {
+		t.Run(kind, func(t *testing.T) {
+			st, err := store.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := newTestFetcher(t, config.Magma{}, t.TempDir(), st)
+			if err := f.SetCookie("sid=original"); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(f.cookiePath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			info := f.Cookie()
+			f.Active = func() bool { return false }
+			if kind == "set" {
+				err = f.SetCookie("sid=replacement")
+			} else {
+				err = f.ClearCookie()
+			}
+			if !errors.Is(err, ErrInactive) {
+				t.Fatalf("%s cookie = %v", kind, err)
+			}
+			after, err := os.ReadFile(f.cookiePath())
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("inactive mutation changed cookie file: %v", err)
+			}
+			if cookie, current := f.effectiveCookie(); cookie != "sid=original" || current != info {
+				t.Fatalf("inactive mutation changed credentials: %q, %+v", cookie, current)
+			}
+		})
+	}
+}

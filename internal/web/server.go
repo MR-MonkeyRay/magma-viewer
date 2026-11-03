@@ -87,6 +87,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/admin/boards", s.adminOnly(s.handleAdminBoards))
 	mux.HandleFunc("POST /api/admin/boards", s.adminOnly(s.handleSaveBoard))
 	mux.HandleFunc("PUT /api/admin/boards/{id}", s.adminOnly(s.handleSaveBoard))
+	mux.HandleFunc("POST /api/admin/boards/{id}/archive", s.adminOnly(s.handleArchiveBoard))
+	mux.HandleFunc("DELETE /api/admin/boards/{id}", s.adminOnly(s.handleDeleteBoard))
+	mux.HandleFunc("GET /api/admin/boards/{id}/operation", s.adminOnly(s.handleBoardOperation))
+	mux.HandleFunc("GET /api/admin/archives", s.adminOnly(s.handleArchives))
+	mux.HandleFunc("GET /api/admin/archives/{id}/download", sameOriginOnly(s.adminOnly(s.handleDownloadArchive)))
+	mux.HandleFunc("DELETE /api/admin/archives/{id}", s.adminOnly(s.handleDeleteArchive))
 	mux.HandleFunc("GET /api/admin/history", s.adminOnly(s.handleHistory))
 	mux.HandleFunc("GET /api/cookie", s.adminOnly(s.handleCookieInfo))
 	mux.HandleFunc("DELETE /api/cookie", s.adminOnly(s.handleDeleteCookie))
@@ -511,6 +517,10 @@ func (s *Server) handleSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.boards.SetPaused(rt.ID, *body.Paused); err != nil {
+		if errors.Is(err, board.ErrNotFound) {
+			writeBoardError(w, err)
+			return
+		}
 		log.Printf("schedule: %v", err)
 		writeError(w, http.StatusInternalServerError, "schedule_save_failed", "保存定时任务状态失败")
 		return
@@ -689,7 +699,7 @@ func (s *Server) handleZipSelected(w http.ResponseWriter, r *http.Request) {
 	if checkOnly(w, r) {
 		return
 	}
-	s.writeZip(w, r, rt.Store, "magma-"+rt.ID+"-selected-"+time.Now().Format(store.TimeLayout)+".zip", items)
+	s.writeZip(w, r, rt.ID, rt.Store, "magma-"+rt.ID+"-selected-"+time.Now().Format(store.TimeLayout)+".zip", items)
 }
 
 func (s *Server) handleZipAll(w http.ResponseWriter, r *http.Request) {
@@ -705,7 +715,7 @@ func (s *Server) handleZipAll(w http.ResponseWriter, r *http.Request) {
 	if checkOnly(w, r) {
 		return
 	}
-	s.writeZip(w, r, rt.Store, "magma-"+rt.ID+"-all-"+time.Now().Format(store.TimeLayout)+".zip", items)
+	s.writeZip(w, r, rt.ID, rt.Store, "magma-"+rt.ID+"-all-"+time.Now().Format(store.TimeLayout)+".zip", items)
 }
 
 // checkOnly answers a ?check request once the archive would be served: the
@@ -723,7 +733,7 @@ func checkOnly(w http.ResponseWriter, r *http.Request) bool {
 // compressed, so deflate would only waste CPU. Once streaming has started a
 // failure can only be signalled by cutting the connection: finishing the
 // response normally would hand the browser a corrupt archive it calls complete.
-func (s *Server) writeZip(w http.ResponseWriter, r *http.Request, st *store.Store, filename string, items []store.Item) {
+func (s *Server) writeZip(w http.ResponseWriter, r *http.Request, boardID string, st *store.Store, filename string, items []store.Item) {
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Cache-Control", "no-store")
 	attachment(w, filename)
@@ -734,6 +744,9 @@ func (s *Server) writeZip(w http.ResponseWriter, r *http.Request, st *store.Stor
 		}
 		f, err := os.Open(filepath.Join(st.Dir(), it.Name))
 		if err != nil {
+			if _, _, resolveErr := s.boards.Resolve(boardID); resolveErr != nil {
+				panic(http.ErrAbortHandler)
+			}
 			// Deleted by hand since the last rescan: leave it out rather than fail the archive.
 			log.Printf("zip: skip %s: %v", it.Name, err)
 			continue

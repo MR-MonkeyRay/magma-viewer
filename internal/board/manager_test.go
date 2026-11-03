@@ -1,17 +1,22 @@
 package board
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -867,5 +872,731 @@ func TestManagerCreateAfterStartUsesChildContext(t *testing.T) {
 	job()
 	if hits.Load() != 1 {
 		t.Fatalf("late board job ran after Stop: %d", hits.Load())
+	}
+}
+
+func maintenanceBoard(t *testing.T, m *Manager, name string) (*Runtime, Board) {
+	t.Helper()
+	s, err := m.Create(Settings{Name: name, URL: "https://example.com/" + name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, b, err := m.Resolve(s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{"one.png": managerPNG(t, color.White), "two.png": managerPNG(t, color.Black)} {
+		if err := rt.Store.Import(bytes.NewReader(data), name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return rt, b
+}
+
+func awaitOperation(t *testing.T, m *Manager, id string) Operation {
+	t.Helper()
+	waitFor(t, func() bool {
+		op, ok := m.Operation(id)
+		m.mu.RLock()
+		busy := m.busy
+		m.mu.RUnlock()
+		return ok && !op.Finished.IsZero() && !busy
+	})
+	op, _ := m.Operation(id)
+	return op
+}
+
+func TestManagerArchive(t *testing.T) {
+	root := t.TempDir()
+	m := newTestManager(t, root, "")
+	rt, b := maintenanceBoard(t, m, "archive")
+	const cookie = "sid=private-board-cookie"
+	if err := rt.Fetcher.SetCookie(cookie); err != nil {
+		t.Fatal(err)
+	}
+	sources := make(map[string][]byte)
+	for _, item := range rt.Store.All() {
+		data, err := os.ReadFile(filepath.Join(rt.Store.Dir(), item.Name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sources[item.Name] = data
+	}
+	m.Start(context.Background())
+	if _, ok := m.Operation(b.ID); ok {
+		t.Fatal("unexpected operation")
+	}
+	if err := m.Archive(b.ID); err != nil {
+		t.Fatal(err)
+	}
+	op := awaitOperation(t, m, b.ID)
+	if op.Err != "" || op.Kind != "archive" || op.Done != 2 || op.Total != 2 || op.Started.IsZero() {
+		t.Fatalf("operation = %+v", op)
+	}
+	archives := m.Archives()
+	if len(archives) != 1 || archives[0].BoardID != b.ID || archives[0].BoardName != b.Name || archives[0].Images != 2 {
+		t.Fatalf("archives = %+v", archives)
+	}
+	path, a, err := m.ArchiveFile(archives[0].ID)
+	if err != nil || a != archives[0] || filepath.Dir(path) != filepath.Join(root, "archives") {
+		t.Fatalf("ArchiveFile = %q, %+v, %v", path, a, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Size() != a.Size {
+		t.Fatalf("archive stat = %v, %v", info, err)
+	}
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	if len(zr.File) != len(sources)+1 {
+		t.Fatalf("entries = %d", len(zr.File))
+	}
+	for _, zf := range zr.File {
+		rc, err := zf.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(data, []byte(cookie)) {
+			t.Fatalf("cookie leaked into %s", zf.Name)
+		}
+		if zf.Name == manifestName {
+			var manifest archiveManifest
+			if err := json.Unmarshal(data, &manifest); err != nil {
+				t.Fatal(err)
+			}
+			if manifest.BoardID != b.ID || manifest.Name != b.Name || manifest.Images != len(sources) || !manifest.Created.Equal(a.Created) {
+				t.Fatalf("manifest = %+v", manifest)
+			}
+		} else if !bytes.Equal(data, sources[zf.Name]) {
+			t.Fatalf("source differs: %s", zf.Name)
+		}
+	}
+	assertMigrationAbsent(t, BoardDir(root, b.ID))
+	if _, _, err := m.Resolve(b.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Resolve = %v", err)
+	}
+	if len(m.List(true)) != 0 || len(m.All()) != 1 {
+		t.Fatalf("list/all = %+v/%+v", m.List(true), m.All())
+	}
+	registry, err := Load(RegistryPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := registry.Board(b.ID); got.Lifecycle != Archived {
+		t.Fatalf("persisted = %+v", got)
+	}
+}
+
+func TestManagerArchiveFailureRestoresRuntimeAndPause(t *testing.T) {
+	for _, paused := range []bool{false, true} {
+		t.Run(fmt.Sprint(paused), func(t *testing.T) {
+			var hits atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				hits.Add(1)
+				w.Write(managerPNG(t, color.White))
+			}))
+			defer srv.Close()
+			root := t.TempDir()
+			m := newTestManager(t, root, "")
+			rt, b := maintenanceBoard(t, m, "failure")
+			if _, err := m.Update(b.ID, Settings{Name: b.Name, URL: srv.URL}); err != nil {
+				t.Fatal(err)
+			}
+			if err := m.SetPaused(b.ID, paused); err != nil {
+				t.Fatal(err)
+			}
+			m.Start(context.Background())
+			m.startup.Wait()
+			// A broken image link is indexed but cannot be opened, even as root.
+			if err := os.Symlink(filepath.Join(root, "missing"), filepath.Join(rt.Store.Dir(), "broken.png")); err != nil {
+				t.Fatal(err)
+			}
+			m.mu.RLock()
+			stale := m.job(b.ID, rt.version)
+			m.mu.RUnlock()
+			if err := m.Archive(b.ID); err != nil {
+				t.Fatal(err)
+			}
+			op := awaitOperation(t, m, b.ID)
+			if op.Err == "" {
+				t.Fatal("archive did not fail")
+			}
+			restored, current, err := m.Resolve(b.ID)
+			if err != nil || current.Lifecycle != Active || restored == rt || restored.Fetcher.Status().Paused != paused {
+				t.Fatalf("restored = %+v, err=%v, paused=%v", current, err, restored.Fetcher.Status().Paused)
+			}
+			for _, name := range []string{"one.png", "two.png"} {
+				if _, err := os.Stat(filepath.Join(restored.Store.Dir(), name)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			entries, err := os.ReadDir(filepath.Join(root, "archives"))
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("archive leftovers = %v, %v", entries, err)
+			}
+			m.startup.Wait()
+			before := hits.Load()
+			stale()
+			if hits.Load() != before {
+				t.Fatal("retired cron version became valid again")
+			}
+			m.mu.RLock()
+			job := m.job(b.ID, restored.version)
+			entry := restored.entry
+			m.mu.RUnlock()
+			if _, err := rt.Fetcher.Run(context.Background()); !errors.Is(err, fetcher.ErrInactive) {
+				t.Fatalf("retired fetcher reactivated: %v", err)
+			}
+			if entry == 0 || m.NextRun(b.ID).IsZero() {
+				t.Fatal("schedule was not restored")
+			}
+			job()
+			if want := before + 1; !paused && hits.Load() != want {
+				t.Fatalf("restored cron hits=%d, want=%d", hits.Load(), want)
+			}
+			if paused && hits.Load() != before {
+				t.Fatal("pause state was lost")
+			}
+		})
+	}
+}
+
+func TestManagerMaintenanceExclusionAndInactiveGates(t *testing.T) {
+	m := newTestManager(t, t.TempDir(), "")
+	rt, b := maintenanceBoard(t, m, "held")
+	_, other := maintenanceBoard(t, m, "other")
+	a := registeredArchive(t, m, b.ID, "old.zip")
+	m.Start(context.Background())
+	m.startup.Wait()
+	m.mu.Lock()
+	rt.wg.Add(1)
+	stale := m.job(b.ID, rt.version)
+	m.mu.Unlock()
+	defer rt.wg.Done()
+	if err := m.Archive(b.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Archive(other.ID); !errors.Is(err, ErrMaintenanceBusy) {
+		t.Fatalf("Archive = %v", err)
+	}
+	if err := m.Delete(other.ID, other.Name); !errors.Is(err, ErrMaintenanceBusy) {
+		t.Fatalf("Delete = %v", err)
+	}
+	if _, _, err := m.ArchiveFile(a.ID); !errors.Is(err, ErrMaintenanceBusy) {
+		t.Fatalf("ArchiveFile = %v", err)
+	}
+	if err := m.DeleteArchive(a.ID); !errors.Is(err, ErrMaintenanceBusy) {
+		t.Fatalf("DeleteArchive = %v", err)
+	}
+	if _, err := rt.Fetcher.Run(context.Background()); !errors.Is(err, fetcher.ErrInactive) {
+		t.Fatalf("Run = %v", err)
+	}
+	if _, err := m.Update(b.ID, b.Settings); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Update = %v", err)
+	}
+	if err := m.SetPaused(b.ID, false); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetPaused = %v", err)
+	}
+	before := rt.Fetcher.Status().Runs
+	stale()
+	rt.Fetcher.RunScheduled(context.Background())
+	if rt.Fetcher.Status().Runs != before {
+		t.Fatal("inactive cron fetched")
+	}
+}
+
+func registeredArchive(t *testing.T, m *Manager, id, file string) Archive {
+	t.Helper()
+	aid, err := NewArchiveID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := Archive{ID: aid, BoardID: id, File: file, Created: time.Now().UTC()}
+	writeMigrationFile(t, filepath.Join(m.o.Root, "archives", file), "archive data")
+	if err := m.registry.Update(func(st *State) error { st.Archives = append(st.Archives, a); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+func TestManagerDelete(t *testing.T) {
+	for _, archived := range []bool{false, true} {
+		t.Run(fmt.Sprint(archived), func(t *testing.T) {
+			root := t.TempDir()
+			m := newTestManager(t, root, "")
+			_, b := maintenanceBoard(t, m, "target")
+			otherRT, other := maintenanceBoard(t, m, "other")
+			kept := registeredArchive(t, m, other.ID, "keep.zip")
+			registeredArchive(t, m, b.ID, "target-old.zip")
+			orphan := filepath.Join(root, "archives", b.ID+"--orphan.zip")
+			part := filepath.Join(root, "archives", "."+b.ID+"--unfinished.zip.part")
+			writeMigrationFile(t, orphan, "orphan")
+			writeMigrationFile(t, part, "part")
+			m.Start(context.Background())
+			if archived {
+				if err := m.Archive(b.ID); err != nil {
+					t.Fatal(err)
+				}
+				if op := awaitOperation(t, m, b.ID); op.Err != "" {
+					t.Fatalf("archive: %+v", op)
+				}
+			}
+			before, err := os.ReadFile(RegistryPath(root))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = m.Delete(b.ID, "wrong")
+			var invalid InvalidError
+			if !errors.As(err, &invalid) || invalid.Code != "confirm_mismatch" {
+				t.Fatalf("confirm = %v", err)
+			}
+			after, err := os.ReadFile(RegistryPath(root))
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatal("bad confirmation changed registry")
+			}
+			if err := m.Delete(b.ID, "  "+b.Name+" \n"); err != nil {
+				t.Fatal(err)
+			}
+			if op := awaitOperation(t, m, b.ID); op.Err != "" || op.Kind != "delete" {
+				t.Fatalf("delete: %+v", op)
+			}
+			assertMigrationAbsent(t, BoardDir(root, b.ID))
+			assertMigrationAbsent(t, orphan)
+			assertMigrationAbsent(t, part)
+			assertMigrationAbsent(t, filepath.Join(root, "archives", "target-old.zip"))
+			if _, ok := m.Board(b.ID); ok {
+				t.Fatal("deleted board remains")
+			}
+			if len(m.Archives()) != 1 || m.Archives()[0].ID != kept.ID {
+				t.Fatalf("archives=%+v", m.Archives())
+			}
+			if _, _, err := m.Resolve(other.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(otherRT.Store.Dir(), "one.png")); err != nil {
+				t.Fatal(err)
+			}
+			registry, err := Load(RegistryPath(root))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := registry.Board(b.ID); ok {
+				t.Fatal("deleted board persisted")
+			}
+		})
+	}
+}
+
+func TestManagerDeleteArchive(t *testing.T) {
+	root := t.TempDir()
+	m := newTestManager(t, root, "")
+	_, b := maintenanceBoard(t, m, "archived")
+	if err := m.Archive(b.ID); err != nil {
+		t.Fatal(err)
+	}
+	if op := awaitOperation(t, m, b.ID); op.Err != "" {
+		t.Fatal(op.Err)
+	}
+	first := m.Archives()[0]
+	second := registeredArchive(t, m, b.ID, "second.zip")
+	if got := m.Archives(); len(got) != 2 || got[0].ID != second.ID {
+		t.Fatalf("archives order = %+v", got)
+	}
+	if err := m.DeleteArchive(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	assertMigrationAbsent(t, filepath.Join(root, "archives", first.File))
+	if current, ok := m.Board(b.ID); !ok || current.Lifecycle != Archived {
+		t.Fatal("board removed before last archive")
+	}
+	if err := os.Remove(filepath.Join(root, "archives", second.File)); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.DeleteArchive(second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Archives()) != 0 {
+		t.Fatal("archive records remain")
+	}
+	if _, ok := m.Board(b.ID); ok {
+		t.Fatal("last archive left board record")
+	}
+	if err := m.DeleteArchive(second.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteArchive missing = %v", err)
+	}
+	if _, _, err := m.ArchiveFile(second.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ArchiveFile missing = %v", err)
+	}
+}
+
+func TestManagerRecoveryRunsSerially(t *testing.T) {
+	root := t.TempDir()
+	original := newTestManager(t, root, "")
+	rt, archiving := maintenanceBoard(t, original, "archiving")
+	_, archived := maintenanceBoard(t, original, "archived")
+	_, deleting := maintenanceBoard(t, original, "deleting")
+	registered := registeredArchive(t, original, archiving.ID, archiving.ID+"--20000101-000000.zip")
+	removed := registeredArchive(t, original, deleting.ID, "delete.zip")
+	part := filepath.Join(root, "archives", "."+archiving.ID+"--unfinished.zip.part")
+	orphan := filepath.Join(root, "archives", archiving.ID+"--orphan.zip")
+	writeMigrationFile(t, part, "part")
+	writeMigrationFile(t, orphan, "orphan")
+	if err := original.SetPaused(archiving.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	original.Stop()
+	if err := original.registry.Update(func(st *State) error {
+		st.Boards[0].Lifecycle = Archiving
+		st.Boards[1].Lifecycle = Archived
+		st.Boards[2].Lifecycle = Deleting
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	m := newTestManager(t, root, "")
+	if len(m.runtimes) != 1 || m.runtimes[archiving.ID].entry != 0 {
+		t.Fatalf("recovery runtimes = %+v", m.runtimes)
+	}
+	m.mu.Lock()
+	recoveryRT := m.runtimes[archiving.ID]
+	recoveryRT.wg.Add(1)
+	var release sync.Once
+	defer release.Do(recoveryRT.wg.Done)
+	m.mu.Unlock()
+	m.Start(context.Background())
+	if err := m.Archive(archiving.ID); !errors.Is(err, ErrMaintenanceBusy) {
+		t.Fatalf("recovery exclusion = %v", err)
+	}
+	if _, err := os.Stat(BoardDir(root, deleting.ID)); err != nil {
+		t.Fatal("recovery ran out of order")
+	}
+	release.Do(recoveryRT.wg.Done)
+	op1 := awaitOperation(t, m, archiving.ID)
+	if recoveryRT.Fetcher.Status().Runs != 0 {
+		t.Fatal("recovery started a fetch")
+	}
+	op2, ok2 := m.Operation(archived.ID)
+	op3, ok3 := m.Operation(deleting.ID)
+	if op1.Err != "" || !ok2 || op2.Err != "" || !ok3 || op3.Err != "" || op2.Started.Before(op1.Finished) || op3.Started.Before(op2.Finished) {
+		t.Fatalf("operations = %+v %+v %+v", op1, op2, op3)
+	}
+	for _, b := range []Board{archiving, archived, deleting} {
+		assertMigrationAbsent(t, BoardDir(root, b.ID))
+	}
+	assertMigrationAbsent(t, part)
+	assertMigrationAbsent(t, orphan)
+	assertMigrationAbsent(t, filepath.Join(root, "archives", removed.File))
+	assertMigrationFile(t, filepath.Join(root, "archives", registered.File), "archive data")
+	if current, ok := m.Board(archiving.ID); !ok || current.Lifecycle != Archived {
+		t.Fatalf("recovered archive=%+v", current)
+	}
+	if _, ok := m.Board(deleting.ID); ok {
+		t.Fatal("recovering delete retained record")
+	}
+	if len(m.Archives()) != 2 || rt.Store.Count() != 2 {
+		t.Fatalf("archives=%+v", m.Archives())
+	}
+}
+
+func TestManagerStopDuringArchiveLeavesRecoverableSources(t *testing.T) {
+	root := t.TempDir()
+	m := newTestManager(t, root, "")
+	rt, b := maintenanceBoard(t, m, "cancel")
+	m.Start(context.Background())
+	m.startup.Wait()
+	rt.wg.Add(1)
+	if err := m.Archive(b.ID); err != nil {
+		rt.wg.Done()
+		t.Fatal(err)
+	}
+	stopped := make(chan struct{})
+	go func() { m.Stop(); close(stopped) }()
+	<-m.ctx.Done()
+	rt.wg.Done()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not finish")
+	}
+	op, _ := m.Operation(b.ID)
+	if op.Err == "" {
+		t.Fatalf("cancelled operation=%+v", op)
+	}
+	registry, err := Load(RegistryPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current, _ := registry.Board(b.ID); current.Lifecycle != Archiving {
+		t.Fatalf("cancelled lifecycle=%s", current.Lifecycle)
+	}
+	for _, name := range []string{"one.png", "two.png"} {
+		if _, err := os.Stat(filepath.Join(rt.Store.Dir(), name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files, err := filepath.Glob(filepath.Join(root, "archives", "*"))
+	if err != nil || len(files) != 0 {
+		t.Fatalf("cancel leftovers=%v, %v", files, err)
+	}
+	recovered := newTestManager(t, root, "")
+	recovered.Start(context.Background())
+	if op := awaitOperation(t, recovered, b.ID); op.Err != "" {
+		t.Fatal(op.Err)
+	}
+	assertMigrationAbsent(t, BoardDir(root, b.ID))
+}
+
+func TestManagerRetireDoesNotWaitForOtherBoards(t *testing.T) {
+	m := newTestManager(t, t.TempDir(), "")
+	_, target := maintenanceBoard(t, m, "target")
+	other, _ := maintenanceBoard(t, m, "other")
+	m.Start(context.Background())
+	other.wg.Add(1)
+	defer other.wg.Done()
+	if err := m.Archive(target.ID); err != nil {
+		t.Fatal(err)
+	}
+	if op := awaitOperation(t, m, target.ID); op.Err != "" {
+		t.Fatal(op.Err)
+	}
+}
+
+func TestManagerDeleteFailureResumesOnRestart(t *testing.T) {
+	root := t.TempDir()
+	m := newTestManager(t, root, "")
+	_, b := maintenanceBoard(t, m, "delete")
+	a := registeredArchive(t, m, b.ID, "blocked.zip")
+	path := filepath.Join(root, "archives", a.File)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	writeMigrationFile(t, filepath.Join(path, "blocker"), "cannot remove nonempty directory as a file")
+	m.Start(context.Background())
+	if err := m.Delete(b.ID, b.Name); err != nil {
+		t.Fatal(err)
+	}
+	op := awaitOperation(t, m, b.ID)
+	if op.Err == "" {
+		t.Fatal("delete did not fail")
+	}
+	if current, _ := m.Board(b.ID); current.Lifecycle != Deleting {
+		t.Fatalf("failed deletion = %+v", current)
+	}
+	if _, err := m.Update(b.ID, b.Settings); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Update deleting = %v", err)
+	}
+	m.Stop()
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatal(err)
+	}
+	recovered := newTestManager(t, root, "")
+	recovered.Start(context.Background())
+	if op := awaitOperation(t, recovered, b.ID); op.Err != "" {
+		t.Fatal(op.Err)
+	}
+	if _, ok := recovered.Board(b.ID); ok {
+		t.Fatal("resumed deletion left a board")
+	}
+	if len(recovered.Archives()) != 0 {
+		t.Fatal("resumed deletion left archives")
+	}
+}
+
+func TestManagerArchiveCommitFailureKeepsSourcesForRecovery(t *testing.T) {
+	root := t.TempDir()
+	m := newTestManager(t, root, "")
+	rt, b := maintenanceBoard(t, m, "commit")
+	m.Start(context.Background())
+	m.startup.Wait()
+	rt.wg.Add(1)
+	if err := m.Archive(b.ID); err != nil {
+		rt.wg.Done()
+		t.Fatal(err)
+	}
+	originalPath := m.registry.path
+	blocker := filepath.Join(root, "registry-blocker")
+	writeMigrationFile(t, blocker, "blocker")
+	m.registry.path = filepath.Join(blocker, "boards.json")
+	rt.wg.Done()
+	op := awaitOperation(t, m, b.ID)
+	m.registry.path = originalPath
+	if op.Err == "" {
+		t.Fatal("registry commit did not fail")
+	}
+	if current, _ := m.Board(b.ID); current.Lifecycle != Archiving {
+		t.Fatalf("failed commit changed lifecycle: %+v", current)
+	}
+	if len(m.Archives()) != 0 {
+		t.Fatal("failed commit registered an archive")
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "archives"))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("commit failure leftovers = %v, %v", entries, err)
+	}
+	for _, name := range []string{"one.png", "two.png"} {
+		if _, err := os.Stat(filepath.Join(rt.Store.Dir(), name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m.Stop()
+	recovered := newTestManager(t, root, "")
+	recovered.Start(context.Background())
+	if op := awaitOperation(t, recovered, b.ID); op.Err != "" {
+		t.Fatal(op.Err)
+	}
+}
+
+func TestManagerArchiveCleanupFailureResumesOnRestart(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("directory permissions do not restrict root")
+	}
+	root := t.TempDir()
+	m := newTestManager(t, root, "")
+	rt, b := maintenanceBoard(t, m, "cleanup")
+	m.Start(context.Background())
+	m.startup.Wait()
+	rt.wg.Add(1)
+	var release sync.Once
+	defer release.Do(rt.wg.Done)
+	if err := m.Archive(b.ID); err != nil {
+		t.Fatal(err)
+	}
+	dir := BoardDir(root, b.ID)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o755)
+	release.Do(rt.wg.Done)
+	if op := awaitOperation(t, m, b.ID); op.Err == "" {
+		t.Fatal("cleanup did not fail")
+	}
+	if current, _ := m.Board(b.ID); current.Lifecycle != Archived {
+		t.Fatalf("cleanup failure rolled back = %+v", current)
+	}
+	archives := m.Archives()
+	if len(archives) != 1 {
+		t.Fatalf("committed archive = %+v", archives)
+	}
+	if _, _, err := m.ArchiveFile(archives[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.RLock()
+	rt = m.runtimes[b.ID]
+	m.mu.RUnlock()
+	if rt != nil {
+		t.Fatal("archived runtime retained after cleanup failure")
+	}
+	m.Stop()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recovered := newTestManager(t, root, "")
+	recovered.Start(context.Background())
+	if op := awaitOperation(t, recovered, b.ID); op.Err != "" {
+		t.Fatal(op.Err)
+	}
+	assertMigrationAbsent(t, dir)
+	if len(recovered.Archives()) != 1 {
+		t.Fatal("cleanup lost committed archive")
+	}
+}
+
+func TestManagerStartQueuesRecoveryBehindExistingTask(t *testing.T) {
+	root := t.TempDir()
+	original := newTestManager(t, root, "")
+	_, target := maintenanceBoard(t, original, "target")
+	_, pending := maintenanceBoard(t, original, "pending")
+	original.Stop()
+	if err := original.lifecycle(pending.ID, Deleting); err != nil {
+		t.Fatal(err)
+	}
+	m := newTestManager(t, root, "")
+	rt, _, err := m.Resolve(target.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.wg.Add(1)
+	var release sync.Once
+	defer release.Do(rt.wg.Done)
+	if err := m.Archive(target.ID); err != nil {
+		t.Fatal(err)
+	}
+	m.Start(context.Background())
+	release.Do(rt.wg.Done)
+	if op := awaitOperation(t, m, target.ID); op.Err != "" {
+		t.Fatal(op.Err)
+	}
+	if op, ok := m.Operation(pending.ID); !ok || op.Err != "" || op.Finished.IsZero() {
+		t.Fatalf("pending recovery = %+v, %v", op, ok)
+	}
+	if _, ok := m.Board(pending.ID); ok {
+		t.Fatal("pending deletion was skipped")
+	}
+}
+
+func TestManagerStartSkipsCompletedArchives(t *testing.T) {
+	root := t.TempDir()
+	original := newTestManager(t, root, "")
+	_, b := maintenanceBoard(t, original, "complete")
+	if err := original.Archive(b.ID); err != nil {
+		t.Fatal(err)
+	}
+	if op := awaitOperation(t, original, b.ID); op.Err != "" {
+		t.Fatal(op.Err)
+	}
+	original.Stop()
+	m := newTestManager(t, root, "")
+	m.Start(context.Background())
+	m.mu.RLock()
+	busy, queued := m.busy, len(m.pending)
+	m.mu.RUnlock()
+	if busy || queued != 0 {
+		t.Fatal("completed archive occupied maintenance slot")
+	}
+	if _, ok := m.Operation(b.ID); ok {
+		t.Fatal("completed archive was queued again")
+	}
+}
+
+func TestManagerRetiredRuntimeRejectsCookieMutations(t *testing.T) {
+	for _, kind := range []string{"archive", "delete"} {
+		t.Run(kind, func(t *testing.T) {
+			root := t.TempDir()
+			m := newTestManager(t, root, "")
+			rt, b := maintenanceBoard(t, m, "retire")
+			if err := rt.Fetcher.SetCookie("sid=original"); err != nil {
+				t.Fatal(err)
+			}
+			m.Start(context.Background())
+			var err error
+			if kind == "archive" {
+				err = m.Archive(b.ID)
+			} else {
+				err = m.Delete(b.ID, b.Name)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if op := awaitOperation(t, m, b.ID); op.Err != "" {
+				t.Fatal(op.Err)
+			}
+			dir := BoardDir(root, b.ID)
+			assertMigrationAbsent(t, dir)
+			if err := rt.Fetcher.SetCookie("sid=late-request"); !errors.Is(err, fetcher.ErrInactive) {
+				t.Fatalf("SetCookie after %s = %v", kind, err)
+			}
+			assertMigrationAbsent(t, dir)
+			if err := rt.Fetcher.ClearCookie(); !errors.Is(err, fetcher.ErrInactive) {
+				t.Fatalf("ClearCookie after %s = %v", kind, err)
+			}
+			assertMigrationAbsent(t, dir)
+		})
 	}
 }

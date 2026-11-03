@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"os"
 	"slices"
 	"time"
 
@@ -79,6 +80,14 @@ func (s *Server) handleBoards(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAdminOverview(w http.ResponseWriter, _ *http.Request) {
 	boards := s.boards.List(true)
+	archives := s.boards.Archives()
+	var maintenance *board.Operation
+	for _, b := range s.boards.All() {
+		if op, ok := s.boards.Operation(b.ID); ok && op.Finished.IsZero() {
+			maintenance = &op
+			break
+		}
+	}
 	d := diskSpace(s.cfg.Storage.Dir)
 	if d != nil {
 		for _, b := range boards {
@@ -89,23 +98,133 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"boards": boards, "shared_cookie": cookie, "shared_token": tokenInfo(s.creds.Token()),
 		"notify": s.Notifier != nil, "schedule": s.cfg.Schedule, "disk": d, "version": s.Version,
+		"archives":    map[string]any{"count": len(archives), "bytes": archiveBytes(archives)},
+		"maintenance": maintenance,
 	})
 }
 
 func (s *Server) handleAdminBoards(w http.ResponseWriter, _ *http.Request) {
 	type item struct {
 		board.Summary
-		Cookie fetcher.CookieInfo `json:"cookie"`
-		Token  any                `json:"token"`
+		Cookie    fetcher.CookieInfo `json:"cookie"`
+		Token     any                `json:"token"`
+		Operation *board.Operation   `json:"operation,omitempty"`
+	}
+	type other struct {
+		ID        string           `json:"id"`
+		Name      string           `json:"name"`
+		Lifecycle board.Lifecycle  `json:"lifecycle"`
+		Operation *board.Operation `json:"operation,omitempty"`
 	}
 	items := make([]item, 0)
 	for _, b := range s.boards.List(true) {
 		rt, _, err := s.boards.Resolve(b.ID)
 		if err == nil {
-			items = append(items, item{Summary: b, Cookie: rt.Fetcher.Cookie(), Token: tokenInfo(rt.Fetcher.Token())})
+			it := item{Summary: b, Cookie: rt.Fetcher.Cookie(), Token: tokenInfo(rt.Fetcher.Token())}
+			if op, ok := s.boards.Operation(b.ID); ok {
+				it.Operation = &op
+			}
+			items = append(items, it)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	others := make([]other, 0)
+	for _, b := range s.boards.All() {
+		if b.Lifecycle == board.Active {
+			continue
+		}
+		it := other{ID: b.ID, Name: b.Name, Lifecycle: b.Lifecycle}
+		if op, ok := s.boards.Operation(b.ID); ok {
+			it.Operation = &op
+		}
+		others = append(others, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "others": others})
+}
+
+func (s *Server) handleArchiveBoard(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.boards.Archive(id); err != nil {
+		writeBoardError(w, err)
+		return
+	}
+	op, _ := s.boards.Operation(id)
+	writeJSON(w, http.StatusAccepted, map[string]any{"operation": op})
+}
+
+func (s *Server) handleDeleteBoard(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Confirm string `json:"confirm"`
+	}
+	if !readJSON(w, r, 4<<10, &body) {
+		return
+	}
+	id := r.PathValue("id")
+	if err := s.boards.Delete(id, body.Confirm); err != nil {
+		writeBoardError(w, err)
+		return
+	}
+	op, _ := s.boards.Operation(id)
+	writeJSON(w, http.StatusAccepted, map[string]any{"operation": op})
+}
+
+func (s *Server) handleBoardOperation(w http.ResponseWriter, r *http.Request) {
+	op, ok := s.boards.Operation(r.PathValue("id"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "operation_not_found", "维护任务不存在")
+		return
+	}
+	writeJSON(w, http.StatusOK, op)
+}
+
+func archiveBytes(archives []board.Archive) int64 {
+	var total int64
+	for _, a := range archives {
+		total += a.Size
+	}
+	return total
+}
+
+func (s *Server) handleArchives(w http.ResponseWriter, _ *http.Request) {
+	archives := s.boards.Archives()
+	writeJSON(w, http.StatusOK, map[string]any{"items": archives, "bytes": archiveBytes(archives)})
+}
+
+func (s *Server) handleDownloadArchive(w http.ResponseWriter, r *http.Request) {
+	path, a, err := s.boards.ArchiveFile(r.PathValue("id"))
+	if err != nil {
+		writeArchiveError(w, err)
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		writeArchiveError(w, board.ErrNotFound)
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		writeArchiveError(w, board.ErrNotFound)
+		return
+	}
+	attachment(w, a.File)
+	w.Header().Set("Cache-Control", "no-store")
+	http.ServeContent(w, r, a.File, info.ModTime(), f)
+}
+
+func (s *Server) handleDeleteArchive(w http.ResponseWriter, r *http.Request) {
+	if err := s.boards.DeleteArchive(r.PathValue("id")); err != nil {
+		writeArchiveError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": s.boards.Archives()})
+}
+
+func writeArchiveError(w http.ResponseWriter, err error) {
+	if errors.Is(err, board.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "archive_not_found", "归档包不存在")
+		return
+	}
+	writeBoardError(w, err)
 }
 
 func (s *Server) handleSaveBoard(w http.ResponseWriter, r *http.Request) {
@@ -136,6 +255,8 @@ func writeBoardError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, invalid.Code, invalid.Msg)
 	case errors.Is(err, board.ErrNotFound):
 		writeError(w, http.StatusNotFound, "board_not_found", "画板不存在")
+	case errors.Is(err, board.ErrMaintenanceBusy):
+		writeError(w, http.StatusConflict, "maintenance_busy", "已有归档或删除任务在进行，请稍后再试")
 	case errors.Is(err, fetcher.ErrBusy):
 		writeError(w, http.StatusConflict, "board_busy", "正在抓取，请稍后再试")
 	default:
@@ -257,6 +378,10 @@ func (s *Server) handleDeleteCookie(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeCookieError(w http.ResponseWriter, err error) {
+	if errors.Is(err, fetcher.ErrInactive) {
+		writeError(w, http.StatusConflict, "board_inactive", "画板当前不可抓取")
+		return
+	}
 	if errors.Is(err, fetcher.ErrInvalidCookie) {
 		writeError(w, http.StatusBadRequest, "invalid_cookie", "Cookie 格式不正确")
 		return

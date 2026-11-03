@@ -82,6 +82,9 @@ func (f *Fetcher) SetCookie(raw string) error {
 	}
 	f.runMu.Lock()
 	defer f.runMu.Unlock()
+	if f.Active != nil && !f.Active() {
+		return ErrInactive
+	}
 	o := cookieOverride{Cookie: cookie, Updated: f.now().UTC()}
 	data, _ := json.Marshal(o)
 	if err := fsutil.WriteFile(f.cookiePath(), data, 0o600); err != nil {
@@ -101,6 +104,9 @@ func (f *Fetcher) SetCookie(raw string) error {
 func (f *Fetcher) ClearCookie() error {
 	f.runMu.Lock()
 	defer f.runMu.Unlock()
+	if f.Active != nil && !f.Active() {
+		return ErrInactive
+	}
 	if err := os.Remove(f.cookiePath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("clear cookie: %w", err)
 	}

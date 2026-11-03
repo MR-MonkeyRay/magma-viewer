@@ -341,6 +341,48 @@ func TestBoardCookieInheritance(t *testing.T) {
 	assertSource(a.ID, "page")
 }
 
+func TestInactiveBoardCookieWrites(t *testing.T) {
+	s, boards, _ := newTestWebServer(t, &config.Config{Admin: config.Admin{Username: "admin", Password: "pw", SessionTTL: time.Hour}}, false)
+	b := createBoard(t, boards, "Inactive Cookie", false)
+	rt, _, err := boards.Resolve(b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.Fetcher.SetCookie("AUTH_TOKEN=original"); err != nil {
+		t.Fatal(err)
+	}
+	cookiePath := filepath.Join(rt.Store.Dir(), ".state", "board-cookie.json")
+	before, err := os.ReadFile(cookiePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Model retirement after the handler resolves the board runtime.
+	rt.Fetcher.Active = func() bool { return false }
+	h := s.Handler()
+	token, _ := s.auth.newToken()
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/api/cookie?board="+b.ID, strings.NewReader(`{"cookie":"AUTH_TOKEN=replacement"}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Sec-Fetch-Site", "same-origin")
+			req.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			var body map[string]string
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if rec.Code != http.StatusConflict || body["code"] != "board_inactive" || body["error"] != "画板当前不可抓取" {
+				t.Fatalf("inactive cookie write: %d %v", rec.Code, body)
+			}
+			after, err := os.ReadFile(cookiePath)
+			if err != nil || !bytes.Equal(before, after) || rt.Fetcher.Cookie().Source != "board" {
+				t.Fatalf("inactive cookie write changed credentials: %s, %v", after, err)
+			}
+		})
+	}
+}
+
 func TestAdminHistoryMergesBoards(t *testing.T) {
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "failed", http.StatusBadGateway)
