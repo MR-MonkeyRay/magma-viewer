@@ -19,6 +19,7 @@
   const VIEWS = ['grid', 'list'];
 
   const state = {
+    board: '',
     page: 1,
     size: Number(store.get('size', 48)),
     sort: store.get('sort', 'desc'),
@@ -39,6 +40,7 @@
 
   const el = {
     bar: $('#bar'), main: $('#main'), toTop: $('#to-top'),
+    boardSwitch: $('#board-switch'), boardMenu: $('#board-menu'), currentBoard: $('#current-board'),
     history: $('#history'), historyBar: $('#history-bar'), gallery: $('#gallery'), summary: $('#summary'), empty: $('#empty'), pager: $('#pager'),
     now: $('#now'), nowImg: $('#now-img'), nowTime: $('#now-time'), nowAgo: $('#now-ago'), nowDate: $('#now-date'), nowFacts: $('#now-facts'), nowDl: $('#now-dl'),
     nowBadge: $('#now-badge'), nowView: $('#now-view'), nowPrev: $('#now-prev'), nowNext: $('#now-next'), nowBack: $('#now-back'), reel: $('#reel'), reelTrack: $('#reel-track'),
@@ -139,6 +141,146 @@
   const validTime = (v) => !!v && !v.startsWith('0001');
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const enc = encodeURIComponent;
+
+  // Keep the board in one place for API calls, files, downloads and shared links.
+  function boardURL(path, id = state.board) {
+    const url = new URL(path, location.href);
+    url.searchParams.set('board', id);
+    return url.pathname + url.search + url.hash;
+  }
+
+  // ---------- boards ----------
+  const boards = { items: [], suggested: '', legacy_id: '', query: null, ready: false, loading: null };
+
+  function boardFromURL() {
+    const url = new URL(location.href);
+    const id = url.searchParams.get('board');
+    if (boards.items.some((b) => b.id === id)) return id;
+    const fallback = boards.items.some((b) => b.id === boards.suggested) ? boards.suggested : (boards.items[0]?.id || '');
+    if (url.searchParams.has('board')) {
+      url.searchParams.delete('board');
+      if (fallback) url.searchParams.set('board', fallback);
+      history.replaceState(null, '', url.pathname + url.search + url.hash);
+      toast(t('board.notFound'), 'error');
+    } else if (new URLSearchParams(url.hash.slice(1)).has('img') && boards.items.some((b) => b.id === boards.legacy_id)) {
+      return boards.legacy_id;
+    }
+    return fallback;
+  }
+
+  function renderBoard() {
+    const board = boards.items.find((b) => b.id === state.board);
+    el.boardSwitch.hidden = boards.items.length < 2;
+    el.boardSwitch.querySelector('span').textContent = board ? board.name : '';
+    el.boardSwitch.title = board ? t('board.switch', { name: board.name }) : '';
+    el.boardSwitch.setAttribute('aria-label', el.boardSwitch.title);
+    el.currentBoard.textContent = board ? board.name : '';
+    el.currentBoard.hidden = !board;
+    document.title = board ? `${board.name} · ${t('app.title')}` : t('app.title');
+    $('#download-all').setAttribute('href', board ? boardURL('/download/all') : '#');
+    // Refreshing an open list should keep the keyboard on the same board.
+    const focused = el.boardMenu.contains(document.activeElement) ? document.activeElement.dataset.board : '';
+    const items = boards.items.slice().sort((a, b) => Number(b.id === boards.suggested) - Number(a.id === boards.suggested));
+    el.boardMenu.innerHTML = items.map((b) => {
+      const current = b.id === state.board;
+      const badge = (key) => `<em class="board-badge">${esc(t(key))}</em>`;
+      return `<button type="button" role="menuitemradio" aria-checked="${current}"${current ? ' aria-current="true"' : ''} data-board="${esc(b.id)}">
+        <svg class="board-check" aria-hidden="true"><use href="#i-ok"/></svg><span class="board-name">${esc(b.name)}</span>
+        ${validTime(b.latest) ? `<time data-ago="${esc(b.latest)}">${fmtAgo(new Date(b.latest), false)}</time>` : ''}
+        ${b.state !== 'syncing' ? badge('board.' + b.state) : ''}${b.id === boards.suggested ? badge('board.latest') : ''}${b.hidden ? badge('board.hidden') : ''}</button>`;
+    }).join('');
+    if (menuBtn === el.boardSwitch) {
+      if (el.boardSwitch.hidden) closeMenu(true);
+      else if (focused) [...el.boardMenu.querySelectorAll('button')].find((b) => b.dataset.board === focused)?.focus();
+    }
+  }
+
+  function renderNoBoards() {
+    render({ animate: false });
+    el.historyBar.hidden = true;
+    el.now.hidden = true;
+    el.now.classList.remove('pending');
+  }
+
+  async function refreshBoards() {
+    Object.assign(boards, await api('/api/boards'), { ready: true });
+    if (!boards.items.length) {
+      // With no board, /api/images cannot supply the usual admin flag.
+      try { await api('/api/admin/overview'); state.admin = true; } catch (e) { if (e.status === 401) state.admin = false; else throw e; }
+    }
+  }
+
+  async function startBoards() {
+    if (boards.loading) return boards.loading;
+    boards.loading = (async () => {
+      try {
+        await refreshBoards();
+        switchBoard(boardFromURL());
+      } catch (e) { renderError(e); }
+      finally { boards.loading = null; }
+    })();
+    return boards.loading;
+  }
+
+  async function openBoardMenu() {
+    if (el.boardSwitch.hidden) return;
+    if (menuBtn === el.boardSwitch) { closeMenu(true); return; }
+    openMenu(el.boardSwitch);
+    try {
+      await refreshBoards();
+      if (!boards.items.some((b) => b.id === state.board)) switchBoard(boardFromURL());
+      else renderBoard();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  function switchBoard(id, push = false) {
+    if (push && id === state.board) { closeMenu(true); return; }
+    if (push) {
+      const url = new URL(boardURL(location.pathname + location.search, id), location.origin);
+      history.pushState(null, '', url.pathname + url.search); // a new board starts on page one
+    }
+    boards.query = new URLSearchParams(location.search).get('board');
+    closeMenu();
+    closeCal();
+    endTour();
+    leaveRoute();
+    closeLightbox(true);
+    lbHistory = false;
+    expectPop = false;
+    loadSeq++;
+    overviewSeq++;
+    pollSeq++;
+    nowVer++;
+    olderGen++;
+    olderItems.clear();
+    cmp.diff = null;
+    reelStop();
+    reelForget(null, true);
+    reel.failed.clear();
+    Object.assign(reel, { items: [], times: [], heat: [], at: -1, from: 0, to: 0, thumbsWarm: false });
+    Object.assign(overview, { recent: null, first: '', days: new Map() });
+    clearTimeout(pollTimer);
+    awaitRun = '';
+    awaitUntil = 0;
+    stopVideo();
+    [el.statusDialog, el.scheduleDialog, el.videoDialog].forEach((d) => closeDialog(d, true));
+    Object.assign(state, { board: id, page: 1, date: null, items: [], total: 0, pages: 1, latest: undefined, task: null, lastIndex: null });
+    el.gallery.innerHTML = '';
+    clearSelection();
+    hide(el.fresh);
+    el.now.hidden = true;
+    el.nowImg.removeAttribute('src');
+    delete el.now.dataset.name;
+    delete el.now.dataset.thumb;
+    el.empty.hidden = true;
+    el.historyBar.hidden = !id;
+    renderBoard();
+    renderReel();
+    if (!id) { renderNoBoards(); return; }
+    loadOverview();
+    followHash();
+    if (push) { el.boardSwitch.focus({ preventScroll: true }); scrollToTop(); }
+  }
 
   // Elements with data-ago / data-until keep their relative time current.
   function tickTimes() {
@@ -288,10 +430,11 @@
 
   // Posted as a form, since a large selection outgrows a URL; the attachment downloads without leaving the page.
   async function downloadZip(names) {
-    if (!(await preflight('/download/zip?check=1', { method: 'POST', body: new URLSearchParams(names.map((n) => ['f', n])) }))) return false;
+    const action = boardURL('/download/zip');
+    if (!(await preflight(action + '&check=1', { method: 'POST', body: new URLSearchParams(names.map((n) => ['f', n])) }))) return false;
     const form = document.createElement('form');
     form.method = 'post';
-    form.action = '/download/zip';
+    form.action = action;
     form.hidden = true;
     for (const n of names) form.append(Object.assign(document.createElement('input'), { type: 'hidden', name: 'f', value: n }));
     document.body.appendChild(form);
@@ -348,9 +491,16 @@
     return { img, date };
   }
   const imgHash = (name) => `#img=${encodeURIComponent(name)}`;
+  // History entries name the displayed board; a clean home URL stays clean until navigation.
+  function setHash(hash, push = false, entry = null) {
+    history[push ? 'pushState' : 'replaceState'](entry, '', boardURL(location.pathname + location.search + hash));
+    boards.query = state.board;
+  }
   // Shows what the address names; on start-up and when retrying a failed load. A retried picture link that failed
   // while being restored is restored again, so its entry is kept rather than doubled.
   function followHash(retry = false) {
+    if (!boards.ready) return startBoards();
+    if (!state.board) { renderNoBoards(); return; }
     const link = readHash();
     if (link.img) openLinked(link.img, retry && linkFailedRestore);
     else if (link.date) goDate(link.date, false);
@@ -361,7 +511,7 @@
   function writeHash(push = false) {
     if (lbHistory) return;
     const h = state.date && state.date.page === state.page ? `#date=${state.date.key}` : state.page > 1 ? `#p=${state.page}` : '';
-    if (location.hash !== h) history[push ? 'pushState' : 'replaceState'](null, '', h || location.pathname + location.search);
+    if (location.hash !== h) setHash(h, push);
   }
   const viewerZone = () => {
     try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { return ''; } // server time then
@@ -377,6 +527,7 @@
   // answer arrives or nothing is shown.
   // date (YYYY-MM-DD in the viewer's zone) does the same for the first picture of a day.
   async function load({ scroll = false, silent = false, around = '', date = '', guard = null } = {}) {
+    if (!state.board) { renderNoBoards(); return false; }
     const seq = ++loadSeq;
     if (!silent) {
       foreground++;
@@ -389,7 +540,7 @@
     const anchor = state.lastIndex !== null && state.items[state.lastIndex] ? state.items[state.lastIndex].name : null;
     try {
       const at = around ? `&around=${enc(around)}` : date ? `&date=${date}&tz=${enc(viewerZone())}` : '';
-      const d = await api(`/api/images?page=${state.page}&size=${state.size}&sort=${state.sort}${at}`);
+      const d = await api(boardURL(`/api/images?page=${state.page}&size=${state.size}&sort=${state.sort}${at}`));
       if (seq !== loadSeq || (guard && !guard())) return null;
       Object.assign(state, { items: d.items, total: d.total, page: d.page, size: d.size, pages: d.pages, admin: d.admin, guestLimit: d.guest_limit, task: d.task });
       if (date) state.date = { key: date, page: d.page, focus: d.focus || '' };
@@ -461,7 +612,7 @@
   async function goDate(key, push = true) {
     leaveRoute();
     const seq = routeSeq;
-    if (push) history.pushState(null, '', `#date=${key}`);
+    if (push) setHash(`#date=${key}`, true);
     state.lastIndex = null;
     const ok = await load({ date: key, guard: () => seq === routeSeq });
     // Another load on the same route (signing in or out) replaced it: show the day again.
@@ -543,11 +694,11 @@
     const list = state.view === 'list';
     return `<figure class="tile${sel ? ' selected' : ''}" data-i="${i}" style="--d:${i}">
       <button type="button" class="tile-check" aria-label="${esc(t('tile.selectAt', { time: fmtFull(d) }))}" aria-pressed="${sel}"><svg><use href="#i-check"/></svg></button>
-      <button type="button" class="tile-open" aria-label="${esc(t('tile.view', { time: fmtFull(d) }))}" title="${esc(fmtFull(d))}"><img ${tileLoading(i)} decoding="async" src="/thumb/${enc(it.name)}"${it.w ? ` width="${it.w}" height="${it.h}"` : ''} alt=""></button>
+      <button type="button" class="tile-open" aria-label="${esc(t('tile.view', { time: fmtFull(d) }))}" title="${esc(fmtFull(d))}"><img ${tileLoading(i)} decoding="async" src="${esc(boardURL(`/thumb/${enc(it.name)}`))}"${it.w ? ` width="${it.w}" height="${it.h}"` : ''} alt=""></button>
       <figcaption class="tile-cap">
         <time datetime="${esc(it.time)}">${list ? fmtFull(d) : fmtTile(d)}</time>
         ${list ? `<span class="name" title="${name}">${name}</span><span class="size">${it.w ? `<span class="dims">${it.w}×${it.h} · </span>` : ''}${fmtSize(it.size)}</span>` : ''}
-        <a class="tile-dl" href="/download/${enc(it.name)}" download title="${t('tile.download')}" aria-label="${t('tile.download')}"><svg><use href="#i-download"/></svg></a>
+        <a class="tile-dl" href="${esc(boardURL(`/download/${enc(it.name)}`))}" download title="${t('tile.download')}" aria-label="${t('tile.download')}"><svg><use href="#i-download"/></svg></a>
       </figcaption>
     </figure>`;
   }
@@ -581,7 +732,7 @@
       <div><dt>${t('now.dims')}</dt><dd>${shown.w ? `${shown.w}×${shown.h}` : '—'}</dd></div>
       <div><dt>${t('now.size')}</dt><dd>${fmtSize(shown.size)}</dd></div>
       <div><dt>${t('now.recent')}</dt><dd>${overview.recent === null ? '—' : t('now.recentCount', { n: overview.recent })}</dd></div>`;
-    el.nowDl.href = `/download/${enc(shown.name)}`;
+    el.nowDl.href = boardURL(`/download/${enc(shown.name)}`);
     renderReelHead();
     // Playback shows frames of the chosen quality, which reelTick has already loaded and decoded. A quality change or a
     // thumbnail fallback swaps the frame of the same picture too.
@@ -605,8 +756,8 @@
     el.now.dataset.name = shown.name;
     // The first picture and scrubbing show the small thumbnail at once; the preview replaces it once decoded. On the
     // first picture the fade-in hides that swap when the preview comes straight from the cache.
-    const thumb = `/thumb/${enc(shown.name)}`;
-    const src = saveData ? thumb : `/preview/${enc(shown.name)}`;
+    const thumb = boardURL(`/thumb/${enc(shown.name)}`);
+    const src = saveData ? thumb : boardURL(`/preview/${enc(shown.name)}`);
     const swap = () => {
       if (ver !== nowVer) return;
       if (shown.w) { el.nowImg.width = shown.w; el.nowImg.height = shown.h; }
@@ -657,10 +808,11 @@
   };
   let overviewSeq = 0;
   async function loadOverview() {
+    if (!state.board) return;
     const seq = ++overviewSeq;
     try {
       const tz = viewerZone();
-      const o = await api(`/api/overview${tz ? `?tz=${enc(tz)}` : ''}`);
+      const o = await api(boardURL(`/api/overview${tz ? `?tz=${enc(tz)}` : ''}`));
       if (seq !== overviewSeq) return; // a later request is on its way; an older answer must not overwrite it
       // A rolling 24 hours (the reel's window) rather than since midnight, so the count does not drop to zero
       // overnight; the server's heat counts are not capped like the recent pictures.
@@ -741,8 +893,8 @@
   }
   // Failures are kept per URL, so one at another quality never downgrades the frame chosen now.
   function reelSrc(it) {
-    const src = REEL_QUALITY[reel.quality].path + enc(it.name);
-    return reel.failed.has(src) ? `/thumb/${enc(it.name)}` : src;
+    const src = boardURL(REEL_QUALITY[reel.quality].path + enc(it.name));
+    return reel.failed.has(src) ? boardURL(`/thumb/${enc(it.name)}`) : src;
   }
 
   // Loads and decodes the frame of picture it once. The promise settles either way: a failed frame falls back to the
@@ -824,7 +976,7 @@
     reel.thumbsWarm = true;
     const at = reel.at >= 0 ? reel.at : reel.items.length - 1;
     const from = Math.max(0, Math.min(at - 25, reel.items.length - 50));
-    const queue = reel.items.slice(from, from + 50).map((it) => `/thumb/${enc(it.name)}`);
+    const queue = reel.items.slice(from, from + 50).map((it) => boardURL(`/thumb/${enc(it.name)}`));
     const next = () => { const src = queue.shift(); if (src) prefetch(src).catch(() => {}).finally(next); };
     for (let k = 0; k < 3; k++) next();
   }
@@ -951,7 +1103,7 @@
   function reelTip(i) {
     const it = reel.items[i];
     const img = el.reelTip.querySelector('img');
-    const src = `/thumb/${enc(it.name)}`;
+    const src = boardURL(`/thumb/${enc(it.name)}`);
     if (img.getAttribute('src') !== src) img.src = src;
     const time = el.reelTip.querySelector('time');
     time.dateTime = it.time;
@@ -1093,6 +1245,10 @@
 
   function renderSummary() {
     el.empty.hidden = state.total > 0;
+    el.empty.querySelector('.empty-title').textContent = t(state.board ? 'empty.title' : 'board.empty');
+    el.empty.querySelector('.empty-title').dataset.i18n = state.board ? 'empty.title' : 'board.empty';
+    el.empty.querySelector('[data-i18n="empty.text"]').hidden = !state.board;
+    $('#empty-admin').hidden = !!state.board || !state.admin;
     el.summary.hidden = state.total === 0;
     const from = (state.page - 1) * state.size + 1;
     const to = from + state.items.length - 1;
@@ -1270,6 +1426,7 @@
   function toggleLang() {
     i18n.set(i18n.lang === 'zh' ? 'en' : 'zh');
     i18n.apply();
+    renderBoard();
     renderReel();
     // A skeleton or an error has nothing to relabel yet; the next load renders in the new language.
     if (el.gallery.matches('.skeleton') || el.gallery.querySelector('.load-error')) renderControls(); else render();
@@ -1391,7 +1548,7 @@
   // The 1600px preview covers most screens; HiDPI displays and deep zoom get the original.
   function fullSrc(it, scale = 1) {
     const need = el.lbImg.offsetWidth * scale * (window.devicePixelRatio || 1);
-    return it.w > 1600 && need > 1600 ? `/img/${enc(it.name)}` : `/preview/${enc(it.name)}`;
+    return it.w > 1600 && need > 1600 ? boardURL(`/img/${enc(it.name)}`) : boardURL(`/preview/${enc(it.name)}`);
   }
 
   function updateLightboxMeta() {
@@ -1402,7 +1559,7 @@
     el.lbTime.title = fmtFull(new Date(it.time));
     el.lbSub.textContent = `${it.w ? `${it.w}×${it.h} · ` : ''}${fmtSize(it.size)}`;
     el.lbCount.textContent = `${fmtNum((state.page - 1) * state.size + i + 1)} / ${fmtNum(state.total)}`;
-    el.lbDownload.href = `/download/${enc(it.name)}`;
+    el.lbDownload.href = boardURL(`/download/${enc(it.name)}`);
     el.lbPrev.disabled = i === 0 && state.page === 1;
     el.lbNext.disabled = i === state.items.length - 1 && state.page === state.pages;
 
@@ -1412,7 +1569,7 @@
     el.lbpAgo.dataset.ago = it.time;
     el.lbpAgo.dataset.saved = '1';
     el.lbpAgo.textContent = fmtAgo(d);
-    el.lbpDownload.href = `/download/${enc(it.name)}`;
+    el.lbpDownload.href = boardURL(`/download/${enc(it.name)}`);
     el.lbpName.textContent = it.name;
     const zone = nameZone(it);
     el.lbpZone.hidden = !zone;
@@ -1422,15 +1579,15 @@
     // GIFs are served as-is for the preview, so only the thumbnail is offered.
     const dims = it.w ? `${it.w} × ${it.h}` : t('lbp.unknown');
     const base = it.name.replace(/\.[^.]+$/, '');
-    const sizes = [[`/download/${enc(it.name)}`, t('lbp.original'), `${extOf(it.name)} · ${dims} · ${fmtSize(it.size)}`, '']];
+    const sizes = [[boardURL(`/download/${enc(it.name)}`), t('lbp.original'), `${extOf(it.name)} · ${dims} · ${fmtSize(it.size)}`, '']];
     const preview = it.w ? fitEdge(it.w, it.h, 1600) : null;
     if (preview && Math.max(it.w, it.h) > 1600 && extOf(it.name) !== 'GIF') {
       const [w, h] = preview;
-      sizes.push([`/preview/${enc(it.name)}`, t('lbp.large'), `JPG · ${w} × ${h}`, `${base}-${w}.jpg`]);
+      sizes.push([boardURL(`/preview/${enc(it.name)}`), t('lbp.large'), `JPG · ${w} × ${h}`, `${base}-${w}.jpg`]);
     }
     if (preview && Math.max(it.w, it.h) > 480) {
       const [w, h] = fitEdge(...preview, 480);
-      sizes.push([`/thumb/${enc(it.name)}`, t('lbp.thumb'), `JPG · ${w} × ${h}`, `${base}-${w}.jpg`]);
+      sizes.push([boardURL(`/thumb/${enc(it.name)}`), t('lbp.thumb'), `JPG · ${w} × ${h}`, `${base}-${w}.jpg`]);
     }
     el.lbpSizeMenu.innerHTML = sizes.map(([href, label, sub, file]) =>
       `<a role="menuitem" href="${href}" download="${esc(file)}"><strong>${label}</strong><span>${esc(sub)}</span></a>`).join('');
@@ -1507,9 +1664,9 @@
   // pixels that changed. The last pair is kept, so switching modes back and forth does not redo it.
   const DIFF_EDGE = 800;
   async function diffOf(older, newer) {
-    const key = older + '|' + newer;
+    const key = state.board + '|' + older + '|' + newer;
     if (cmp.diff && cmp.diff.key === key) return cmp.diff;
-    const [a, b] = await Promise.all([older, newer].map((n) => decoded(`/preview/${enc(n)}`)));
+    const [a, b] = await Promise.all([older, newer].map((n) => decoded(boardURL(`/preview/${enc(n)}`))));
     const s = Math.min(1, DIFF_EDGE / Math.max(b.naturalWidth, b.naturalHeight));
     const w = Math.max(1, Math.round(b.naturalWidth * s));
     const h = Math.max(1, Math.round(b.naturalHeight * s));
@@ -1554,7 +1711,7 @@
     $('#cmp-tag-new').textContent = fmtStamp(new Date(state.items[state.lbIndex].time));
     placeCmp();
     setCmpPos(cmp.pos);
-    const src = `/preview/${enc(base.name)}`;
+    const src = boardURL(`/preview/${enc(base.name)}`);
     if (el.cmpOld.getAttribute('src') !== src) el.cmpOld.src = src;
     el.cmpOld.alt = t('cmp.old', { time: fmtFull(new Date(base.time)) });
     const diff = cmp.mode === 'diff';
@@ -1575,7 +1732,7 @@
   async function findItem(name) {
     const here = state.items.find((it) => it.name === name);
     if (here) return here;
-    const d = await api(`/api/images?around=${enc(name)}&size=12&sort=${state.sort}`);
+    const d = await api(boardURL(`/api/images?around=${enc(name)}&size=12&sort=${state.sort}`));
     return (d.focus === name && d.items.find((it) => it.name === name)) || null;
   }
 
@@ -1673,15 +1830,15 @@
       // A picture opened by hand ends any link still being looked up. Its entry is the one being restored, if any;
       // otherwise the address is put back to the page (a link given up on may still be in it) and a new entry pushed.
       if (!linking) { ++routeSeq; lbRestore = 0; }
-      if (lbHistory) history.replaceState(history.state, '', imgHash(it.name));
-      else { writeHash(); lbBase = location.hash; history.pushState({ lightbox: true }, '', imgHash(it.name)); lbHistory = true; }
+      if (lbHistory) setHash(imgHash(it.name), false, history.state);
+      else { writeHash(); lbBase = location.hash; setHash(imgHash(it.name), true, { lightbox: true }); lbHistory = true; }
       $('#lb-close').focus({ preventScroll: true });
       maybeTour();
     } else if (lbHistory) {
-      history.replaceState(history.state, '', imgHash(it.name)); // the address follows the picture shown
+      setHash(imgHash(it.name), false, history.state); // the address follows the picture shown
     }
     // Show the image already on the page at once, then swap in the sharp one when it is decoded.
-    img.src = from && from.currentSrc ? from.currentSrc : `/thumb/${enc(it.name)}`;
+    img.src = from && from.currentSrc ? from.currentSrc : boardURL(`/thumb/${enc(it.name)}`);
     img.alt = fmtFull(new Date(it.time));
     fitImage();
     if (opening) {
@@ -1750,16 +1907,19 @@
   // stepping by position would skip a picture or show one twice. Resolves to the neighbour's name, null when there
   // is none, or undefined when it could not be found (the caller then falls back to the next page).
   async function neighbour(name, delta) {
-    const list = (q) => api(`/api/images?${q}&size=${state.size}&sort=${state.sort}`);
+    const board = state.board;
+    const list = (q) => api(boardURL(`/api/images?${q}&size=${state.size}&sort=${state.sort}`, board));
     try {
       for (let attempt = 0; attempt < 3; attempt++) {
         const d = await list(`around=${enc(name)}`);
+        if (board !== state.board) return undefined;
         const j = d.focus === name ? d.items.findIndex((it) => it.name === name) : -1;
         if (j < 0) return undefined;
         if (d.items[j + delta]) return d.items[j + delta].name;
         const page = d.page + delta;
         if (page < 1 || page > d.pages) return null;
         const e = await list(`page=${page}`);
+        if (board !== state.board) return undefined;
         if (e.page !== page) return undefined;
         // A picture saved between the two requests can bring the current one onto this page as well.
         const k = e.items.findIndex((it) => it.name === name);
@@ -1871,9 +2031,9 @@
 
   // ---------- link menu ----------
   function linkText(fmt, it) {
-    const url = new URL(`/img/${enc(it.name)}`, location.href).href;
+    const url = new URL(boardURL(`/img/${enc(it.name)}`), location.href).href;
     const alt = fmtFull(new Date(it.time));
-    const page = new URL(imgHash(it.name), location.href).href; // this page with the picture open
+    const page = new URL(boardURL(location.pathname) + imgHash(it.name), location.origin).href; // this page with the picture open
     return { url, page, md: `![${alt}](${url})`, html: `<img src="${url}" alt="${alt}">`, bb: `[img]${url}[/img]` }[fmt];
   }
 
@@ -1884,7 +2044,7 @@
     menu.hidden = false;
     btn.setAttribute('aria-expanded', 'true');
     menuBtn = btn;
-    menu.querySelector('button, a').focus();
+    (menu.querySelector('[aria-current="true"]') || menu.querySelector('button, a'))?.focus();
   }
 
   function closeMenu(refocus) {
@@ -1902,6 +2062,8 @@
     if (e.key === 'Escape' || e.key === 'Tab') closeMenu(e.key === 'Escape');
     else if (e.key === 'ArrowDown') items[(at + 1) % items.length].focus();
     else if (e.key === 'ArrowUp') items[(at - 1 + items.length) % items.length].focus();
+    else if (e.key === 'Home') items[0]?.focus();
+    else if (e.key === 'End') items[items.length - 1]?.focus();
     // Links ignore Space natively; click both kinds so Enter and Space behave alike.
     else if ((e.key === 'Enter' || e.key === ' ') && at >= 0) items[at].click();
     else return false;
@@ -1933,12 +2095,17 @@
     renderAcct();
     openMenu(el.account);
     // Fill in the last fetch result and catch an expired session without waiting for a click.
-    api('/api/status').then(renderStats, (e) => { if (e.status === 401) handleAuthError(e); });
+    if (!state.board) return;
+    const board = state.board;
+    api(boardURL('/api/status')).then((s) => { if (board === state.board) renderStats(s); }, (e) => { if (e.status === 401) handleAuthError(e); });
   }
 
   async function refreshStatus() {
+    if (!state.board) return;
+    const board = state.board;
     try {
-      renderStats(await api('/api/status'));
+      const s = await api(boardURL('/api/status'));
+      if (board === state.board) renderStats(s);
     } catch (e) { handleAuthError(e); }
   }
 
@@ -2071,7 +2238,7 @@
     renderCookieState();
     openDialog(el.cookieDialog);
     el.cookieForm.elements.cookie.focus();
-    refreshStatus();
+    api('/api/cookie').then((c) => { state.cookie = c; renderCookieState(); }, handleAuthError);
   }
 
   function showCookieError(msg) {
@@ -2088,8 +2255,8 @@
     el.cookieSave.disabled = true;
     el.cookieSave.classList.add('loading');
     try {
-      const s = await api('/api/cookie', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cookie: value }) });
-      renderStats(s);
+      await api('/api/cookie', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cookie: value }) });
+      await refreshStatus();
       closeDialog(el.cookieDialog, true);
       toast(t('cookie.saved'), 'ok');
     } catch (err) {
@@ -2168,6 +2335,7 @@
   // longer rather than being skipped, and one that fails to load is left out.
   async function recordVideo(frames, size, frameMs, job, progress) {
     const type = videoType();
+    const board = state.board;
     // Every wait gives way to Cancel or to the recorder failing, so a picture that never finishes loading cannot hold
     // the recording open. A wait listens only while it lasts: one raced against a promise that stays pending would keep
     // every decoded picture alive until the end.
@@ -2182,7 +2350,7 @@
     const fail = (err) => { failure = err; for (const wake of job.wake) wake(err); };
     const loads = new Map();
     const get = (k) => {
-      if (!loads.has(k)) loads.set(k, decoded(`/${size}/${enc(frames[k].name)}`).catch(() => null));
+      if (!loads.has(k)) loads.set(k, decoded(boardURL(`/${size}/${enc(frames[k].name)}`, board)).catch(() => null));
       return loads.get(k);
     };
     // The first picture that loads sets the size; encoders want even sides.
@@ -2674,7 +2842,7 @@
     if (i < 0) {
       // Renamed to this picture and restored like a link, so a failure leaves Retry on it.
       if (takeover) {
-        history.replaceState(history.state, '', imgHash(name));
+        setHash(imgHash(name), false, history.state);
         openLinked(name, true);
         return;
       }
@@ -2692,7 +2860,7 @@
       // Not on this page (an older reel frame, say) the picture gets an entry of its own and is restored into it like
       // a link: its page is shown under it, and closing goes back to the entry left, which shows its page again.
       if (i < 0) {
-        history.pushState({ lightbox: true }, '', imgHash(name));
+        setHash(imgHash(name), true, { lightbox: true });
         openLinked(name, true);
         return;
       }
@@ -2734,7 +2902,7 @@
   $('#sel-zip').addEventListener('click', async () => {
     const names = [...state.selected];
     if (!names.length) return;
-    if (await (names.length === 1 ? downloadFile(`/download/${enc(names[0])}`) : downloadZip(names))) toast(t('sel.started', { n: names.length }), 'ok');
+    if (await (names.length === 1 ? downloadFile(boardURL(`/download/${enc(names[0])}`)) : downloadZip(names))) toast(t('sel.started', { n: names.length }), 'ok');
   });
   // Every download link is checked first, the smaller sizes in the detail panel included; clicks with a modifier keep
   // the browser's own handling (new tab, save as).
@@ -2743,7 +2911,7 @@
     if (!a || e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
     e.preventDefault();
     const href = a.getAttribute('href');
-    if (href === '/download/all') preflight('/download/all?check=1').then((ok) => ok && download(href));
+    if (new URL(href, location.href).pathname === '/download/all') preflight(href + '&check=1').then((ok) => ok && download(href));
     else downloadFile(href, a.getAttribute('download') || '');
   });
 
@@ -2936,6 +3104,12 @@
   });
 
   window.addEventListener('popstate', () => {
+    if (!boards.ready) return;
+    if (new URLSearchParams(location.search).get('board') !== boards.query) {
+      const id = boardFromURL();
+      switchBoard(id);
+      return;
+    }
     if (expectPop) {
       expectPop = false;
     } else if (lbHistory) {
@@ -3058,6 +3232,7 @@
     else if ((k === '[' || k === ']') && !el.reel.hidden && !el.now.hidden) stepReelSpeed(k === '[' ? -1 : 1);
     else if (k === '?') openDialog(el.keysDialog);
     else if (k === 'n') openNotices();
+    else if (k === 'b' && !el.boardSwitch.hidden) openBoardMenu();
     else if (k === 'Escape' && (state.selectMode || state.selected.size)) clearSelection();
     else return;
     e.preventDefault();
@@ -3072,7 +3247,7 @@
     return tiles.find((n) => { const r = n.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; }) || tiles[0];
   };
   const TOURS = {
-    home: [['#now-view', 'home.now'], ['#reel', 'home.reel'], ['#history-bar .controls', 'home.history'], ['.bar-actions', 'home.bar']],
+    home: [['#board-switch', 'board'], ['#now-view', 'home.now'], ['#reel', 'home.reel'], ['#history-bar .controls', 'home.history'], ['.bar-actions', 'home.bar']],
     admin: [['#account', 'admin.menu'], ['#acct-exports', 'admin.exports', { enter: openAcctMenu, leave: () => closeMenu() }],
       ['#reel-video', 'admin.video']],
     select: [[firstTileInView, 'sel.pick'], ['#selbar', 'sel.bar']],
@@ -3166,9 +3341,9 @@
   function renderTour() {
     const { steps, i } = tour;
     const key = steps[i][1];
-    tourEl.title.textContent = t(`tour.${key}.title`);
+    tourEl.title.textContent = t(key === 'board' ? 'board.tourTitle' : `tour.${key}.title`);
     const touch = coarse.matches && t(`tour.${key}.touch`);
-    tourEl.text.textContent = touch && touch !== `tour.${key}.touch` ? touch : t(`tour.${key}.text`);
+    tourEl.text.textContent = key === 'board' ? t('board.tourText') : touch && touch !== `tour.${key}.touch` ? touch : t(`tour.${key}.text`);
     tourEl.dots.innerHTML = steps.map((s, k) => `<i${k === i ? ' class="on"' : ''}></i>`).join('');
     tourEl.dots.setAttribute('aria-label', t('tour.step', { k: i + 1, n: steps.length }));
     tourEl.dots.hidden = steps.length < 2;
@@ -3258,6 +3433,11 @@
     setPasswordVisible(false);
     openDialog(el.loginDialog);
   });
+  el.boardSwitch.addEventListener('click', openBoardMenu);
+  el.boardMenu.addEventListener('click', (e) => {
+    const item = e.target.closest('[data-board]');
+    if (item) switchBoard(item.dataset.board, true);
+  });
   $('#login-cancel').addEventListener('click', () => closeDialog(el.loginDialog));
 
   const pwToggle = $('#pw-toggle');
@@ -3283,7 +3463,10 @@
       });
       closeDialog(el.loginDialog);
       toast(t('login.ok'), 'ok');
-      await load();
+      state.admin = true;
+      await refreshBoards();
+      if (!boards.items.some((b) => b.id === state.board)) switchBoard(boardFromURL());
+      else { renderBoard(); await load(); }
     } catch (err) {
       el.loginError.innerHTML = `<svg><use href="#i-alert"/></svg>${esc(err.message)}`;
       el.loginError.hidden = false;
@@ -3340,15 +3523,21 @@
     // Guests are capped, so trim an oversized selection.
     if (state.selected.size > state.guestLimit) state.selected = new Set([...state.selected].slice(0, state.guestLimit));
     toast(t('logout.ok'), 'ok');
-    await load();
+    state.admin = false;
+    await refreshBoards();
+    if (!boards.items.some((b) => b.id === state.board)) switchBoard(boardFromURL());
+    else { renderBoard(); await load(); }
   });
   el.fetchNow.addEventListener('click', async () => {
+    if (!state.board) return;
+    const board = state.board;
     const label = el.fetchNow.querySelector('span');
     el.fetchNow.disabled = true;
     el.fetchNow.classList.add('loading');
     label.textContent = t('status.fetching');
     try {
-      const s = await api('/api/fetch', { method: 'POST' });
+      const s = await api(boardURL('/api/fetch'), { method: 'POST' });
+      if (board !== state.board) return;
       renderStats(s);
       if (s.fetch.result === 'saved') { toast(t('fetch.saved'), 'ok'); await goNewest(); }
       else if (s.fetch.result === 'unchanged') toast(t('fetch.unchanged'));
@@ -3363,17 +3552,21 @@
   });
 
   el.toggleSchedule.addEventListener('click', async () => {
+    if (!state.board) return;
+    const board = state.board;
     const sw = el.toggleSchedule;
     if (sw.dataset.busy) return;
     const paused = sw.getAttribute('aria-checked') === 'true';
     sw.dataset.busy = '1';
     sw.setAttribute('aria-checked', String(!paused)); // flip now; the response confirms or reverts
     try {
-      renderStats(await api('/api/schedule', {
+      const s = await api(boardURL('/api/schedule'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ paused }),
-      }));
+      });
+      if (board !== state.board) return;
+      renderStats(s);
       toast(t(paused ? 'schedule.pausedToast' : 'schedule.resumedToast'), 'ok');
     } catch (e) {
       sw.setAttribute('aria-checked', String(paused));
@@ -3410,12 +3603,13 @@
   let pollSeq = 0;
   async function poll() {
     clearTimeout(pollTimer);
+    if (!state.board) return;
     if (document.hidden) return; // resumed by visibilitychange
     lastPoll = Date.now();
     const seq = ++pollSeq;
     let again = false;
     try {
-      const d = await api('/api/images?page=1&size=12&sort=desc');
+      const d = await api(boardURL('/api/images?page=1&size=12&sort=desc'));
       // Polls overlap when the network comes back mid-tick; only the newest one applies and reschedules.
       if (seq !== pollSeq) return;
       checkNotices(d.notice);
@@ -3458,7 +3652,6 @@
   window.addEventListener('offline', () => toast(t('net.offline'), 'error'));
   window.addEventListener('online', () => { toast(t('net.online'), 'ok'); poll(); });
   setInterval(() => { if (!document.hidden) tickTimes(); }, 1000);
-  loadOverview();
 
   $('#fresh-btn').addEventListener('click', () => { hide(el.fresh); goNewest(); });
 
@@ -3508,7 +3701,9 @@
     }, 150);
   });
   // Back and Forward between pages, or a link pasted into the address bar.
-  window.addEventListener('hashchange', () => {
+  window.addEventListener('hashchange', (e) => {
+    if (!boards.ready || !state.board) return;
+    if (new URL(e.oldURL).searchParams.get('board') !== new URL(e.newURL).searchParams.get('board')) return; // popstate restored the board and hash together
     leaveRoute();
     const before = state.page;
     const link = readHash();
@@ -3524,5 +3719,5 @@
   renderControls();
   renderTheme();
   onScroll();
-  followHash();
+  startBoards();
 })();

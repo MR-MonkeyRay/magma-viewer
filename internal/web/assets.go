@@ -47,21 +47,26 @@ func loadAssets(static fs.FS) (map[string]asset, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The page links its stylesheets and scripts with their content hash, so
+	// The pages link their stylesheets and scripts with their content hash, so
 	// a release reaches every browser at once even past a cache (a CDN's
 	// browser TTL, say) that keeps the plain URLs for hours.
-	if page, ok := assets["index.html"]; ok {
-		body := page.body
-		for p, a := range assets {
-			if ext := path.Ext(p); ext == ".js" || ext == ".css" {
-				for _, attr := range []string{`src="`, `href="`} {
-					body = bytes.ReplaceAll(body, []byte(attr+p+`"`), []byte(attr+p+"?v="+a.tag+`"`))
-				}
-			}
+	for _, p := range []string{"index.html", "admin.html"} {
+		if page, ok := assets[p]; ok {
+			assets[p] = newAsset(p, versionAssetLinks(page.body, assets))
 		}
-		assets["index.html"] = newAsset("index.html", body)
 	}
 	return assets, nil
+}
+
+func versionAssetLinks(body []byte, assets map[string]asset) []byte {
+	for p, a := range assets {
+		if ext := path.Ext(p); ext == ".js" || ext == ".css" {
+			for _, attr := range []string{`src="`, `href="`} {
+				body = bytes.ReplaceAll(body, []byte(attr+p+`"`), []byte(attr+p+"?v="+a.tag+`"`))
+			}
+		}
+	}
+	return body
 }
 
 func newAsset(p string, body []byte) asset {
@@ -96,8 +101,11 @@ func newAsset(p string, body []byte) asset {
 
 func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 	p := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
-	if p == "" {
+	switch p {
+	case "":
 		p = "index.html"
+	case "admin":
+		p = "admin.html"
 	}
 	a, ok := s.assets[p]
 	if !ok {

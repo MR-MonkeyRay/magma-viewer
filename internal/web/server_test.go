@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -619,6 +620,79 @@ func TestPageLinksAssetsByContentHash(t *testing.T) {
 	// A page from before a release asks for its old version and must not pin the new file.
 	if r := rawGet(t, srv.URL+"/app.js?v=0123456789abcdef"); r.Header.Get("Cache-Control") != "no-cache" {
 		t.Fatalf("stale version: cache %q", r.Header.Get("Cache-Control"))
+	}
+}
+
+func TestAdminAssets(t *testing.T) {
+	assets, err := loadAssets(os.DirFS("../../web"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := (&Server{assets: assets}).Handler()
+	request := func(target string, headers ...string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodGet, target, nil)
+		for i := 0; i+1 < len(headers); i += 2 {
+			r.Header.Set(headers[i], headers[i+1])
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	page := request("/admin")
+	if page.Code != http.StatusOK || !strings.HasPrefix(page.Header().Get("Content-Type"), "text/html") {
+		t.Fatalf("admin: %d type %q", page.Code, page.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(page.Body.String(), `<main id="admin-root">`) || strings.Contains(page.Body.String(), `src="app.js`) {
+		t.Fatal("admin page must have its own root and script")
+	}
+	sum := sha256.Sum256(page.Body.Bytes())
+	etag := fmt.Sprintf(`"%x"`, sum[:8])
+	if page.Header().Get("Cache-Control") != "no-cache" || page.Header().Get("ETag") != etag {
+		t.Fatalf("admin: cache %q etag %q, want %q", page.Header().Get("Cache-Control"), page.Header().Get("ETag"), etag)
+	}
+	if r := request("/admin", "If-None-Match", etag); r.Code != http.StatusNotModified {
+		t.Fatalf("admin revalidation: %d", r.Code)
+	}
+	if r := request("/admin.html"); r.Code != http.StatusOK || !bytes.Equal(r.Body.Bytes(), page.Body.Bytes()) {
+		t.Fatalf("admin.html: %d", r.Code)
+	}
+	for _, query := range []string{"", "?lang=en&next=%2Fapi%2Fadmin"} {
+		if r := request("/admin/" + query); r.Code != http.StatusPermanentRedirect || r.Header().Get("Location") != "/admin"+query {
+			t.Errorf("admin slash%s: %d location %q", query, r.Code, r.Header().Get("Location"))
+		}
+	}
+	base, err := url.Parse("http://example.com/admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"app.css", "theme.js", "i18n.js", "admin.js"} {
+		t.Run(name, func(t *testing.T) {
+			plain := request("/" + name)
+			if plain.Code != http.StatusOK {
+				t.Fatalf("asset: %d", plain.Code)
+			}
+			sum := sha256.Sum256(plain.Body.Bytes())
+			link := fmt.Sprintf("%s?v=%x", name, sum[:8])
+			attr := `src="`
+			if strings.HasSuffix(name, ".css") {
+				attr = `href="`
+			}
+			if !strings.Contains(page.Body.String(), attr+link+`"`) {
+				t.Fatalf("admin page missing hashed link %q", link)
+			}
+			u, err := base.Parse(link)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r := request(u.RequestURI()); r.Code != http.StatusOK || r.Header().Get("Cache-Control") != immutable {
+				t.Fatalf("versioned asset: %d cache %q", r.Code, r.Header().Get("Cache-Control"))
+			}
+		})
+	}
+	for _, target := range []string{"/missing", "/admin/missing"} {
+		if r := request(target); r.Code != http.StatusNotFound {
+			t.Errorf("%s: %d", target, r.Code)
+		}
 	}
 }
 

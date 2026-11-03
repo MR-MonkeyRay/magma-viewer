@@ -222,11 +222,11 @@ svg.mascot { overflow: visible; }
 .bar.scrolled { border-bottom-color: var(--line); }
 .brand { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 10px; }
 .brand a { text-decoration: none; border-radius: var(--r-sm); }
-.brand-home { display: flex; }
+.brand-home { display: flex; flex: none; }
 .brand-mark { width: 34px; height: 34px; margin: -4px 0; transform-origin: 50% 90%; transition: transform .4s var(--spring); }
 .brand:hover .brand-mark { animation: m-wobble .5s ease-in-out 2; }
 .busy .brand-mark { animation: m-bob .7s ease-in-out infinite; }
-.brand-name { min-width: 0; font: 600 var(--fs-lg)/1.2 var(--display); letter-spacing: .01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.brand-name { flex: none; min-width: 0; font: 600 var(--fs-lg)/1.2 var(--display); letter-spacing: .01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .brand-name:hover { color: var(--pigment); }
 .bar-actions { display: flex; flex: none; align-items: center; gap: 4px; }
 .controls { display: flex; align-items: center; gap: 4px; }
@@ -354,6 +354,24 @@ svg.mascot { overflow: visible; }
 .acct-menu em.bad { color: var(--bad); }
 .acct-menu button:hover, .acct-menu a:hover, .acct-menu button:focus-visible, .acct-menu a:focus-visible { background: var(--pigment-soft); outline: none; }
 .acct-menu button:hover svg, .acct-menu a:hover svg { color: var(--pigment); }
+.board-picker { position: relative; display: inline-flex; flex: 0 1 auto; min-width: 0; max-width: clamp(8rem, 28vw, 18rem); }
+.board-picker:has(> button[hidden]) { display: none; }
+.board-switch {
+  display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; height: 34px; padding: 0 10px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--pigment-soft); color: var(--ink);
+  font: 600 var(--fs-sm) var(--display); cursor: pointer;
+}
+.board-switch span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-switch svg { flex: none; width: 16px; height: 16px; }
+.board-switch:hover, .board-switch[aria-expanded="true"] { border-color: var(--pigment); }
+.board-menu { left: 0; right: auto; width: min(480px, calc(100vw - 32px)); max-height: min(480px, 70vh); overflow-y: auto; transform-origin: top left; }
+.board-menu button { flex: none; min-height: 42px; height: auto; padding: 8px; gap: 6px; }
+.board-menu .board-name { flex: 1; min-width: 40px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-menu .board-check { flex: none; width: 16px; height: 16px; visibility: hidden; color: var(--pigment); }
+.board-menu [aria-current="true"] .board-check { visibility: visible; }
+.board-menu time { flex: none; color: var(--faint); font-size: var(--fs-xs); white-space: nowrap; }
+.board-menu .board-badge { flex: none; padding: 2px 4px; border-radius: var(--r-sm); background: var(--pigment-soft); color: var(--graphite); white-space: nowrap; }
+.current-board { margin: 0 0 8px; color: var(--graphite); font: 600 var(--fs-sm) var(--display); overflow-wrap: anywhere; }
 #logout:hover, #logout:hover svg { color: var(--bad); }
 
 #theme svg { transition: transform .5s var(--spring); }
@@ -1296,6 +1314,14 @@ a.linkish { text-decoration: none; }
 @media (max-width: 430px) {
   .lb-meta strong { font-size: var(--fs-sm); }
   .lb-btn { width: 36px; height: 36px; }
+}
+@media (max-width: 480px) {
+  .brand-home { flex: none; }
+  .brand-name { flex: 0 1 auto; }
+  .brand:has(.board-switch:not([hidden])) .brand-name { display: none; }
+  .board-picker { flex: 1 1 auto; }
+  .board-switch { padding: 0 8px; }
+  .board-menu { position: fixed; top: calc(var(--bar-h) + 4px); left: 8px; right: 8px; width: auto; }
 }
 @media (max-width: 400px) {
   .bar { padding: 8px 10px; gap: 6px; }

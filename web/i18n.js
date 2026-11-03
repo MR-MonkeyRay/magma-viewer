@@ -11,6 +11,21 @@
       'lang.switchTip': 'Switch to English (L)',
       'lang.switchLabel': 'Switch to English',
 
+      // ---- boards ----
+      'board.menu': '画板列表',
+      'board.switch': '切换画板：{name}（B）',
+      'board.latest': '最新',
+      'board.hidden': '已隐藏',
+      'board.paused': '已暂停',
+      'board.pending': '等待开始',
+      'board.ended': '已结束',
+      'board.empty': '还没有画板呢～',
+      'board.manage': '去创建画板',
+      'board.notFound': '画板不存在，已切换到最近活跃的画板',
+      'board.keys': '切换画板',
+      'board.tourTitle': '切换画板',
+      'board.tourText': '在这里切换画板，查看每个画板各自的存档。',
+
       // ---- header ----
       'bar.home': '回到第一页',
       'bar.repo': '在 GitHub 查看项目',
@@ -429,6 +444,7 @@
       'net.online': '网络回来啦～',
 
       // ---- server errors, by the code the API returns ----
+      'err.board_not_found': '画板不存在',
       'err.auth_required': '需要管理员登录',
       'err.too_many_attempts': '尝试次数过多，请稍后再试',
       'err.bad_request': '请求格式错误',
@@ -455,6 +471,21 @@
       'lang.switch': '中',
       'lang.switchTip': '切换到中文（L）',
       'lang.switchLabel': '切换到中文',
+
+      // ---- boards ----
+      'board.menu': 'Board list',
+      'board.switch': 'Switch board: {name} (B)',
+      'board.latest': 'Latest',
+      'board.hidden': 'Hidden',
+      'board.paused': 'Paused',
+      'board.pending': 'Not started',
+      'board.ended': 'Ended',
+      'board.empty': 'No boards yet',
+      'board.manage': 'Create a board',
+      'board.notFound': 'Board not found. Showing the most recently active board.',
+      'board.keys': 'Switch boards',
+      'board.tourTitle': 'Switch boards',
+      'board.tourText': 'Switch boards here to see each board’s archive.',
 
       // ---- header ----
       'bar.home': 'Back to first page',
@@ -874,6 +905,7 @@
       'net.online': 'Back online, yay!',
 
       // ---- server errors, by the code the API returns ----
+      'err.board_not_found': 'Board not found',
       'err.auth_required': 'Admin login required',
       'err.too_many_attempts': 'Too many attempts, try again later',
       'err.bad_request': 'Malformed request',
