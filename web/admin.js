@@ -72,8 +72,12 @@
   $('#admin-confirm').addEventListener('cancel', (event) => { event.preventDefault(); finishConfirm(); });
   async function api(path, options = {}) {
     let res;
+    const writes = !!options.method && options.method !== 'GET';
+    if (writes) overviewCache = null;
     try { res = await fetch(path, { credentials: 'same-origin', ...options }); }
     catch (error) { throw new Error(t('admin.loadFailed')); }
+    // Drop again after the write lands, in case a read started meanwhile cached the old state.
+    finally { if (writes) overviewCache = null; }
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
       const code = body.code || body.error?.code;
@@ -135,7 +139,15 @@
     $('button', node).addEventListener('click', retry);
   }
   function busy(button, on) { button.disabled = on; button.classList.toggle('loading', on); }
-  const getOverview = () => api('/api/admin/overview');
+  // Pages share one overview for a short while instead of refetching on every navigation.
+  // Any write drops it (see api); polling passes fresh to see progress.
+  let overviewCache = null;
+  function getOverview(fresh = false) {
+    if (!fresh && overviewCache && Date.now() - overviewCache.at < 15000) return overviewCache.promise;
+    const entry = overviewCache = { at: Date.now(), promise: api('/api/admin/overview') };
+    entry.promise.catch(() => { if (overviewCache === entry) overviewCache = null; });
+    return entry.promise;
+  }
   const panel = (title, html) => `<section class="admin-panel"><h2>${esc(t(title))}</h2>${html}</section>`;
   // A form row: label on the left, control on the right (stacked on narrow screens).
   const field = (label, control, id = '') => `<div class="admin-field">${id ? `<label class="admin-field-label" for="${id}">` : '<span class="admin-field-label">'}${esc(label)}${id ? '</label>' : '</span>'}<div class="admin-field-control">${control}</div></div>`;
@@ -148,7 +160,7 @@
     return `<span class="na-tag state-${value}${value === 'syncing' ? ' on' : ''}">${esc(t(`admin.${value}`))}</span>`;
   }
   async function renderOverview(container, route, context) {
-    const data = context.overview || await getOverview();
+    const data = context.overview || await getOverview(context.fresh);
     if (!context.isCurrent()) return;
     const boards = data.boards || [];
     const cards = [
@@ -166,7 +178,7 @@
       const label = (v) => t(`admin.operation.${v}`) !== `admin.operation.${v}` ? t(`admin.operation.${v}`) : t('admin.operation.working');
       container.insertAdjacentHTML('beforeend', panel('admin.maintenance', `<div class="admin-maintenance"><p>${esc(label(op.kind))} · ${esc(boards.find((b) => b.id === op.board_id)?.name || op.board_id)} · ${esc(label(op.phase))}</p>${meter(op.done, op.total, t('admin.maintenance'))}<p>${esc(t('admin.maintenanceProgress', { done: fmtNum(op.done), total: fmtNum(op.total) }))}</p>${op.error ? `<p class="form-error">${esc(op.error)}</p>` : ''}</div>`));
       // Follow the running operation, including one started from another tab; polling ends once it has finished.
-      const again = () => renderOverview(container, route, { ...context, overview: null }).catch(() => { if (context.isCurrent()) routeTimer(context, again, 1000); });
+      const again = () => renderOverview(container, route, { ...context, overview: null, fresh: true }).catch(() => { if (context.isCurrent()) routeTimer(context, again, 1000); });
       routeTimer(context, again, 1000);
     }
   }
@@ -654,7 +666,7 @@
         if (focused) $(focused === '.switch' ? focused : `#${focused}`, header)?.focus({ preventScroll: true });
       }
       async function refresh() {
-        const result = await Promise.all([api('/api/admin/boards'), getOverview()]);
+        const result = await Promise.all([api('/api/admin/boards'), getOverview(true)]);
         if (!context.isCurrent()) return;
         [data, overview] = result; items = data.items || []; others = data.others || [];
         const current = items.find((item) => item.id === board.id);
