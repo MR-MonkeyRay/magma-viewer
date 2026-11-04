@@ -165,6 +165,9 @@
       const op = data.maintenance;
       const label = (v) => t(`admin.operation.${v}`) !== `admin.operation.${v}` ? t(`admin.operation.${v}`) : t('admin.operation.working');
       container.insertAdjacentHTML('beforeend', panel('admin.maintenance', `<div class="admin-maintenance"><p>${esc(label(op.kind))} · ${esc(boards.find((b) => b.id === op.board_id)?.name || op.board_id)} · ${esc(label(op.phase))}</p>${meter(op.done, op.total, t('admin.maintenance'))}<p>${esc(t('admin.maintenanceProgress', { done: fmtNum(op.done), total: fmtNum(op.total) }))}</p>${op.error ? `<p class="form-error">${esc(op.error)}</p>` : ''}</div>`));
+      // Follow the running operation, including one started from another tab; polling ends once it has finished.
+      const again = () => renderOverview(container, route, { ...context, overview: null }).catch(() => { if (context.isCurrent()) routeTimer(context, again, 1000); });
+      routeTimer(context, again, 1000);
     }
   }
   function historyHTML(runs, showBoard = true) {
