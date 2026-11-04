@@ -193,9 +193,10 @@
   async function renderHistory(container, route, context) {
     const overview = await getOverview();
     if (!context.isCurrent()) return;
-    const select = el('select', { 'aria-label': t('admin.boardFilter') }, el('option', { value: '', textContent: t('admin.allBoards') }), ...(overview.boards || []).map((b) => el('option', { value: b.id, textContent: b.name })));
-    const list = el('div', { className: 'admin-panel' });
-    container.replaceChildren(el('label', { className: 'admin-filter' }, t('admin.boardFilter'), select), list);
+    const select = el('select', { className: 'admin-filter', 'aria-label': t('admin.boardFilter') }, el('option', { value: '', textContent: t('admin.allBoards') }), ...(overview.boards || []).map((b) => el('option', { value: b.id, textContent: b.name })));
+    const list = el('div');
+    context.actions.replaceChildren(select);
+    container.replaceChildren(list);
     let request = 0;
     async function loadRuns() {
       const seq = ++request;
@@ -212,7 +213,7 @@
   async function renderCookie(container, route, context) {
     let cookie = await api('/api/cookie');
     if (!context.isCurrent()) return;
-    container.innerHTML = `<section class="admin-panel"><p class="admin-hint">${esc(t('admin.cookieSharedHint'))}</p><dl class="stats" id="cookie-state"></dl><form class="admin-form" id="cookie-form"><label><span>${esc(t('cookie.field'))}</span><textarea class="admin-cookie" name="cookie" rows="5" maxlength="8192" spellcheck="false" autocomplete="off" required aria-describedby="cookie-error cookie-hint"></textarea></label><p class="admin-hint" id="cookie-hint">${esc(t('cookie.hint'))}</p><p class="form-error" id="cookie-error" role="alert" hidden></p><div class="modal-actions spread"><button type="button" class="btn ghost danger" id="cookie-clear">${esc(t('admin.cookieClear'))}</button><button class="btn primary" type="submit"><span class="spinner" aria-hidden="true"></span>${icon('i-check')}<span>${esc(t('cookie.save'))}</span></button></div></form></section>`;
+    container.innerHTML = `<section class="admin-panel"><form class="admin-form admin-fields" id="cookie-form">${field(t('admin.sharedCredentials'), `<dl class="stats" id="cookie-state"></dl><p class="admin-hint">${esc(t('admin.cookieSharedHint'))}</p>`)}${field(t('cookie.field'), `<textarea class="admin-cookie" id="shared-cookie" name="cookie" rows="5" maxlength="8192" spellcheck="false" autocomplete="off" required aria-describedby="cookie-error cookie-hint"></textarea><p class="admin-hint" id="cookie-hint">${esc(t('cookie.hint'))}</p><p class="form-error" id="cookie-error" role="alert" hidden></p>`, 'shared-cookie')}<div class="admin-form-foot"><button type="button" class="btn ghost danger" id="cookie-clear">${esc(t('admin.cookieClear'))}</button><button class="btn primary" type="submit"><span class="spinner" aria-hidden="true"></span>${icon('i-check')}<span>${esc(t('cookie.save'))}</span></button></div></form></section>`;
     const form = $('#cookie-form', container);
     const input = form.elements.cookie;
     const save = $('[type=submit]', form);
@@ -242,9 +243,11 @@
   async function renderSystem(container, route, context) {
     const data = await getOverview();
     if (!context.isCurrent()) return;
-    container.innerHTML = `<div class="admin-system"><section class="admin-panel"><h2 class="admin-title-row">${esc(t('admin.notify'))}<span class="na-tag${data.notify ? ' on' : ''}">${esc(t(data.notify ? 'admin.enabled' : 'admin.disabled'))}</span></h2><button type="button" class="btn ghost" id="notify-test" ${data.notify ? '' : 'disabled'}><span class="spinner" aria-hidden="true"></span>${icon('i-send')}<span>${esc(t('notify.test'))}</span></button><p class="form-error" id="notify-result" role="alert" hidden></p></section>`
-      + panel('admin.schedule', `<code class="admin-code">${esc(data.schedule)}</code><p class="admin-hint">${esc(t('admin.scheduleHint'))}</p>`)
-      + `<section class="admin-panel admin-wide"><h2>${esc(t('admin.storage'))}</h2>${stats(diskRow(data.disk) + stat('admin.version', data.version || t('status.none')))}</section></div>`;
+    container.innerHTML = `<section class="admin-panel admin-fields">`
+      + field(t('admin.notify'), `<div class="admin-inline"><span class="na-tag${data.notify ? ' on' : ''}">${esc(t(data.notify ? 'admin.enabled' : 'admin.disabled'))}</span><button type="button" class="btn ghost" id="notify-test" ${data.notify ? '' : 'disabled'}><span class="spinner" aria-hidden="true"></span>${icon('i-send')}<span>${esc(t('notify.test'))}</span></button></div><p class="form-error" id="notify-result" role="alert" hidden></p>`)
+      + field(t('admin.schedule'), `<div class="admin-inline"><code class="admin-code">${esc(data.schedule)}</code><span class="admin-hint">${esc(t('admin.scheduleHint'))}</span></div>`)
+      + field(t('admin.storage'), stats(diskRow(data.disk) + stat('admin.version', data.version || t('status.none'))))
+      + `</section>`;
     const button = $('#notify-test', container);
     button.addEventListener('click', async () => {
       busy(button, true);
@@ -773,7 +776,8 @@
     const data = await api('/api/admin/archives');
     if (!context.isCurrent()) return;
     const items = data.items || [];
-    container.innerHTML = items.length ? `<p class="admin-summary">${esc(t('admin.archive.total', { n: fmtNum(items.length), size: bytes(data.bytes) }))}</p><ul class="admin-panel admin-archive-list">${items.map((item) => `<li class="admin-archive-item"><div class="admin-archive-main"><strong>${esc(item.board_name)}</strong><span class="admin-board-meta">${esc([dateTime(item.created), t('status.countValue', { n: item.images }), bytes(item.size)].join(' · '))}</span></div><div class="admin-archive-actions"><a class="btn ghost" href="/api/admin/archives/${encodeURIComponent(item.id)}/download" download>${icon('i-download')}<span>${esc(t('common.download'))}</span></a><button type="button" class="btn ghost danger" data-archive="${esc(item.id)}"><span class="spinner" aria-hidden="true"></span><span>${esc(t('admin.archive.delete'))}</span></button></div></li>`).join('')}</ul>` : emptyHTML(t('admin.archive.empty'));
+    context.actions.replaceChildren(...(items.length ? [el('span', { className: 'admin-summary', textContent: t('admin.archive.total', { n: fmtNum(items.length), size: bytes(data.bytes) }) })] : []));
+    container.innerHTML = items.length ? `<ul class="admin-archive-list">${items.map((item) => `<li class="admin-archive-item"><div class="admin-archive-main"><strong>${esc(item.board_name)}</strong><span class="admin-board-meta">${esc([dateTime(item.created), t('status.countValue', { n: item.images }), bytes(item.size)].join(' · '))}</span></div><div class="admin-archive-actions"><a class="btn ghost" href="/api/admin/archives/${encodeURIComponent(item.id)}/download" download>${icon('i-download')}<span>${esc(t('common.download'))}</span></a><button type="button" class="btn ghost danger" data-archive="${esc(item.id)}"><span class="spinner" aria-hidden="true"></span><span>${esc(t('admin.archive.delete'))}</span></button></div></li>`).join('')}</ul>` : emptyHTML(t('admin.archive.empty'));
     let deleting = false;
     const deleteButtons = [...container.querySelectorAll('[data-archive]')];
     deleteButtons.forEach((button) => button.addEventListener('click', async () => {
