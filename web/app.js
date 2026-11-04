@@ -3176,7 +3176,8 @@
 
   $('#logout').addEventListener('click', async () => {
     closeMenu(true);
-    await api('/api/logout', { method: 'POST' }).catch(() => {});
+    // The session ends only when the response clears the HttpOnly cookie; on failure stay signed in.
+    try { await api('/api/logout', { method: 'POST' }); } catch (error) { toast(error.message, 'error'); return; }
     // Guests are capped, so trim an oversized selection.
     if (state.selected.size > state.guestLimit) state.selected = new Set([...state.selected].slice(0, state.guestLimit));
     toast(t('logout.ok'), 'ok');
