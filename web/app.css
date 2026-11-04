@@ -354,6 +354,7 @@ svg.mascot { overflow: visible; }
 .acct-menu em.bad { color: var(--bad); }
 .acct-menu button:hover, .acct-menu a:hover, .acct-menu button:focus-visible, .acct-menu a:focus-visible { background: var(--pigment-soft); outline: none; }
 .acct-menu button:hover svg, .acct-menu a:hover svg { color: var(--pigment); }
+.acct-menu button:disabled:not(.loading), .acct-menu a:not([href]) { opacity: .45; cursor: default; pointer-events: none; }
 .board-picker { position: relative; display: inline-flex; flex: 0 1 auto; min-width: 0; max-width: clamp(8rem, 28vw, 18rem); }
 .board-picker:has(> button[hidden]) { display: none; }
 .board-switch {
