@@ -807,11 +807,14 @@
     (state.cleanups || []).forEach((fn) => fn());
     const cleanups = state.cleanups = new Set();
     const generation = ++state.generation;
-    const context = { overview, focusHeading, onCleanup: (fn) => { cleanups.add(fn); return () => cleanups.delete(fn); }, isCurrent: () => state.admin && generation === state.generation };
+    // Every page is one sheet: the title and page-level actions head it, the sections follow.
+    const actions = el('div', { className: 'admin-sheet-actions' });
+    const context = { overview, focusHeading, actions, onCleanup: (fn) => { cleanups.add(fn); return () => cleanups.delete(fn); }, isCurrent: () => state.admin && generation === state.generation };
     renderNav(route.page);
     const root = $('#admin-content');
     const body = el('div', { className: 'admin-page' });
-    root.replaceChildren(el('h1', { tabindex: '-1', textContent: t(PAGES[route.page].title) }), body);
+    root.replaceChildren(el('section', { className: `admin-sheet admin-sheet-${route.page}` },
+      el('header', { className: 'admin-sheet-head' }, el('h1', { tabindex: '-1', textContent: t(PAGES[route.page].title) }), actions), body));
     root.setAttribute('aria-busy', 'true');
     document.body.classList.add('busy');
     loading(body);
