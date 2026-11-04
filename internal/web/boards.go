@@ -65,8 +65,14 @@ func (s *Server) handleBoards(w http.ResponseWriter, r *http.Request) {
 		Hidden *bool     `json:"hidden,omitempty"`
 	}
 	admin := s.auth.isAdmin(r)
+	boards := s.boards.List(admin)
+	if id := r.URL.Query().Get("board"); !admin && id != "" && !slices.ContainsFunc(boards, func(b board.Summary) bool { return b.ID == id }) {
+		if b, err := s.boards.Summary(id); err == nil {
+			boards = append(boards, b)
+		}
+	}
 	items := make([]item, 0)
-	for _, b := range s.boards.List(admin) {
+	for _, b := range boards {
 		it := item{ID: b.ID, Name: b.Name, Count: b.Count, Latest: b.Latest, State: b.State}
 		if admin {
 			it.Hidden = &b.Hidden

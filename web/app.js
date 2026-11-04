@@ -197,7 +197,9 @@
   }
 
   async function refreshBoards() {
-    Object.assign(boards, await api('/api/boards'), { ready: true });
+    // Naming the open board lets a guest keep a hidden one reached by direct link; other hidden boards stay unlisted.
+    const id = state.board || new URL(location.href).searchParams.get('board');
+    Object.assign(boards, await api(id ? `/api/boards?board=${encodeURIComponent(id)}` : '/api/boards'), { ready: true });
     if (!boards.items.length) {
       // With no board, /api/images cannot supply the usual admin flag.
       try { await api('/api/admin/overview'); state.admin = true; } catch (e) { if (e.status === 401) state.admin = false; else throw e; }

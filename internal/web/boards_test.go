@@ -175,6 +175,85 @@ func TestBoardsVisibilityAndAdminCRUD(t *testing.T) {
 	}
 }
 
+func TestBoardsExplicitGuestSelection(t *testing.T) {
+	cfg := &config.Config{Admin: config.Admin{Username: "admin", Password: "pw", SessionTTL: time.Hour}}
+	s, boards, _ := newTestWebServer(t, cfg, false)
+	visible := createBoard(t, boards, "Visible", false)
+	hidden := createBoard(t, boards, "Hidden", true)
+	otherHidden := createBoard(t, boards, "Other Hidden", true)
+	archived := createBoard(t, boards, "Archived", true)
+	rt, _, err := boards.Resolve(hidden.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.Store.Import(strings.NewReader("img"), "20260101-000000_"+strings.Repeat("a", 32)+".jpg"); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+	cookie := login(t, srv.URL)
+	if err := boards.Archive(archived.ID); err != nil {
+		t.Fatal(err)
+	}
+	if op := waitOperation(t, srv.URL, archived.ID, cookie); op["phase"] != "done" {
+		t.Fatalf("archive: %v", op)
+	}
+	if b, ok := boards.Board(archived.ID); !ok || b.Lifecycle != board.Archived {
+		t.Fatalf("board was not archived: %+v", b)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		query string
+		ids   []string
+	}{
+		{"no parameter", "", []string{visible.ID}},
+		{"empty parameter", "?board=", []string{visible.ID}},
+		{"visible", "?board=" + visible.ID, []string{visible.ID}},
+		{"hidden", "?board=" + hidden.ID, []string{visible.ID, hidden.ID}},
+		{"other hidden", "?board=" + otherHidden.ID, []string{visible.ID, otherHidden.ID}},
+		{"unknown", "?board=missing", []string{visible.ID}},
+		{"invalid", "?board=%2Finvalid", []string{visible.ID}},
+		{"archived", "?board=" + archived.ID, []string{visible.ID}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := get(t, srv.URL+"/api/boards"+tc.query, nil)
+			body := decode(t, resp)
+			if resp.StatusCode != http.StatusOK || body["suggested"] != visible.ID || body["legacy_id"] != boards.LegacyID() {
+				t.Fatalf("boards: %s %v", resp.Status, body)
+			}
+			items := body["items"].([]any)
+			if len(items) != len(tc.ids) {
+				t.Fatalf("items: %v, want IDs %v", items, tc.ids)
+			}
+			for i, id := range tc.ids {
+				item := items[i].(map[string]any)
+				want, err := boards.Summary(id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if item["id"] != id || item["name"] != want.Name || item["count"] != float64(want.Count) || item["state"] != want.State {
+					t.Fatalf("item: %v, want %+v", item, want)
+				}
+				fields := 4
+				if !want.Latest.IsZero() {
+					fields++
+					if item["latest"] != want.Latest.Format(time.RFC3339Nano) {
+						t.Fatalf("latest: %v, want %v", item["latest"], want.Latest)
+					}
+				}
+				if len(item) != fields {
+					t.Fatalf("unexpected guest fields: %v", item)
+				}
+			}
+		})
+	}
+	admin := decode(t, get(t, srv.URL+"/api/boards?board="+hidden.ID, cookie))
+	if len(admin["items"].([]any)) != 3 || admin["suggested"] != visible.ID {
+		t.Fatalf("admin boards changed: %v", admin)
+	}
+}
+
 func TestAdminBoardSyncTimeJSONContract(t *testing.T) {
 	cfg := &config.Config{Admin: config.Admin{Username: "admin", Password: "pw", SessionTTL: time.Hour}}
 	s, boards, _ := newTestWebServer(t, cfg, false)
