@@ -48,6 +48,8 @@ func main() {
 	switch flag.Arg(0) {
 	case "healthcheck":
 		os.Exit(healthcheck(*configPath))
+	case "readycheck":
+		os.Exit(readycheck(*configPath))
 	case "checkconfig":
 		if _, err := config.Load(*configPath); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -206,13 +208,21 @@ func shutdown(ctx context.Context, shutdownServer func(context.Context) error, s
 
 // healthcheck lets the scratch image run a Docker HEALTHCHECK without curl.
 func healthcheck(configPath string) int {
+	return probe(configPath, "/healthz")
+}
+
+func readycheck(configPath string) int {
+	return probe(configPath, "/readyz")
+}
+
+func probe(configPath, path string) int {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get("http://" + probeAddr(cfg.Listen) + "/healthz")
+	resp, err := client.Get("http://" + probeAddr(cfg.Listen) + path)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

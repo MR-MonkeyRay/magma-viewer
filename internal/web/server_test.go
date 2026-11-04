@@ -938,26 +938,55 @@ func TestListDate(t *testing.T) {
 }
 
 func TestReadyz(t *testing.T) {
-	srv, _, st := newTestServerStore(t, 1)
-	m := decode(t, get(t, srv.URL+"/readyz", nil))
-	if m["ok"] != true || m["storage_writable"] != true {
-		t.Fatalf("healthy: %v", m)
+	s, _, rt := newTestWebServer(t, &config.Config{}, true)
+	handler := s.Handler()
+	probe := func(want int) string {
+		t.Helper()
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		if w.Code != want {
+			t.Fatalf("readyz status = %d, want %d: %s", w.Code, want, w.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body["ok"] != (want == http.StatusOK) || body["storage_writable"] != body["ok"] || body["boards"] != float64(1) {
+			t.Fatalf("readyz body = %v", body)
+		}
+		return w.Body.String()
 	}
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores directory permissions")
+	expire := func() {
+		s.ready.mu.Lock()
+		s.ready.expires = time.Now().Add(-time.Second)
+		s.ready.mu.Unlock()
 	}
-	tmp := filepath.Join(st.Dir(), ".state", "tmp")
-	if err := os.Chmod(tmp, 0o500); err != nil {
+	healthy := probe(http.StatusOK)
+	// A file in place of the temp directory makes any new storage probe fail,
+	// including when tests run as root.
+	tmp := filepath.Join(rt.Store.Dir(), ".state", "tmp")
+	if err := os.Rename(tmp, tmp+".saved"); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(tmp, 0o755) })
-	r := get(t, srv.URL+"/readyz", nil)
-	if r.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("read-only storage: %s", r.Status)
+	if err := os.WriteFile(tmp, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if m := decode(t, r); m["ok"] != false || m["storage_writable"] != false {
-		t.Fatalf("read-only storage: %v", m)
+	if got := probe(http.StatusOK); got != healthy {
+		t.Fatalf("cached healthy response changed: %s", got)
 	}
+	expire()
+	unhealthy := probe(http.StatusServiceUnavailable)
+	if err := os.Remove(tmp); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp+".saved", tmp); err != nil {
+		t.Fatal(err)
+	}
+	if got := probe(http.StatusServiceUnavailable); got != unhealthy {
+		t.Fatalf("cached unhealthy response changed: %s", got)
+	}
+	expire()
+	probe(http.StatusOK)
 }
 
 func TestSetCookie(t *testing.T) {

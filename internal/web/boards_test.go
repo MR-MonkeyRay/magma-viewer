@@ -688,6 +688,9 @@ func TestReadyChecksEveryBoard(t *testing.T) {
 	if err := os.WriteFile(rt.Store.Dir(), []byte("not a directory"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	s.ready.mu.Lock()
+	s.ready.expires = time.Now().Add(-time.Second)
+	s.ready.mu.Unlock()
 	check(http.StatusServiceUnavailable)
 }
 

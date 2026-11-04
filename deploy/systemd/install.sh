@@ -172,13 +172,14 @@ mv -f /usr/local/bin/.magma-viewer.new "$bin"
 install -m 0644 "$work/package/magma-viewer.service" "$unit"
 systemctl daemon-reload
 
-# Ready means answering /healthz on the configured listen address, not merely running.
+# Ready means answering /readyz with writable storage on the configured listen address.
+# Always use the new packaged binary: a rolled-back binary may not support readycheck.
 ready() {
-  # A deadline rather than a round count: one healthcheck can itself take seconds when the service hangs.
+  # A deadline rather than a round count: one readycheck can itself take seconds when the service hangs.
   local deadline=$((SECONDS + 30))
   while ((SECONDS < deadline)); do
     if systemctl is-active --quiet magma-viewer.service \
-      && "$bin" -config /etc/magma-viewer/config.yaml healthcheck >/dev/null 2>&1; then
+      && "$work/package/magma-viewer" -config /etc/magma-viewer/config.yaml readycheck >/dev/null 2>&1; then
       return 0
     fi
     sleep 1

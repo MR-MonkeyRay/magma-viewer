@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -228,6 +230,37 @@ func TestShutdownDeadlineBoundsBothOperations(t *testing.T) {
 				t.Fatalf("shutdown returned before deadline: %v", ctx.Err())
 			}
 		})
+	}
+}
+
+func TestHealthAndReadyChecks(t *testing.T) {
+	for _, check := range []struct {
+		name string
+		path string
+		run  func(string) int
+	}{
+		{"healthcheck", "/healthz", healthcheck},
+		{"readycheck", "/readyz", readycheck},
+	} {
+		for _, status := range []int{http.StatusOK, http.StatusServiceUnavailable} {
+			t.Run(check.name+"/"+http.StatusText(status), func(t *testing.T) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path != check.path {
+						t.Errorf("probe path = %q, want %q", r.URL.Path, check.path)
+					}
+					w.WriteHeader(status)
+				}))
+				defer srv.Close()
+				path := filepath.Join(t.TempDir(), "config.yaml")
+				cfg := "listen: " + strings.TrimPrefix(srv.URL, "http://") + "\nadmin: {username: admin, password: test-password}\n"
+				if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if got := check.run(path); (got == 0) != (status == http.StatusOK) {
+					t.Fatalf("exit code = %d for HTTP %d", got, status)
+				}
+			})
+		}
 	}
 }
 

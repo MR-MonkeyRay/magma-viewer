@@ -49,6 +49,12 @@ type Server struct {
 		mu      sync.Mutex
 		byBoard map[string]*overviewCache
 	}
+	ready struct {
+		mu      sync.Mutex
+		expires time.Time
+		code    int
+		body    map[string]any
+	}
 
 	// Version is the release shown in the page footer.
 	Version string
@@ -414,8 +420,20 @@ func (s *Server) writeStatus(w http.ResponseWriter, rt *board.Runtime) {
 	writeJSON(w, http.StatusOK, body)
 }
 
-// handleReady checks storage for every active board. Fetch failures remain informational.
+// handleReady caches storage checks for five seconds, sharing one probe across concurrent requests.
 func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
+	s.ready.mu.Lock()
+	if time.Now().After(s.ready.expires) {
+		s.ready.code, s.ready.body = s.readiness()
+		s.ready.expires = time.Now().Add(5 * time.Second)
+	}
+	code, body := s.ready.code, s.ready.body
+	s.ready.mu.Unlock()
+	writeJSON(w, code, body)
+}
+
+// readiness checks storage for every active board. Fetch failures remain informational.
+func (s *Server) readiness() (int, map[string]any) {
 	var st fetcher.Status
 	if rt, _, err := s.defaultBoard(); err == nil {
 		st = rt.Fetcher.Status()
@@ -439,10 +457,10 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 	if !writable {
 		code = http.StatusServiceUnavailable
 	}
-	writeJSON(w, code, map[string]any{
+	return code, map[string]any{
 		"ok": writable, "storage_writable": writable,
 		"last_fetched": st.LastFetched, "failures": st.Failures, "boards": count,
-	})
+	}
 }
 
 func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
