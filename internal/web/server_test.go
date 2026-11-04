@@ -340,6 +340,53 @@ func TestListReportsNextRunAndVersion(t *testing.T) {
 	}
 }
 
+func TestListReportsSyncState(t *testing.T) {
+	s, boards, _ := newTestWebServer(t, &config.Config{}, false)
+	h := s.Handler()
+	now := time.Now()
+	for _, tc := range []struct {
+		state     string
+		from, end time.Time
+		paused    bool
+	}{
+		{"pending", now.Add(24 * time.Hour), time.Time{}, false},
+		{"ended", time.Time{}, now.Add(-24 * time.Hour), false},
+		{"paused", now.Add(24 * time.Hour), time.Time{}, true},
+		{"syncing", time.Time{}, time.Time{}, false},
+	} {
+		t.Run(tc.state, func(t *testing.T) {
+			b, err := boards.Create(board.Settings{
+				Name: tc.state, URL: "http://example.invalid/" + tc.state,
+				SyncFrom: tc.from, SyncUntil: tc.end,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := boards.SetPaused(b.ID, tc.paused); err != nil {
+				t.Fatal(err)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/images?board="+b.ID, nil))
+			var body struct {
+				Task struct {
+					State  string `json:"state"`
+					Paused bool   `json:"paused"`
+				} `json:"task"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if rec.Code != http.StatusOK || body.Task.State != tc.state || body.Task.Paused != tc.paused {
+				t.Fatalf("images: status %d task %+v, want state %q paused %v", rec.Code, body.Task, tc.state, tc.paused)
+			}
+			summary, err := boards.Summary(b.ID)
+			if err != nil || body.Task.State != summary.State {
+				t.Fatalf("task.state %q disagrees with summary.state %q: %v", body.Task.State, summary.State, err)
+			}
+		})
+	}
+}
+
 func TestAPIResponsesAreNotCached(t *testing.T) {
 	srv, q := newTestServer(t, 2)
 	for _, path := range []string{"/api/images", "/api/overview", "/api/status", "/download/zip?" + q} {

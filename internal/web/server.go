@@ -238,7 +238,7 @@ func intParam(r *http.Request, key string, def int) int {
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
-	rt, _, ok := s.resolveBoard(w, r, false)
+	rt, b, ok := s.resolveBoard(w, r, false)
 	if !ok {
 		return
 	}
@@ -260,6 +260,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		"version":     s.Version,
 		// Public subset of the fetch status; errors stay admin-only.
 		"task": map[string]any{
+			"state":  b.SyncState(time.Now(), task.Paused),
 			"paused": task.Paused, "last_fetched": task.LastFetched, "next_run": s.boards.NextRun(rt.ID),
 			"last_run": task.LastRun, "result": task.Result, "code": task.Code,
 			// Scheduled runs before retry_at are skipped while failures keep coming.

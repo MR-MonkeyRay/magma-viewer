@@ -1226,15 +1226,22 @@
     el.task.hidden = !task;
     if (!task) return;
     const at = validTime(task.last_fetched) ? new Date(task.last_fetched) : null;
-    const next = !task.paused && validTime(task.next_run) ? task.next_run : '';
-    const retry = !task.paused && backingOff(task) ? task.retry_at : '';
-    el.task.classList.toggle('paused', task.paused);
-    el.task.innerHTML = `<dt>${t('task.title')}</dt><dd><span class="task-state"><span class="task-dot" aria-hidden="true"></span>${t(task.paused ? 'task.paused' : 'task.running')}</span></dd>
+    // Next run and retry only matter while the board is inside its sync window and not paused.
+    const sync = taskState(task);
+    const active = sync === 'syncing';
+    const next = active && validTime(task.next_run) ? task.next_run : '';
+    const retry = active && backingOff(task) ? task.retry_at : '';
+    el.task.classList.toggle('paused', !active);
+    el.task.innerHTML = `<dt>${t('task.title')}</dt><dd><span class="task-state"><span class="task-dot" aria-hidden="true"></span>${t(active ? 'task.running' : sync === 'paused' ? 'task.paused' : `board.${sync}`)}</span></dd>
       <dt>${t('task.lastFetched')}</dt><dd title="${at ? esc(fmtFull(at)) : t('task.none')}">${at ? `<span data-ago="${esc(task.last_fetched)}">${fmtAgo(at, false)}</span>` : t('task.none')}</dd>
       ${retry ? `<dt>${t('task.retry')}</dt><dd title="${esc(fmtFull(new Date(retry)))}"><span data-until="${esc(retry)}">${fmtUntil(new Date(retry))}</span></dd>`
     : next ? `<dt>${t('task.next')}</dt><dd title="${esc(fmtFull(new Date(next)))}"><span data-until="${esc(next)}">${fmtUntil(new Date(next))}</span></dd>` : ''}`;
   }
 
+  // paused, pending (before sync_from), ended (after sync_until) or syncing; older responses only carry paused.
+  function taskState(task) {
+    return ['paused', 'pending', 'ended', 'syncing'].includes(task.state) ? task.state : task.paused ? 'paused' : 'syncing';
+  }
   // After repeated failures scheduled runs before retry_at are skipped (the server allows 2 s of slack), so the next
   // scheduled run is not the next attempt.
   function backingOff(task) {
@@ -3230,7 +3237,7 @@
       awaitRun = '';
       awaitUntil = 0;
       const t = state.task;
-      if (t && !t.paused && validTime(t.next_run) && !backingOff(t)) {
+      if (t && taskState(t) === 'syncing' && validTime(t.next_run) && !backingOff(t)) {
         const wait = new Date(t.next_run) - Date.now() + 5000;
         if (wait <= 65000) { delay = Math.max(wait, 5000); awaitRun = t.next_run; }
       }
@@ -3258,7 +3265,7 @@
       // not finished, or failed (last_run then reaches it with an error); give it up to 45 s. Backoff skips it.
       const since = (v) => validTime(v) && new Date(v) >= new Date(awaitRun) - 1000;
       const finished = since(t.last_fetched) || (since(t.last_run) && t.result === 'error');
-      if (awaitRun && !t.paused && !finished && !backingOff(t)) {
+      if (awaitRun && taskState(t) === 'syncing' && !finished && !backingOff(t)) {
         if (!awaitUntil) awaitUntil = Date.now() + 45000;
         again = Date.now() < awaitUntil;
       }
