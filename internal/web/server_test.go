@@ -217,6 +217,45 @@ func TestLoginRejectsBadPassword(t *testing.T) {
 	}
 }
 
+func TestSessionCookieSecure(t *testing.T) {
+	cases := []struct {
+		name, remote, proto, scheme string
+		proxies                     []netip.Prefix
+		want                        bool
+	}{
+		{name: "untrusted peer", remote: "203.0.113.9:4000", proto: "https"},
+		{name: "trusted loopback", remote: "127.0.0.1:4000", proto: "https", want: true},
+		{name: "excluded peer", remote: "127.0.0.1:4000", proto: "https", proxies: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}},
+		{name: "direct TLS", remote: "203.0.113.9:4000", scheme: "https", want: true},
+		{name: "plain HTTP", remote: "127.0.0.1:4000"},
+		{name: "normalized protocol", remote: "[::1]:4000", proto: " HTTPS ", want: true},
+		{name: "mapped loopback", remote: "[::ffff:127.0.0.1]:4000", proto: "https", want: true},
+		{name: "invalid peer", remote: "not-an-ip", proto: "https"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := newAuth("admin", "pw", "secret", time.Hour)
+			a.proxies = c.proxies
+			scheme := c.scheme
+			if scheme == "" {
+				scheme = "http"
+			}
+			r := httptest.NewRequest(http.MethodPost, scheme+"://example.com/api/login", nil)
+			r.RemoteAddr = c.remote
+			r.Header.Set("X-Forwarded-Proto", c.proto)
+			w := httptest.NewRecorder()
+			a.setSession(w, r)
+			cookies := w.Result().Cookies()
+			if len(cookies) != 1 || cookies[0].Name != sessionCookie {
+				t.Fatalf("session cookie missing: %v", cookies)
+			}
+			if got := cookies[0].Secure; got != c.want {
+				t.Errorf("Secure = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 func TestSchedulePause(t *testing.T) {
 	srv, _ := newTestServer(t, 0)
 	postAs := func(ct, body string, c *http.Cookie) *http.Response {
