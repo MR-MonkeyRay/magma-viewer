@@ -390,12 +390,22 @@ func TestBoardCookieInheritance(t *testing.T) {
 			t.Fatalf("board %s source %q, want %q", id, got, want)
 		}
 	}
+	assertMatchesGet := func(path string, putBody []byte) {
+		t.Helper()
+		r := get(t, srv.URL+path, c)
+		getBody, err := io.ReadAll(r.Body)
+		r.Body.Close()
+		if err != nil || r.StatusCode != http.StatusOK || !bytes.Equal(putBody, getBody) {
+			t.Fatalf("%s: PUT body %s, GET %s body %s, error %v", path, putBody, r.Status, getBody, err)
+		}
+	}
 	r := sendJSON(t, http.MethodPut, srv.URL+"/api/cookie", `{"cookie":"AUTH_TOKEN=shared-secret"}`, c)
 	body, _ := io.ReadAll(r.Body)
 	r.Body.Close()
 	if r.StatusCode != http.StatusOK || bytes.Contains(body, []byte("shared-secret")) {
 		t.Fatalf("shared cookie response: %s %s", r.Status, body)
 	}
+	assertMatchesGet("/api/cookie", body)
 	assertSource(a.ID, "page")
 	assertSource(b.ID, "page")
 	r = sendJSON(t, http.MethodPut, srv.URL+"/api/cookie?board="+a.ID, `{"cookie":"AUTH_TOKEN=board-secret"}`, c)
@@ -404,6 +414,7 @@ func TestBoardCookieInheritance(t *testing.T) {
 	if r.StatusCode != http.StatusOK || bytes.Contains(body, []byte("board-secret")) {
 		t.Fatalf("board cookie response: %s %s", r.Status, body)
 	}
+	assertMatchesGet("/api/cookie?board="+a.ID, body)
 	assertSource(a.ID, "board")
 	assertSource(b.ID, "page")
 	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/cookie?board="+a.ID, nil)

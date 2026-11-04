@@ -380,14 +380,6 @@ func (m *Manager) Suggested(includeHidden bool) string {
 
 func (m *Manager) Board(id string) (Board, bool) { return m.registry.Board(id) }
 
-func (m *Manager) EffectiveSchedule(id string) string {
-	b, ok := m.Board(id)
-	if !ok {
-		return ""
-	}
-	return m.effective(b)
-}
-
 func (m *Manager) NextRun(id string) time.Time {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

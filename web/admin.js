@@ -15,7 +15,7 @@
     node.append(...children.flat().filter((child) => child != null));
     return node;
   }
-  const state = { admin: false, route: '', generation: 0, overview: null };
+  const state = { admin: false, route: '', generation: 0 };
   let historyIndex = Number.isInteger(history.state?.mvAdminIndex) ? history.state.mvAdminIndex : 0;
   history.replaceState({ ...history.state, mvAdminIndex: historyIndex }, '');
   let unsavedGuard = () => false;
@@ -135,11 +135,7 @@
     $('button', node).addEventListener('click', retry);
   }
   function busy(button, on) { button.disabled = on; button.classList.toggle('loading', on); }
-  async function getOverview() {
-    const data = await api('/api/admin/overview');
-    state.overview = data;
-    return data;
-  }
+  const getOverview = () => api('/api/admin/overview');
   const panel = (title, html) => `<section class="admin-panel"><h2>${esc(t(title))}</h2>${html}</section>`;
   const stats = (html) => `<dl class="stats">${html}</dl>`;
   const stat = (key, value) => `<dt>${esc(t(key))}</dt><dd>${esc(value)}</dd>`;
@@ -218,9 +214,7 @@
       if (!remove && !input.value.trim()) { showCookieError(t('err.invalid_cookie')); input.focus(); return; }
       busy(save, true); clear.disabled = true; input.disabled = true; showCookieError('');
       try {
-        await api('/api/cookie', remove ? { method: 'DELETE' } : json('PUT', { cookie: input.value.trim() }));
-        // PUT may return a default board's status. Read the shared endpoint again.
-        cookie = await api('/api/cookie');
+        cookie = await api('/api/cookie', remove ? { method: 'DELETE' } : json('PUT', { cookie: input.value.trim() }));
         if (!context.isCurrent()) return;
         input.value = ''; renderState(); toast(t(remove ? 'admin.cookieCleared' : 'cookie.saved'), 'ok');
       } catch (err) { if (context.isCurrent()) showCookieError(err.message); }
@@ -580,8 +574,7 @@
       if (!remove && (mode.value !== 'override' || !input.value.trim())) { showCookieError(t('err.invalid_cookie')); input.focus(); return; }
       saving = true; [...form.elements].forEach((node) => { node.disabled = true; }); showCookieError('');
       try {
-        await api(path, remove ? { method: 'DELETE' } : json('PUT', { cookie: input.value.trim() }));
-        const data = await api(path);
+        const data = await api(path, remove ? { method: 'DELETE' } : json('PUT', { cookie: input.value.trim() }));
         if (!context.isCurrent()) return;
         cookie = data; token = data.token; input.value = ''; mode.value = cookie.source === 'board' ? 'override' : 'shared'; paint();
         toast(t(remove ? 'admin.board.cookieCleared' : 'cookie.saved'), 'ok');

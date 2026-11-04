@@ -204,8 +204,8 @@ func TestManagerUpdateScheduleAndURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Name != "two" || m.EffectiveSchedule(created.ID) != "@every 2h" {
-		t.Fatalf("updated = %+v, schedule=%q", updated, m.EffectiveSchedule(created.ID))
+	if updated.Name != "two" {
+		t.Fatalf("updated = %+v", updated)
 	}
 	overridden := m.NextRun(created.ID)
 	if before.IsZero() || overridden.IsZero() || before.Equal(overridden) {
@@ -213,9 +213,6 @@ func TestManagerUpdateScheduleAndURL(t *testing.T) {
 	}
 	if _, err := m.Update(created.ID, Settings{Name: "two", URL: b.URL}); err != nil {
 		t.Fatal(err)
-	}
-	if m.EffectiveSchedule(created.ID) != "@every 1h" {
-		t.Fatalf("inherited schedule = %q", m.EffectiveSchedule(created.ID))
 	}
 	inherited := m.NextRun(created.ID)
 	if inherited.IsZero() || inherited.Equal(overridden) {

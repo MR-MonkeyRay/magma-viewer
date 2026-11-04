@@ -351,14 +351,7 @@ func (s *Server) handleCookie(w http.ResponseWriter, r *http.Request) {
 		writeCookieError(w, err)
 		return
 	}
-	if rt == nil {
-		rt, _, err = s.defaultBoard()
-		if err != nil {
-			writeJSON(w, http.StatusOK, s.cookieInfo(nil))
-			return
-		}
-	}
-	s.writeStatus(w, rt)
+	writeJSON(w, http.StatusOK, s.cookieInfo(rt))
 }
 
 func (s *Server) handleDeleteCookie(w http.ResponseWriter, r *http.Request) {

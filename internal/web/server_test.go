@@ -999,7 +999,7 @@ func TestSetCookie(t *testing.T) {
 	if r.StatusCode != http.StatusOK {
 		t.Fatalf("valid cookie: %s", r.Status)
 	}
-	if ck, _ := decode(t, r)["cookie"].(map[string]any); ck["source"] != "page" {
+	if ck := decode(t, r); ck["source"] != "page" {
 		t.Fatalf("cookie info: %v", ck)
 	}
 	r = sendJSON(t, http.MethodPut, srv.URL+"/api/cookie", `{"cookie":"a\nb"}`, c)
