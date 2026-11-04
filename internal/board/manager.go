@@ -94,7 +94,7 @@ func NewManager(o Options) (*Manager, error) {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	r, err := Open(o.Root, o.Magma.URL, o.Now())
+	r, err := Open(o.Root, o.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +102,7 @@ func NewManager(o Options) (*Manager, error) {
 		return nil, fmt.Errorf("default schedule: %w", err)
 	}
 	if o.Shared == nil {
-		o.Shared = fetcher.NewCredentials("", filepath.Join(o.Root, ".state", "cookie.json"))
+		o.Shared = fetcher.NewCredentials(filepath.Join(o.Root, ".state", "cookie.json"))
 	}
 	m := &Manager{
 		o: o, registry: r,
@@ -140,9 +140,7 @@ func (m *Manager) newRuntime(b Board) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("board %s: %w", b.ID, err)
 	}
-	cfg := m.o.Magma
-	cfg.URL, cfg.Cookie = b.URL, ""
-	f := fetcher.New(cfg, m.o.TempDir, st, m.o.Shared)
+	f := fetcher.New(m.o.Magma, m.o.TempDir, st, m.o.Shared)
 	rt := &Runtime{ID: b.ID, Store: st, Fetcher: f}
 	f.URL = func() string {
 		current, _ := m.registry.Board(b.ID)

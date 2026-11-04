@@ -73,7 +73,7 @@ func run(configPath string) error {
 		log.Printf("WARNING admin.session_secret is empty: a random key is used and every restart logs the admin out")
 	}
 
-	creds := fetcher.NewCredentials(cfg.Magma.Cookie, filepath.Join(cfg.Storage.Dir, ".state", "cookie.json"))
+	creds := fetcher.NewCredentials(filepath.Join(cfg.Storage.Dir, ".state", "cookie.json"))
 	n := notify.New(cfg.Notify)
 	var alert func(event, message string)
 	if n != nil {

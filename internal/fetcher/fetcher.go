@@ -90,8 +90,8 @@ type Fetcher struct {
 	now     func() time.Time
 	ensure  func(string) error
 
-	// URL overrides cfg.URL when set. Active gates all runs; InWindow gates
-	// only scheduled runs. Set these hooks before starting runs.
+	// URL supplies the board URL. Active gates all runs; InWindow gates only
+	// scheduled runs. Set these hooks before starting runs.
 	URL      func() string
 	Active   func() bool
 	InWindow func(now time.Time) bool
@@ -197,10 +197,10 @@ func (f *Fetcher) saveLastFetched() {
 }
 
 func (f *Fetcher) sourceURL() string {
-	if f.URL != nil {
-		return f.URL()
+	if f.URL == nil {
+		return ""
 	}
-	return f.cfg.URL
+	return f.URL()
 }
 
 // RunScheduled is the cron entry point; it does nothing while paused or while

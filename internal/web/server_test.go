@@ -70,7 +70,7 @@ func newTestWebServer(t *testing.T, cfg *config.Config, ensureLegacy bool) (*Ser
 		cfg.Schedule = "* * * * *"
 	}
 	cfg.Storage = config.Storage{Dir: root, TempDir: t.TempDir()}
-	creds := fetcher.NewCredentials(cfg.Magma.Cookie, filepath.Join(root, ".state", "cookie.json"))
+	creds := fetcher.NewCredentials(filepath.Join(root, ".state", "cookie.json"))
 	boards, err := board.NewManager(board.Options{Root: root, TempDir: cfg.Storage.TempDir, Magma: cfg.Magma, Schedule: cfg.Schedule, Shared: creds})
 	if err != nil {
 		t.Fatal(err)
@@ -104,13 +104,21 @@ func newTestServerStore(t *testing.T, n int) (*httptest.Server, string, *store.S
 			t.Fatal(err)
 		}
 	}
+	if n == 0 {
+		if err := os.MkdirAll(filepath.Join(root, ".state"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, ".state", "fetcher.json"), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	cfg := &config.Config{
 		Admin:    config.Admin{Username: "admin", Password: "pw", SessionTTL: time.Hour},
-		Magma:    config.Magma{URL: "http://127.0.0.1:1", Timeout: time.Second},
+		Magma:    config.Magma{Timeout: time.Second},
 		Schedule: "* * * * *",
 		Storage:  config.Storage{Dir: root, TempDir: t.TempDir()},
 	}
-	creds := fetcher.NewCredentials(cfg.Magma.Cookie, filepath.Join(root, ".state", "cookie.json"))
+	creds := fetcher.NewCredentials(filepath.Join(root, ".state", "cookie.json"))
 	boards, err := board.NewManager(board.Options{Root: root, TempDir: cfg.Storage.TempDir, Magma: cfg.Magma, Schedule: cfg.Schedule, Shared: creds})
 	if err != nil {
 		t.Fatal(err)
@@ -256,9 +264,13 @@ func TestSchedulePause(t *testing.T) {
 
 func TestListReportsNextRunAndVersion(t *testing.T) {
 	root := t.TempDir()
-	cfg := &config.Config{Magma: config.Magma{URL: "http://127.0.0.1:1", Timeout: time.Second}, Schedule: "* * * * *", Storage: config.Storage{Dir: root, TempDir: t.TempDir()}}
-	creds := fetcher.NewCredentials(cfg.Magma.Cookie, filepath.Join(root, ".state", "cookie.json"))
+	cfg := &config.Config{Magma: config.Magma{Timeout: time.Second}, Schedule: "* * * * *", Storage: config.Storage{Dir: root, TempDir: t.TempDir()}}
+	creds := fetcher.NewCredentials(filepath.Join(root, ".state", "cookie.json"))
 	boards, err := board.NewManager(board.Options{Root: root, TempDir: cfg.Storage.TempDir, Magma: cfg.Magma, Schedule: cfg.Schedule, Shared: creds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := boards.Create(board.Settings{Name: "test", URL: "http://example.invalid"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +293,7 @@ func TestListReportsNextRunAndVersion(t *testing.T) {
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if next := boards.NextRun(boards.LegacyID()); !body.Task.NextRun.Equal(next) || next.IsZero() {
+	if next := boards.NextRun(created.ID); !body.Task.NextRun.Equal(next) || next.IsZero() {
 		t.Fatalf("next_run = %v, want non-zero %v", body.Task.NextRun, next)
 	}
 	if body.Version != "1.2.3" {
@@ -916,12 +928,14 @@ func TestHandleFetchConflicts(t *testing.T) {
 		check(t, s, "no_url", "未设置画板地址")
 	})
 	t.Run("inactive", func(t *testing.T) {
-		s, f := newServer(t, config.Magma{URL: "http://example.invalid", Timeout: time.Second})
+		s, f := newServer(t, config.Magma{Timeout: time.Second})
+		f.URL = func() string { return "http://example.invalid" }
 		f.Active = func() bool { return false }
 		check(t, s, "board_inactive", "画板当前不可抓取")
 	})
 	t.Run("busy", func(t *testing.T) {
-		s, f := newServer(t, config.Magma{URL: "http://example.invalid", Timeout: time.Second})
+		s, f := newServer(t, config.Magma{Timeout: time.Second})
+		f.URL = func() string { return "http://example.invalid" }
 		entered := make(chan struct{})
 		release := make(chan struct{})
 		var once sync.Once
@@ -1058,7 +1072,7 @@ func TestStatusBody(t *testing.T) {
 	if _, ok := m["history"].([]any); !ok {
 		t.Fatalf("history: %v", m["history"])
 	}
-	if ck, _ := m["cookie"].(map[string]any); ck["source"] != "config" {
+	if ck, _ := m["cookie"].(map[string]any); ck["source"] != "none" {
 		t.Fatalf("cookie: %v", m["cookie"])
 	}
 	if m["notify"] != false {
@@ -1097,7 +1111,7 @@ func TestStatusUsesManagerSummary(t *testing.T) {
 		Schedule: "* * * * *",
 		Storage:  config.Storage{Dir: t.TempDir(), TempDir: t.TempDir()},
 	}
-	creds := fetcher.NewCredentials("", filepath.Join(cfg.Storage.Dir, ".state", "cookie.json"))
+	creds := fetcher.NewCredentials(filepath.Join(cfg.Storage.Dir, ".state", "cookie.json"))
 	now := time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC)
 	boards, err := board.NewManager(board.Options{
 		Root: cfg.Storage.Dir, TempDir: cfg.Storage.TempDir, Schedule: cfg.Schedule,

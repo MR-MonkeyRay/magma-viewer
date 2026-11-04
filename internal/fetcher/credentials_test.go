@@ -12,8 +12,8 @@ import (
 
 func TestCredentialsSetClearAndRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".state", "cookie.json")
-	c := NewCredentials("sid=config", path)
-	if cookie, info := c.Cookie(); cookie != "sid=config" || info.Source != "config" || !info.Updated.IsZero() {
+	c := NewCredentials(path)
+	if cookie, info := c.Cookie(); cookie != "" || info.Source != "none" || !info.Updated.IsZero() {
 		t.Fatalf("initial Cookie = %q, %+v", cookie, info)
 	}
 
@@ -33,14 +33,14 @@ func TestCredentialsSetClearAndRestart(t *testing.T) {
 		t.Fatalf("cookie file mode = %v", stat.Mode().Perm())
 	}
 
-	restarted := NewCredentials("sid=config", path)
+	restarted := NewCredentials(path)
 	if cookie, info := restarted.Cookie(); cookie != "sid=page" || info.Source != "page" || !info.Updated.Equal(updated) {
 		t.Fatalf("after restart Cookie = %q, %+v", cookie, info)
 	}
 	if err := restarted.Clear(); err != nil {
 		t.Fatal(err)
 	}
-	if cookie, info := restarted.Cookie(); cookie != "sid=config" || info.Source != "config" || !info.Updated.IsZero() {
+	if cookie, info := restarted.Cookie(); cookie != "" || info.Source != "none" || !info.Updated.IsZero() {
 		t.Fatalf("after Clear Cookie = %q, %+v", cookie, info)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -51,31 +51,15 @@ func TestCredentialsSetClearAndRestart(t *testing.T) {
 	}
 }
 
-func TestCredentialsConfigFingerprintInvalidatesOverride(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".state", "cookie.json")
-	c := NewCredentials("sid=old-config", path)
-	if err := c.Set("sid=page"); err != nil {
-		t.Fatal(err)
-	}
-
-	c = NewCredentials("sid=new-config", path)
-	if cookie, info := c.Cookie(); cookie != "sid=new-config" || info.Source != "config" {
-		t.Fatalf("Cookie = %q, %+v", cookie, info)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("stale override remains: %v", err)
-	}
-}
-
 func TestCredentialsRejectsInvalidCookieWithoutChangingState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cookie.json")
-	c := NewCredentials("sid=config", path)
+	c := NewCredentials(path)
 	for _, raw := range []string{"", " ", "sid=", "sid=x\ny"} {
 		if err := c.Set(raw); err == nil {
 			t.Errorf("Set(%q) succeeded", raw)
 		}
 	}
-	if cookie, info := c.Cookie(); cookie != "sid=config" || info.Source != "config" {
+	if cookie, info := c.Cookie(); cookie != "" || info.Source != "none" {
 		t.Fatalf("Cookie = %q, %+v", cookie, info)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -84,7 +68,7 @@ func TestCredentialsRejectsInvalidCookieWithoutChangingState(t *testing.T) {
 }
 
 func TestCredentialsConcurrentAccess(t *testing.T) {
-	c := NewCredentials("sid=config", filepath.Join(t.TempDir(), "cookie.json"))
+	c := NewCredentials(filepath.Join(t.TempDir(), "cookie.json"))
 	var wg sync.WaitGroup
 	for i := range 12 {
 		i := i
@@ -93,7 +77,7 @@ func TestCredentialsConcurrentAccess(t *testing.T) {
 				t.Errorf("Set: %v", err)
 			}
 			cookie, info := c.Cookie()
-			if cookie == "" || (info.Source != "page" && info.Source != "config") {
+			if cookie == "" || info.Source != "page" {
 				t.Errorf("Cookie = %q, %+v", cookie, info)
 			}
 			_ = c.Token()
@@ -107,8 +91,11 @@ func TestCredentialsConcurrentAccess(t *testing.T) {
 
 func TestCredentialsTokenAndDailySharedReminder(t *testing.T) {
 	now := time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC)
-	c := NewCredentials("AUTH_TOKEN="+jwt(now.Add(48*time.Hour)), filepath.Join(t.TempDir(), "cookie.json"))
+	c := NewCredentials(filepath.Join(t.TempDir(), "cookie.json"))
 	c.now = func() time.Time { return now }
+	if err := c.Set("AUTH_TOKEN=" + jwt(now.Add(48*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
 	if tok := c.Token(); tok.Cookie != "AUTH_TOKEN" || !tok.Expires.Equal(now.Add(48*time.Hour)) {
 		t.Fatalf("Token = %+v", tok)
 	}

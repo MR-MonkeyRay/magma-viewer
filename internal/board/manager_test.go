@@ -40,19 +40,19 @@ func managerPNG(t *testing.T, c color.Color) []byte {
 	return buf.Bytes()
 }
 
-func managerOptions(root, rawURL string) Options {
+func managerOptions(root string) Options {
 	return Options{
 		Root:     root,
 		TempDir:  root,
-		Magma:    config.Magma{URL: rawURL, Timeout: 2 * time.Second},
+		Magma:    config.Magma{Timeout: 2 * time.Second},
 		Schedule: "@every 1h",
-		Shared:   fetcher.NewCredentials("", filepath.Join(root, ".state", "cookie.json")),
+		Shared:   fetcher.NewCredentials(filepath.Join(root, ".state", "cookie.json")),
 	}
 }
 
-func newTestManager(t *testing.T, root, rawURL string) *Manager {
+func newTestManager(t *testing.T, root string) *Manager {
 	t.Helper()
-	m, err := NewManager(managerOptions(root, rawURL))
+	m, err := NewManager(managerOptions(root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestManagerMigratesLegacyStore(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "legacy.png"), managerPNG(t, color.White), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	m := newTestManager(t, root, "https://example.com/render")
+	m := newTestManager(t, root)
 	if m.LegacyID() != LegacyID {
 		t.Fatalf("LegacyID = %q", m.LegacyID())
 	}
@@ -88,7 +88,7 @@ func TestManagerMigratesLegacyStore(t *testing.T) {
 
 func TestManagerCreatePersistsPausedBoard(t *testing.T) {
 	root := t.TempDir()
-	m := newTestManager(t, root, "")
+	m := newTestManager(t, root)
 	s, err := m.Create(Settings{Name: " New ", URL: "https://example.com/a"})
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +100,7 @@ func TestManagerCreatePersistsPausedBoard(t *testing.T) {
 		t.Fatalf("board directory: %v, %v", info, err)
 	}
 
-	reloaded := newTestManager(t, root, "")
+	reloaded := newTestManager(t, root)
 	rt, b, err := reloaded.Resolve(s.ID)
 	if err != nil || b.Name != "New" || !rt.Fetcher.Status().Paused {
 		t.Fatalf("reloaded board = %+v, paused=%v, err=%v", b, rt.Fetcher.Status().Paused, err)
@@ -138,7 +138,7 @@ func TestManagerPersistenceFailuresKeepCommittedURL(t *testing.T) {
 	defer newServer.Close()
 
 	root := t.TempDir()
-	m := newTestManager(t, root, "")
+	m := newTestManager(t, root)
 	created, err := m.Create(Settings{Name: "kept", URL: oldServer.URL})
 	if err != nil {
 		t.Fatal(err)
@@ -191,7 +191,7 @@ func TestManagerUpdateScheduleAndURL(t *testing.T) {
 	b := serve(&second, color.Black)
 	defer b.Close()
 
-	m := newTestManager(t, t.TempDir(), "")
+	m := newTestManager(t, t.TempDir())
 	created, err := m.Create(Settings{Name: "one", URL: a.URL})
 	if err != nil {
 		t.Fatal(err)
@@ -247,7 +247,7 @@ func TestManagerUpdateURLDuringFetch(t *testing.T) {
 		_, _ = w.Write(body)
 	}))
 	defer newServer.Close()
-	m := newTestManager(t, t.TempDir(), "")
+	m := newTestManager(t, t.TempDir())
 	created, err := m.Create(Settings{Name: "old", URL: srv.URL})
 	if err != nil {
 		t.Fatal(err)
@@ -289,7 +289,7 @@ func TestManagerURLUpdateResetsBackoffOnlyAfterCommit(t *testing.T) {
 	}))
 	defer srv.Close()
 	root := t.TempDir()
-	m := newTestManager(t, root, "")
+	m := newTestManager(t, root)
 	created, err := m.Create(Settings{Name: "board", URL: srv.URL + "/old"})
 	if err != nil {
 		t.Fatal(err)
@@ -347,7 +347,7 @@ func TestManagerRejectsStaleCronJob(t *testing.T) {
 		_, _ = w.Write(body)
 	}))
 	defer srv.Close()
-	m := newTestManager(t, t.TempDir(), "")
+	m := newTestManager(t, t.TempDir())
 	created, err := m.Create(Settings{Name: "board", URL: srv.URL, Schedule: "@every 1h"})
 	if err != nil {
 		t.Fatal(err)
@@ -391,7 +391,7 @@ func TestManagerRejectsStaleCronJob(t *testing.T) {
 }
 
 func TestManagerResolveSeparatesStores(t *testing.T) {
-	m := newTestManager(t, t.TempDir(), "")
+	m := newTestManager(t, t.TempDir())
 	a, _ := m.Create(Settings{Name: "a", URL: "https://example.com/a"})
 	b, _ := m.Create(Settings{Name: "b", URL: "https://example.com/b"})
 	ra, _, _ := m.Resolve(a.ID)
@@ -437,7 +437,7 @@ func TestManagerResolveSeparatesStores(t *testing.T) {
 
 func TestManagerListAndSuggested(t *testing.T) {
 	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
-	o := managerOptions(t.TempDir(), "")
+	o := managerOptions(t.TempDir())
 	o.Now = func() time.Time { return now }
 	m, err := NewManager(o)
 	if err != nil {
@@ -471,7 +471,7 @@ func TestManagerListAndSuggested(t *testing.T) {
 
 func TestManagerSummary(t *testing.T) {
 	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
-	o := managerOptions(t.TempDir(), "")
+	o := managerOptions(t.TempDir())
 	o.Now = func() time.Time { return now }
 	m, err := NewManager(o)
 	if err != nil {
@@ -512,7 +512,11 @@ func TestManagerSummary(t *testing.T) {
 			t.Fatalf("Summary %s = %+v, %v", lifecycle, got, err)
 		}
 	}
-	legacy := newTestManager(t, t.TempDir(), "https://example.com/legacy")
+	legacyRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(legacyRoot, "legacy.png"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	legacy := newTestManager(t, legacyRoot)
 	alias, err := legacy.Summary("")
 	if err != nil {
 		t.Fatal(err)
@@ -532,7 +536,7 @@ func TestManagerWindowAndSharedCookie(t *testing.T) {
 		_, _ = w.Write(body)
 	}))
 	defer srv.Close()
-	o := managerOptions(t.TempDir(), "")
+	o := managerOptions(t.TempDir())
 	now := time.Now().UTC()
 	o.Now = func() time.Time { return now }
 	m, err := NewManager(o)
@@ -597,7 +601,7 @@ func TestManagerStartStopEndsScheduledWork(t *testing.T) {
 		_, _ = w.Write(body)
 	}))
 	defer srv.Close()
-	o := managerOptions(t.TempDir(), "")
+	o := managerOptions(t.TempDir())
 	m, err := NewManager(o)
 	if err != nil {
 		t.Fatal(err)
@@ -647,7 +651,7 @@ func TestManagerStopCancelsBlockedRequests(t *testing.T) {
 			}))
 			defer srv.Close()
 			defer close(release)
-			o := managerOptions(t.TempDir(), "")
+			o := managerOptions(t.TempDir())
 			o.Magma.Timeout = 30 * time.Second
 			if scheduled {
 				o.Schedule = "@every 1s"
@@ -718,7 +722,7 @@ func TestManagerRequiresActiveBoardDirectory(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewManager(managerOptions(root, "")); err == nil {
+	if _, err := NewManager(managerOptions(root)); err == nil {
 		t.Fatal("NewManager accepted a missing active board directory")
 	}
 }
@@ -737,7 +741,7 @@ func TestManagerDoesNotCreateRuntimeForInactiveBoard(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	m, err := NewManager(managerOptions(root, ""))
+	m, err := NewManager(managerOptions(root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -755,7 +759,7 @@ func TestManagerDoesNotCreateRuntimeForInactiveBoard(t *testing.T) {
 func TestManagerAlertsUseCurrentBoardName(t *testing.T) {
 	root := t.TempDir()
 	var event, message string
-	o := managerOptions(root, "")
+	o := managerOptions(root)
 	o.Alert = func(gotEvent, gotMessage string) {
 		event, message = gotEvent, gotMessage
 	}
@@ -776,7 +780,7 @@ func TestManagerAlertsUseCurrentBoardName(t *testing.T) {
 		t.Fatalf("alert = %q, %q", event, message)
 	}
 
-	nilAlert := newTestManager(t, t.TempDir(), "")
+	nilAlert := newTestManager(t, t.TempDir())
 	nilBoard, err := nilAlert.Create(Settings{Name: "quiet", URL: "https://example.com"})
 	if err != nil {
 		t.Fatal(err)
@@ -787,7 +791,7 @@ func TestManagerAlertsUseCurrentBoardName(t *testing.T) {
 	}
 }
 
-func TestManagerNilSharedDoesNotUseMagmaCookie(t *testing.T) {
+func TestManagerNilSharedUsesOnlineCookie(t *testing.T) {
 	body := managerPNG(t, color.White)
 	seen := make(chan string, 2)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -796,9 +800,8 @@ func TestManagerNilSharedDoesNotUseMagmaCookie(t *testing.T) {
 	}))
 	defer srv.Close()
 	root := t.TempDir()
-	o := managerOptions(root, "")
+	o := managerOptions(root)
 	o.Shared = nil
-	o.Magma.Cookie = "sid=ignored"
 	m, err := NewManager(o)
 	if err != nil {
 		t.Fatal(err)
@@ -813,7 +816,7 @@ func TestManagerNilSharedDoesNotUseMagmaCookie(t *testing.T) {
 		t.Fatalf("first Run = %+v, %v", got, err)
 	}
 	if got := <-seen; got != "" {
-		t.Fatalf("Magma.Cookie leaked to board: %q", got)
+		t.Fatalf("unexpected cookie = %q", got)
 	}
 	if err := m.SetSharedCookie("sid=shared"); err != nil {
 		t.Fatal(err)
@@ -834,7 +837,7 @@ func TestManagerCreateAfterStartUsesChildContext(t *testing.T) {
 		_, _ = w.Write(body)
 	}))
 	defer srv.Close()
-	o := managerOptions(t.TempDir(), "")
+	o := managerOptions(t.TempDir())
 	o.Alert = func(string, string) {}
 	m, err := NewManager(o)
 	if err != nil {
@@ -908,7 +911,7 @@ func awaitOperation(t *testing.T, m *Manager, id string) Operation {
 
 func TestManagerArchive(t *testing.T) {
 	root := t.TempDir()
-	m := newTestManager(t, root, "")
+	m := newTestManager(t, root)
 	rt, b := maintenanceBoard(t, m, "archive")
 	const cookie = "sid=private-board-cookie"
 	if err := rt.Fetcher.SetCookie(cookie); err != nil {
@@ -1004,7 +1007,7 @@ func TestManagerArchiveFailureRestoresRuntimeAndPause(t *testing.T) {
 			}))
 			defer srv.Close()
 			root := t.TempDir()
-			m := newTestManager(t, root, "")
+			m := newTestManager(t, root)
 			rt, b := maintenanceBoard(t, m, "failure")
 			if _, err := m.Update(b.ID, Settings{Name: b.Name, URL: srv.URL}); err != nil {
 				t.Fatal(err)
@@ -1069,7 +1072,7 @@ func TestManagerArchiveFailureRestoresRuntimeAndPause(t *testing.T) {
 }
 
 func TestManagerMaintenanceExclusionAndInactiveGates(t *testing.T) {
-	m := newTestManager(t, t.TempDir(), "")
+	m := newTestManager(t, t.TempDir())
 	rt, b := maintenanceBoard(t, m, "held")
 	_, other := maintenanceBoard(t, m, "other")
 	a := registeredArchive(t, m, b.ID, "old.zip")
@@ -1130,7 +1133,7 @@ func TestManagerDelete(t *testing.T) {
 	for _, archived := range []bool{false, true} {
 		t.Run(fmt.Sprint(archived), func(t *testing.T) {
 			root := t.TempDir()
-			m := newTestManager(t, root, "")
+			m := newTestManager(t, root)
 			_, b := maintenanceBoard(t, m, "target")
 			otherRT, other := maintenanceBoard(t, m, "other")
 			kept := registeredArchive(t, m, other.ID, "keep.zip")
@@ -1196,7 +1199,7 @@ func TestManagerDelete(t *testing.T) {
 
 func TestManagerDeleteArchive(t *testing.T) {
 	root := t.TempDir()
-	m := newTestManager(t, root, "")
+	m := newTestManager(t, root)
 	_, b := maintenanceBoard(t, m, "archived")
 	if err := m.Archive(b.ID); err != nil {
 		t.Fatal(err)
@@ -1238,7 +1241,7 @@ func TestManagerDeleteArchive(t *testing.T) {
 
 func TestManagerRecoveryRunsSerially(t *testing.T) {
 	root := t.TempDir()
-	original := newTestManager(t, root, "")
+	original := newTestManager(t, root)
 	rt, archiving := maintenanceBoard(t, original, "archiving")
 	_, archived := maintenanceBoard(t, original, "archived")
 	_, deleting := maintenanceBoard(t, original, "deleting")
@@ -1260,7 +1263,7 @@ func TestManagerRecoveryRunsSerially(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	m := newTestManager(t, root, "")
+	m := newTestManager(t, root)
 	if len(m.runtimes) != 1 || m.runtimes[archiving.ID].entry != 0 {
 		t.Fatalf("recovery runtimes = %+v", m.runtimes)
 	}
@@ -1307,7 +1310,7 @@ func TestManagerRecoveryRunsSerially(t *testing.T) {
 
 func TestManagerStopDuringArchiveLeavesRecoverableSources(t *testing.T) {
 	root := t.TempDir()
-	m := newTestManager(t, root, "")
+	m := newTestManager(t, root)
 	rt, b := maintenanceBoard(t, m, "cancel")
 	m.Start(context.Background())
 	m.startup.Wait()
@@ -1345,7 +1348,7 @@ func TestManagerStopDuringArchiveLeavesRecoverableSources(t *testing.T) {
 	if err != nil || len(files) != 0 {
 		t.Fatalf("cancel leftovers=%v, %v", files, err)
 	}
-	recovered := newTestManager(t, root, "")
+	recovered := newTestManager(t, root)
 	recovered.Start(context.Background())
 	if op := awaitOperation(t, recovered, b.ID); op.Err != "" {
 		t.Fatal(op.Err)
@@ -1354,7 +1357,7 @@ func TestManagerStopDuringArchiveLeavesRecoverableSources(t *testing.T) {
 }
 
 func TestManagerRetireDoesNotWaitForOtherBoards(t *testing.T) {
-	m := newTestManager(t, t.TempDir(), "")
+	m := newTestManager(t, t.TempDir())
 	_, target := maintenanceBoard(t, m, "target")
 	other, _ := maintenanceBoard(t, m, "other")
 	m.Start(context.Background())
@@ -1370,7 +1373,7 @@ func TestManagerRetireDoesNotWaitForOtherBoards(t *testing.T) {
 
 func TestManagerDeleteFailureResumesOnRestart(t *testing.T) {
 	root := t.TempDir()
-	m := newTestManager(t, root, "")
+	m := newTestManager(t, root)
 	_, b := maintenanceBoard(t, m, "delete")
 	a := registeredArchive(t, m, b.ID, "blocked.zip")
 	path := filepath.Join(root, "archives", a.File)
@@ -1396,7 +1399,7 @@ func TestManagerDeleteFailureResumesOnRestart(t *testing.T) {
 	if err := os.RemoveAll(path); err != nil {
 		t.Fatal(err)
 	}
-	recovered := newTestManager(t, root, "")
+	recovered := newTestManager(t, root)
 	recovered.Start(context.Background())
 	if op := awaitOperation(t, recovered, b.ID); op.Err != "" {
 		t.Fatal(op.Err)
@@ -1411,7 +1414,7 @@ func TestManagerDeleteFailureResumesOnRestart(t *testing.T) {
 
 func TestManagerArchiveCommitFailureKeepsSourcesForRecovery(t *testing.T) {
 	root := t.TempDir()
-	m := newTestManager(t, root, "")
+	m := newTestManager(t, root)
 	rt, b := maintenanceBoard(t, m, "commit")
 	m.Start(context.Background())
 	m.startup.Wait()
@@ -1446,7 +1449,7 @@ func TestManagerArchiveCommitFailureKeepsSourcesForRecovery(t *testing.T) {
 		}
 	}
 	m.Stop()
-	recovered := newTestManager(t, root, "")
+	recovered := newTestManager(t, root)
 	recovered.Start(context.Background())
 	if op := awaitOperation(t, recovered, b.ID); op.Err != "" {
 		t.Fatal(op.Err)
@@ -1458,7 +1461,7 @@ func TestManagerArchiveCleanupFailureResumesOnRestart(t *testing.T) {
 		t.Skip("directory permissions do not restrict root")
 	}
 	root := t.TempDir()
-	m := newTestManager(t, root, "")
+	m := newTestManager(t, root)
 	rt, b := maintenanceBoard(t, m, "cleanup")
 	m.Start(context.Background())
 	m.startup.Wait()
@@ -1497,7 +1500,7 @@ func TestManagerArchiveCleanupFailureResumesOnRestart(t *testing.T) {
 	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	recovered := newTestManager(t, root, "")
+	recovered := newTestManager(t, root)
 	recovered.Start(context.Background())
 	if op := awaitOperation(t, recovered, b.ID); op.Err != "" {
 		t.Fatal(op.Err)
@@ -1510,14 +1513,14 @@ func TestManagerArchiveCleanupFailureResumesOnRestart(t *testing.T) {
 
 func TestManagerStartQueuesRecoveryBehindExistingTask(t *testing.T) {
 	root := t.TempDir()
-	original := newTestManager(t, root, "")
+	original := newTestManager(t, root)
 	_, target := maintenanceBoard(t, original, "target")
 	_, pending := maintenanceBoard(t, original, "pending")
 	original.Stop()
 	if err := original.lifecycle(pending.ID, Deleting); err != nil {
 		t.Fatal(err)
 	}
-	m := newTestManager(t, root, "")
+	m := newTestManager(t, root)
 	rt, _, err := m.Resolve(target.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -1543,7 +1546,7 @@ func TestManagerStartQueuesRecoveryBehindExistingTask(t *testing.T) {
 
 func TestManagerStartSkipsCompletedArchives(t *testing.T) {
 	root := t.TempDir()
-	original := newTestManager(t, root, "")
+	original := newTestManager(t, root)
 	_, b := maintenanceBoard(t, original, "complete")
 	if err := original.Archive(b.ID); err != nil {
 		t.Fatal(err)
@@ -1552,7 +1555,7 @@ func TestManagerStartSkipsCompletedArchives(t *testing.T) {
 		t.Fatal(op.Err)
 	}
 	original.Stop()
-	m := newTestManager(t, root, "")
+	m := newTestManager(t, root)
 	m.Start(context.Background())
 	m.mu.RLock()
 	busy, queued := m.busy, len(m.pending)
@@ -1569,7 +1572,7 @@ func TestManagerRetiredRuntimeRejectsCookieMutations(t *testing.T) {
 	for _, kind := range []string{"archive", "delete"} {
 		t.Run(kind, func(t *testing.T) {
 			root := t.TempDir()
-			m := newTestManager(t, root, "")
+			m := newTestManager(t, root)
 			rt, b := maintenanceBoard(t, m, "retire")
 			if err := rt.Fetcher.SetCookie("sid=original"); err != nil {
 				t.Fatal(err)

@@ -14,14 +14,7 @@ admin:
   session_ttl: 168h
 
 magma:
-  # 仅首次启动时使用——如已设置，会据此创建「默认画板」（从旧版本升级时也承接原有图片）；
-  # 之后在管理后台 /admin 添加和管理画板，修改这里不影响已有画板。可留空。
-  # 画板 ID 取自 magma 画板链接；接口会 302 跳转到渲染图片
-  url: "https://magma.com/api/render/<画板ID>/jpg"
-  # 所有画板共用的默认 Cookie；可在管理后台在线更新共享 Cookie，或为单个画板单独设置。
-  # 只需 AUTH_TOKEN；程序会读取 JWT 过期时间，不足 7 天时告警
-  cookie: "AUTH_TOKEN=<你的 token>"
-  # 可选额外请求头，所有画板共用；Cookie 请填在 magma.cookie，这里的 Cookie 会被忽略。
+  # 可选额外请求头，所有画板共用；Cookie 请求头会被忽略，请在管理后台更新 Cookie。
   headers:
     User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
     # Referer: "https://magma.com/"

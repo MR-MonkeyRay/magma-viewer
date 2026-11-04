@@ -9,7 +9,7 @@ import (
 // Error codes are stable keys the page translates into advice; the message
 // keeps the technical detail for admins.
 const (
-	CodeNetwork  = "network"   // could not reach magma.url
+	CodeNetwork  = "network"   // could not reach the board URL
 	CodeTimeout  = "timeout"   // reached it, but no answer in time
 	CodeAuth     = "auth"      // 401/403: the cookie is missing, expired or invalid
 	CodeHTTP     = "http"      // any other unexpected status

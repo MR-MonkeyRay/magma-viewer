@@ -26,13 +26,13 @@ type cookieOverride struct {
 
 // CookieInfo tells admins which cookie is in use.
 type CookieInfo struct {
-	Source  string    `json:"source"` // "config", "page" or "board"
+	Source  string    `json:"source"` // "none", "page" or "board"
 	Updated time.Time `json:"updated,omitzero"`
 }
 
 func (f *Fetcher) cookiePath() string { return filepath.Join(f.store.Dir(), cookieFile) }
 
-// loadCookie restores a board override independently of the shared config.
+// loadCookie restores a board override independently of shared credentials.
 func (f *Fetcher) loadCookie() {
 	data, err := os.ReadFile(f.cookiePath())
 	if errors.Is(err, os.ErrNotExist) {

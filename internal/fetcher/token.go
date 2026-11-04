@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// TokenInfo describes the JWT in the configured cookie, so its expiry can be
+// TokenInfo describes the JWT in the active cookie, so its expiry can be
 // surfaced before fetches fail.
 type TokenInfo struct {
 	Cookie  string    `json:"cookie"`

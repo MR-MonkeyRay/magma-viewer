@@ -19,7 +19,6 @@ func load(t *testing.T, yaml string) (*Config, error) {
 
 const minimal = `
 admin: {username: admin, password: secret}
-magma: {url: "https://magma.com/api/render/x/jpg"}
 `
 
 func TestLoadDefaults(t *testing.T) {
@@ -36,37 +35,18 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadWithoutMagmaURL(t *testing.T) {
-	for _, yaml := range []string{
-		`admin: {username: admin, password: secret}`,
-		`admin: {username: admin, password: secret}
-magma: {url: ""}`,
-	} {
-		c, err := load(t, yaml)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if c.Magma.URL != "" {
-			t.Fatalf("expected empty magma.url, got %q", c.Magma.URL)
-		}
+func TestRemovedMagmaCredentialsAreIgnored(t *testing.T) {
+	c, err := load(t, minimal+`magma: {url: "https://example.com", cookie: "secret"}`)
+	if err != nil || c.Magma.Timeout != 30*time.Second || c.Magma.Headers != nil {
+		t.Fatalf("removed fields affected config: %+v, %v", c.Magma, err)
 	}
 }
 
 func TestLoadRejects(t *testing.T) {
 	cases := map[string]string{
 		"placeholder password": `
-admin: {username: admin, password: change-me}
-magma: {url: "https://magma.com/x"}`,
-		"bad listen": minimal + `listen: "8080"`,
-		"url without host": `
-admin: {username: admin, password: secret}
-magma: {url: "https://"}`,
-		"bad scheme": `
-admin: {username: admin, password: secret}
-magma: {url: "ftp://magma.com/x"}`,
-		"malformed url": `
-admin: {username: admin, password: secret}
-magma: {url: "https://%zz"}`,
+admin: {username: admin, password: change-me}`,
+		"bad listen":   minimal + `listen: "8080"`,
 		"bad proxy":    minimal + `trusted_proxies: ["nope"]`,
 		"bad schedule": minimal + `schedule: "every minute"`,
 	}

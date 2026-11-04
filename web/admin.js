@@ -109,7 +109,7 @@
   }
   function cookieRow(cookie) {
     if (!cookie) return '';
-    return `<dt>${esc(t('cookie.label'))}</dt><dd>${esc(cookie.source === 'page' ? t('cookie.fromPage', { time: dateTime(cookie.updated) }) : t('cookie.fromConfig'))}</dd>`;
+    return `<dt>${esc(t('cookie.label'))}</dt><dd>${esc(cookie.source === 'page' ? t('cookie.fromPage', { time: dateTime(cookie.updated) }) : t('cookie.fromNone'))}</dd>`;
   }
   function diskRow(disk) {
     if (!disk?.total) return `<dt>${esc(t('disk.label'))}</dt><dd>${esc(t('admin.unknown'))}</dd>`;
@@ -567,7 +567,7 @@
     const updateSave = () => { save.disabled = saving || mode.value !== 'override' || !input.value.trim(); };
     mode.value = cookie.source === 'board' ? 'override' : 'shared';
     function paint() {
-      $('#board-cookie-state', container).innerHTML = stat('cookie.label', t(`admin.board.cookieSource.${cookie.source || 'config'}`)) + stat('admin.board.cookieUpdated', dateTime(cookie.updated)) + tokenRow(token);
+      $('#board-cookie-state', container).innerHTML = stat('cookie.label', t(`admin.board.cookieSource.${cookie.source || 'none'}`)) + stat('admin.board.cookieUpdated', dateTime(cookie.updated)) + tokenRow(token);
       $('#board-cookie-entry', container).hidden = mode.value !== 'override';
       updateSave();
     }

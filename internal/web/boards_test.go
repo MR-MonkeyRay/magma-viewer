@@ -509,7 +509,7 @@ func TestBoardSuggestionAndFileDefaults(t *testing.T) {
 }
 
 func TestCookieInfoAndSharedClear(t *testing.T) {
-	cfg := &config.Config{Admin: config.Admin{Username: "admin", Password: "pw", SessionTTL: time.Hour}, Magma: config.Magma{Cookie: "sid=config-secret"}}
+	cfg := &config.Config{Admin: config.Admin{Username: "admin", Password: "pw", SessionTTL: time.Hour}}
 	s, boards, _ := newTestWebServer(t, cfg, false)
 	b := createBoard(t, boards, "A", false)
 	srv := httptest.NewServer(s.Handler())
@@ -522,23 +522,19 @@ func TestCookieInfoAndSharedClear(t *testing.T) {
 			t.Fatalf("guest cookie: %s", r.Status)
 		}
 		body := decode(t, get(t, srv.URL+target, c))
-		if body["source"] != "config" || body["token"] != nil || body["override"] == true {
+		if body["source"] != "none" || body["token"] != nil || body["override"] == true {
 			t.Fatalf("cookie info: %v", body)
-		}
-		data, _ := json.Marshal(body)
-		if bytes.Contains(data, []byte("config-secret")) {
-			t.Fatalf("cookie leaked: %s", data)
 		}
 	}
 	r := sendJSON(t, http.MethodPut, srv.URL+"/api/cookie", `{"cookie":"sid=page-secret"}`, c)
 	r.Body.Close()
 	r = sendJSON(t, http.MethodDelete, srv.URL+"/api/cookie", "", c)
-	if body := decode(t, r); r.StatusCode != http.StatusOK || body["source"] != "config" {
+	if body := decode(t, r); r.StatusCode != http.StatusOK || body["source"] != "none" {
 		t.Fatalf("clear shared: %s %v", r.Status, body)
 	}
 	rt, _, _ := boards.Resolve(b.ID)
-	if rt.Fetcher.Cookie().Source != "config" {
-		t.Fatal("shared clear did not restore config inheritance")
+	if rt.Fetcher.Cookie().Source != "none" {
+		t.Fatal("shared clear did not remove credentials")
 	}
 }
 

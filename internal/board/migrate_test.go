@@ -57,11 +57,11 @@ func TestOpenMigratesLegacyLayout(t *testing.T) {
 		mtimes[name] = info.ModTime()
 	}
 	now := time.Date(2026, 11, 2, 12, 34, 56, 123, time.FixedZone("UTC+8", 8*60*60))
-	r, err := Open(root, "  https://example.com/board \n", now)
+	r, err := Open(root, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertMigrationRegistry(t, r, "https://example.com/board", now)
+	assertMigrationRegistry(t, r, now)
 	for _, name := range moved {
 		assertMigrationFile(t, filepath.Join(BoardDir(root, LegacyID), name), name)
 		assertMigrationAbsent(t, filepath.Join(root, name))
@@ -121,11 +121,11 @@ func TestOpenResumesMigration(t *testing.T) {
 				}
 			}
 			now := time.Unix(1234, 0)
-			r, err := Open(root, "", now)
+			r, err := Open(root, now)
 			if err != nil {
 				t.Fatal(err)
 			}
-			assertMigrationRegistry(t, r, "", now)
+			assertMigrationRegistry(t, r, now)
 			for _, file := range files {
 				assertMigrationFile(t, filepath.Join(BoardDir(root, LegacyID), file), file)
 				assertMigrationAbsent(t, filepath.Join(root, file))
@@ -151,7 +151,7 @@ func TestOpenConflictMovesNothing(t *testing.T) {
 			} else {
 				writeMigrationFile(t, dst, "existing destination")
 			}
-			if _, err := Open(root, "", time.Now()); err == nil || !strings.Contains(err.Error(), dst) {
+			if _, err := Open(root, time.Now()); err == nil || !strings.Contains(err.Error(), dst) {
 				t.Fatalf("conflict error = %v, want path %s", err, dst)
 			}
 			for _, name := range files {
@@ -194,7 +194,7 @@ func TestOpenImageSymlinkMovesNothing(t *testing.T) {
 			if err := os.Symlink(target, link); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := Open(root, "", time.Now()); err == nil ||
+			if _, err := Open(root, time.Now()); err == nil ||
 				!strings.Contains(err.Error(), link) || !strings.Contains(err.Error(), "manually") {
 				t.Fatalf("symlink error = %v, want path %s and manual handling instruction", err, link)
 			}
@@ -215,16 +215,16 @@ func TestOpenResumesMigrationWithOnlyArchive(t *testing.T) {
 	archive := filepath.Join(BoardDir(root, LegacyID), ".state", "archive.json")
 	writeMigrationFile(t, archive, "legacy archive")
 	now := time.Unix(1234, 0)
-	r, err := Open(root, "", now)
+	r, err := Open(root, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertMigrationRegistry(t, r, "", now)
+	assertMigrationRegistry(t, r, now)
 	loaded, err := Load(RegistryPath(root))
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertMigrationRegistry(t, loaded, "", now)
+	assertMigrationRegistry(t, loaded, now)
 	assertMigrationFile(t, archive, "legacy archive")
 	assertMigrationAbsent(t, filepath.Join(root, ".state", "archive.json"))
 }
@@ -234,7 +234,7 @@ func TestOpenWithoutLegacyData(t *testing.T) {
 	for _, name := range []string{"notes.txt", filepath.Join(".state", "cookie.json"), filepath.Join(".state", "notices.json")} {
 		writeMigrationFile(t, filepath.Join(root, name), "keep")
 	}
-	r, err := Open(root, "", time.Now())
+	r, err := Open(root, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,24 +246,6 @@ func TestOpenWithoutLegacyData(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertMigrationAbsent(t, filepath.Join(root, "boards"))
-}
-
-func TestOpenWithOnlyLegacyURL(t *testing.T) {
-	root := t.TempDir()
-	now := time.Unix(1234, 0)
-	r, err := Open(root, " https://example.com/board ", now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertMigrationRegistry(t, r, "https://example.com/board", now)
-	entries, err := os.ReadDir(BoardDir(root, LegacyID))
-	if err != nil || len(entries) != 1 || entries[0].Name() != ".state" || !entries[0].IsDir() {
-		t.Fatalf("default directory = %v, %v", entries, err)
-	}
-	entries, err = os.ReadDir(filepath.Join(BoardDir(root, LegacyID), ".state"))
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("default state directory = %v, %v", entries, err)
-	}
 }
 
 func TestOpenExistingRegistryDoesNotMigrate(t *testing.T) {
@@ -281,7 +263,7 @@ func TestOpenExistingRegistryDoesNotMigrate(t *testing.T) {
 	if err := os.Symlink(t.TempDir(), filepath.Join(root, "boards")); err != nil {
 		t.Fatal(err)
 	}
-	r, err := Open(root, "https://ignored.example.com", time.Now())
+	r, err := Open(root, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +298,7 @@ func TestOpenInvalidRegistryDoesNotMigrate(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := Open(root, "", time.Now()); err == nil {
+			if _, err := Open(root, time.Now()); err == nil {
 				t.Fatal("Open succeeded for an invalid registry")
 			}
 			assertMigrationFile(t, filepath.Join(root, "old.jpg"), "legacy image")
@@ -345,7 +327,7 @@ func TestOpenRejectsMigrationDirectorySymlinks(t *testing.T) {
 				if err := os.Symlink(target, link); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := Open(root, "", time.Now()); err == nil || !strings.Contains(err.Error(), link) {
+				if _, err := Open(root, time.Now()); err == nil || !strings.Contains(err.Error(), link) {
 					t.Fatalf("symlink error = %v, want path %s", err, link)
 				}
 				assertMigrationFile(t, filepath.Join(root, "old.jpg"), "legacy image")
@@ -384,14 +366,14 @@ func assertMigrationAbsent(t *testing.T, path string) {
 	}
 }
 
-func assertMigrationRegistry(t *testing.T, r *Registry, url string, now time.Time) {
+func assertMigrationRegistry(t *testing.T, r *Registry, now time.Time) {
 	t.Helper()
 	st := r.Snapshot()
 	if st.Version != Version || st.LegacyBoardID != LegacyID || len(st.Boards) != 1 || len(st.Archives) != 0 {
 		t.Fatalf("unexpected migrated registry: %+v", st)
 	}
 	b := st.Boards[0]
-	if b.ID != LegacyID || b.Name != "默认画板" || b.URL != url || b.Lifecycle != Active ||
+	if b.ID != LegacyID || b.Name != "默认画板" || b.URL != "" || b.Lifecycle != Active ||
 		!b.Created.Equal(now) || b.Created.Location() != time.UTC {
 		t.Fatalf("unexpected legacy board: %+v", b)
 	}

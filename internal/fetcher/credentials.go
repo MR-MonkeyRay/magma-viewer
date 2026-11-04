@@ -1,8 +1,6 @@
 package fetcher
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +15,6 @@ import (
 // Credentials is the cookie every board shares unless it has its own.
 type Credentials struct {
 	mu           sync.RWMutex
-	configCookie string
 	path         string
 	cookie       string
 	info         CookieInfo
@@ -26,28 +23,16 @@ type Credentials struct {
 }
 
 type credentialsOverride struct {
-	Cookie    string    `json:"cookie"`
-	ConfigSHA string    `json:"config_sha256"`
-	Updated   time.Time `json:"updated"`
+	Cookie  string    `json:"cookie"`
+	Updated time.Time `json:"updated"`
 }
 
-// NewCredentials loads the page override when it still belongs to configCookie.
-func NewCredentials(configCookie, path string) *Credentials {
-	c := &Credentials{
-		configCookie: configCookie,
-		path:         path,
-		cookie:       configCookie,
-		info:         CookieInfo{Source: "config"},
-		now:          time.Now,
-	}
+// NewCredentials loads the shared cookie saved from the admin page.
+func NewCredentials(path string) *Credentials {
+	c := &Credentials{path: path, info: CookieInfo{Source: "none"}, now: time.Now}
 	c.load()
 	logToken(c.Token(), c.now())
 	return c
-}
-
-func sha(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])
 }
 
 func (c *Credentials) load() {
@@ -63,13 +48,6 @@ func (c *Credentials) load() {
 		log.Printf("fetcher: ignoring unreadable shared cookie file %s: %v", c.path, err)
 		return
 	}
-	if o.ConfigSHA != sha(c.configCookie) {
-		log.Printf("fetcher: magma.cookie changed since the shared cookie was updated on the page; using the config")
-		if err := os.Remove(c.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			log.Printf("fetcher: remove stale shared cookie file %s: %v", c.path, err)
-		}
-		return
-	}
 	c.cookie = o.Cookie
 	c.info = CookieInfo{Source: "page", Updated: o.Updated}
 }
@@ -81,7 +59,7 @@ func (c *Credentials) Cookie() (string, CookieInfo) {
 	return c.cookie, c.info
 }
 
-// Set replaces the config cookie with a page override and persists it.
+// Set replaces the shared cookie and persists it.
 func (c *Credentials) Set(raw string) error {
 	cookie, err := normalizeCookie(raw)
 	if err != nil {
@@ -89,7 +67,7 @@ func (c *Credentials) Set(raw string) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	o := credentialsOverride{Cookie: cookie, ConfigSHA: sha(c.configCookie), Updated: c.now().UTC()}
+	o := credentialsOverride{Cookie: cookie, Updated: c.now().UTC()}
 	data, err := json.Marshal(o)
 	if err != nil {
 		return fmt.Errorf("encode shared cookie: %w", err)
@@ -106,15 +84,15 @@ func (c *Credentials) Set(raw string) error {
 	return nil
 }
 
-// Clear removes the page override and returns to the configured cookie.
+// Clear removes the shared cookie.
 func (c *Credentials) Clear() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := os.Remove(c.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("clear shared cookie: %w", err)
 	}
-	c.cookie = c.configCookie
-	c.info = CookieInfo{Source: "config"}
+	c.cookie = ""
+	c.info = CookieInfo{Source: "none"}
 	c.tokenAlerted = time.Time{}
 	tok, _ := tokenFromCookie(c.cookie)
 	logToken(tok, c.now())

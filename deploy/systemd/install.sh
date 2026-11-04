@@ -228,7 +228,7 @@ if "$start"; then
 fi
 printf '\nInstalled magma-viewer %s (%s).\nConfig: /etc/magma-viewer/config.yaml\nData: /var/lib/magma-viewer/images\n' "$version" "$arch"
 if "$new_config"; then
-  printf 'Edit config.yaml to set your Magma URL/cookie. The admin password and session secret were generated randomly.\n'
+  printf 'Open the admin page to add a Magma board and update its cookie. The admin password and session secret were generated randomly.\n'
 fi
 if "$start"; then
   printf 'Service started. Default URL: http://127.0.0.1:8080 (or your configured listen address).\n'

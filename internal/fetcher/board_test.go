@@ -23,9 +23,12 @@ import (
 
 func TestCookieInheritance(t *testing.T) {
 	root := t.TempDir()
-	shared := NewCredentials("sid=config", filepath.Join(root, ".state", "cookie.json"))
+	shared := NewCredentials(filepath.Join(root, ".state", "cookie.json"))
+	if err := shared.Set("sid=shared"); err != nil {
+		t.Fatal(err)
+	}
 	st, _ := store.New(filepath.Join(root, "boards", "a"))
-	f := New(config.Magma{Cookie: "sid=ignored"}, t.TempDir(), st, shared)
+	f := New(config.Magma{}, t.TempDir(), st, shared)
 	t.Cleanup(f.Drain)
 	otherStore, _ := store.New(filepath.Join(root, "boards", "b"))
 	other := New(config.Magma{}, t.TempDir(), otherStore, shared)
@@ -37,7 +40,7 @@ func TestCookieInheritance(t *testing.T) {
 			t.Fatalf("Cookie = %q, %+v; want %q, %s, %v", cookie, info, want, source, updated)
 		}
 	}
-	check(f, "sid=config", "config", time.Time{})
+	check(f, "sid=shared", "page", shared.info.Updated)
 	pageTime := time.Date(2026, 11, 2, 12, 0, 0, 1, time.UTC)
 	shared.now = func() time.Time { return pageTime }
 	if err := shared.Set("sid=page"); err != nil {
@@ -75,7 +78,7 @@ func TestCookieInheritance(t *testing.T) {
 	if err := shared.Clear(); err != nil {
 		t.Fatal(err)
 	}
-	check(f, "sid=config", "config", time.Time{})
+	check(f, "", "none", time.Time{})
 }
 
 func TestUnreadableBoardCookieIsIgnored(t *testing.T) {
@@ -85,8 +88,8 @@ func TestUnreadableBoardCookieIsIgnored(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(st.Dir(), cookieFile), []byte(data), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			f := newTestFetcher(t, config.Magma{Cookie: "sid=config"}, t.TempDir(), st)
-			if cookie, info := f.effectiveCookie(); cookie != "sid=config" || info.Source != "config" {
+			f := newTestFetcher(t, config.Magma{}, t.TempDir(), st)
+			if cookie, info := f.effectiveCookie(); cookie != "" || info.Source != "none" {
 				t.Fatalf("bad override used: %q, %+v", cookie, info)
 			}
 		})
@@ -104,11 +107,17 @@ func TestCookieHeadersUseCredentials(t *testing.T) {
 			}))
 			defer srv.Close()
 			st, _ := store.New(t.TempDir())
-			shared := NewCredentials(cookie, filepath.Join(st.Dir(), ".state", "cookie.json"))
-			cfg := config.Magma{URL: srv.URL, Cookie: "sid=ignored-config", Headers: map[string]string{
+			shared := NewCredentials(filepath.Join(st.Dir(), ".state", "cookie.json"))
+			if cookie != "" {
+				if err := shared.Set(cookie); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := config.Magma{Headers: map[string]string{
 				"Cookie": "sid=ignored-header", "cOoKiE": "sid=ignored-mixed", "X-Test": "kept",
 			}}
 			f := New(cfg, t.TempDir(), st, shared)
+			f.URL = func() string { return srv.URL }
 			t.Cleanup(f.Drain)
 			if got, err := f.Run(context.Background()); err != nil || got.Result != ResultSaved {
 				t.Fatalf("Run = %+v, %v", got, err)
@@ -131,7 +140,7 @@ func TestValidatorsStayWithTheirCookie(t *testing.T) {
 	}))
 	defer srv.Close()
 	st, _ := store.New(t.TempDir())
-	f := newTestFetcher(t, config.Magma{URL: srv.URL, Cookie: "sid=config"}, t.TempDir(), st)
+	f := newTestFetcher(t, config.Magma{}, t.TempDir(), st, srv.URL)
 	steps := []struct {
 		update      func() error
 		conditional bool
@@ -175,7 +184,10 @@ func TestCookieSnapshotSurvivesSharedUpdateDuringFetch(t *testing.T) {
 	}))
 	defer srv.Close()
 	st, _ := store.New(t.TempDir())
-	f := newTestFetcher(t, config.Magma{URL: srv.URL, Cookie: "sid=old"}, t.TempDir(), st)
+	f := newTestFetcher(t, config.Magma{}, t.TempDir(), st, srv.URL)
+	if err := f.shared.Set("sid=old"); err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan struct{})
 	go func() { f.Run(context.Background()); close(done) }()
 	<-entered
@@ -203,7 +215,7 @@ func TestRunGates(t *testing.T) {
 	for _, gate := range []string{"inactive", "window", "no_url"} {
 		t.Run(gate, func(t *testing.T) {
 			st, _ := store.New(t.TempDir())
-			f := newTestFetcher(t, config.Magma{URL: srv.URL}, t.TempDir(), st)
+			f := newTestFetcher(t, config.Magma{}, t.TempDir(), st, srv.URL)
 			var want error
 			switch gate {
 			case "inactive":
@@ -242,73 +254,6 @@ func TestRunGates(t *testing.T) {
 	}
 }
 
-func TestURLHookSelection(t *testing.T) {
-	img := pngBytes(t, color.White)
-	var fallbackHits, hookHits atomic.Int32
-	serve := func(hits *atomic.Int32) *httptest.Server {
-		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			hits.Add(1)
-			w.Write(img)
-		}))
-	}
-	fallback := serve(&fallbackHits)
-	defer fallback.Close()
-	hook := serve(&hookHits)
-	defer hook.Close()
-
-	t.Run("nil hook falls back to config", func(t *testing.T) {
-		st, _ := store.New(t.TempDir())
-		f := newTestFetcher(t, config.Magma{URL: fallback.URL}, t.TempDir(), st)
-		if got, err := f.Run(context.Background()); err != nil || got.Result != ResultSaved {
-			t.Fatalf("Run = %+v, %v", got, err)
-		}
-		if fallbackHits.Load() != 1 {
-			t.Fatalf("fallback hits = %d", fallbackHits.Load())
-		}
-	})
-
-	t.Run("hook overrides config", func(t *testing.T) {
-		st, _ := store.New(t.TempDir())
-		f := newTestFetcher(t, config.Magma{URL: fallback.URL}, t.TempDir(), st)
-		calls := 0
-		f.URL = func() string {
-			calls++
-			return hook.URL
-		}
-		if got, err := f.Run(context.Background()); err != nil || got.Result != ResultSaved {
-			t.Fatalf("Run = %+v, %v", got, err)
-		}
-		if calls != 1 || hookHits.Load() != 1 || fallbackHits.Load() != 1 {
-			t.Fatalf("hook calls=%d, hook hits=%d, fallback hits=%d", calls, hookHits.Load(), fallbackHits.Load())
-		}
-	})
-
-	t.Run("hook supplies missing config URL", func(t *testing.T) {
-		st, _ := store.New(t.TempDir())
-		f := newTestFetcher(t, config.Magma{}, t.TempDir(), st)
-		f.URL = func() string { return hook.URL }
-		if got, err := f.Run(context.Background()); err != nil || got.Result != ResultSaved {
-			t.Fatalf("Run = %+v, %v", got, err)
-		}
-		if hookHits.Load() != 2 {
-			t.Fatalf("hook hits = %d", hookHits.Load())
-		}
-	})
-
-	t.Run("empty hook suppresses config URL", func(t *testing.T) {
-		st, _ := store.New(t.TempDir())
-		f := newTestFetcher(t, config.Magma{URL: fallback.URL}, t.TempDir(), st)
-		f.URL = func() string { return "" }
-		f.RunScheduled(context.Background())
-		if _, err := f.Run(context.Background()); !errors.Is(err, ErrNoURL) {
-			t.Fatalf("Run error = %v", err)
-		}
-		if fallbackHits.Load() != 1 || len(f.History()) != 0 {
-			t.Fatalf("empty hook fetched: hits=%d history=%+v", fallbackHits.Load(), f.History())
-		}
-	})
-}
-
 func TestBusyRun(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	img := pngBytes(t, color.White)
@@ -319,7 +264,7 @@ func TestBusyRun(t *testing.T) {
 	}))
 	defer srv.Close()
 	st, _ := store.New(t.TempDir())
-	f := newTestFetcher(t, config.Magma{URL: srv.URL}, t.TempDir(), st)
+	f := newTestFetcher(t, config.Magma{}, t.TempDir(), st, srv.URL)
 	done := make(chan struct{})
 	go func() { f.Run(context.Background()); close(done) }()
 	<-entered
@@ -329,8 +274,8 @@ func TestBusyRun(t *testing.T) {
 	if !errors.Is(runErr, ErrBusy) {
 		t.Fatalf("Run error = %v", runErr)
 	}
-	if len(f.History()) != 1 || f.cfg.URL != srv.URL {
-		t.Fatalf("busy run changed state: %q, %+v", f.cfg.URL, f.History())
+	if len(f.History()) != 1 {
+		t.Fatalf("busy run changed state: %+v", f.History())
 	}
 }
 
@@ -349,7 +294,7 @@ func TestURLHookKeepsValidatorsWithActualURLAndDeduplication(t *testing.T) {
 	}))
 	defer srv.Close()
 	st, _ := store.New(t.TempDir())
-	f := newTestFetcher(t, config.Magma{URL: "http://unused.example"}, t.TempDir(), st)
+	f := newTestFetcher(t, config.Magma{}, t.TempDir(), st)
 	path := ""
 	f.URL = func() string { return srv.URL + path }
 	f.Run(context.Background())
@@ -388,7 +333,7 @@ func TestURLHookAndResetBackoffAllowScheduledRun(t *testing.T) {
 	}))
 	defer srv.Close()
 	st, _ := store.New(t.TempDir())
-	f := newTestFetcher(t, config.Magma{URL: "http://unused.example"}, t.TempDir(), st)
+	f := newTestFetcher(t, config.Magma{}, t.TempDir(), st)
 	path := "/old"
 	f.URL = func() string { return srv.URL + path }
 	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
@@ -422,7 +367,7 @@ func TestDrainWaitsForEnsure(t *testing.T) {
 	// Channels and synctest keep this independent of image size and CPU speed.
 	synctest.Test(t, func(t *testing.T) {
 		st, _ := store.New(t.TempDir())
-		f := newTestFetcher(t, config.Magma{URL: "http://board.example"}, t.TempDir(), st)
+		f := newTestFetcher(t, config.Magma{}, t.TempDir(), st, "http://board.example")
 		img := pngBytes(t, color.White)
 		releaseEnsure := make(chan struct{})
 		f.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -458,7 +403,7 @@ func TestDrainWaitsForEnsure(t *testing.T) {
 func TestFetcherDoesNotAlertForSharedToken(t *testing.T) {
 	st, _ := store.New(t.TempDir())
 	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
-	f := newTestFetcher(t, config.Magma{Cookie: "AUTH_TOKEN=" + jwt(now.Add(time.Hour))}, t.TempDir(), st)
+	f := newTestFetcher(t, config.Magma{}, t.TempDir(), st)
 	f.now = func() time.Time { return now }
 	alerts := 0
 	alert := func(string, string) { alerts++ }
@@ -498,8 +443,8 @@ func TestFetcherDoesNotAlertForSharedToken(t *testing.T) {
 
 func TestSharedCookieUpdateDropsOldOutageOnRestart(t *testing.T) {
 	st, _ := store.New(t.TempDir())
-	cfg := config.Magma{URL: "http://127.0.0.1:1", Timeout: time.Second}
-	f := newTestFetcher(t, cfg, t.TempDir(), st)
+	cfg := config.Magma{Timeout: time.Second}
+	f := newTestFetcher(t, cfg, t.TempDir(), st, "http://127.0.0.1:1")
 	clock := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
 	f.now = func() time.Time { return clock }
 	f.shared.now = func() time.Time { return clock }
@@ -514,7 +459,7 @@ func TestSharedCookieUpdateDropsOldOutageOnRestart(t *testing.T) {
 	if !f.Status().RetryAt.IsZero() || f.Status().Failures != 3 {
 		t.Fatalf("ResetBackoff = %+v", f.Status())
 	}
-	g := newTestFetcher(t, cfg, t.TempDir(), st)
+	g := newTestFetcher(t, cfg, t.TempDir(), st, "http://127.0.0.1:1")
 	if g.Status().Failures != 0 || !g.Status().RetryAt.IsZero() || len(g.History()) != 3 {
 		t.Fatalf("old shared cookie failures restored: %+v, %+v", g.Status(), g.History())
 	}
@@ -522,7 +467,7 @@ func TestSharedCookieUpdateDropsOldOutageOnRestart(t *testing.T) {
 
 func TestResetBackoffDoesNotWaitForOldCookieFetch(t *testing.T) {
 	st, _ := store.New(t.TempDir())
-	f := newTestFetcher(t, config.Magma{URL: "http://board.example"}, t.TempDir(), st)
+	f := newTestFetcher(t, config.Magma{}, t.TempDir(), st, "http://board.example")
 	f.status.Failures = alertAfter - 1
 	f.status.RetryAt = time.Now().Add(time.Hour)
 	entered, release := make(chan struct{}), make(chan struct{})

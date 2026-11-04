@@ -41,10 +41,8 @@ type Admin struct {
 	SessionTTL    time.Duration `yaml:"session_ttl"`
 }
 
-// Magma configures the source; its optional URL seeds the default board on first startup.
+// Magma configures requests shared by all boards.
 type Magma struct {
-	URL     string            `yaml:"url"`
-	Cookie  string            `yaml:"cookie"`
 	Headers map[string]string `yaml:"headers"`
 	Timeout time.Duration     `yaml:"timeout"`
 }
@@ -117,11 +115,6 @@ func (c *Config) validate() error {
 	}
 	if _, _, err := net.SplitHostPort(c.Listen); err != nil {
 		errs = append(errs, fmt.Errorf("invalid listen %q: %w", c.Listen, err))
-	}
-	if c.Magma.URL != "" {
-		if u, err := url.Parse(c.Magma.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			errs = append(errs, errors.New("magma.url must be an http:// or https:// URL with a host"))
-		}
 	}
 	if w := c.Notify.Webhook; w != "" {
 		if u, err := url.Parse(w); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
