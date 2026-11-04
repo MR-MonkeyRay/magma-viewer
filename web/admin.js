@@ -717,7 +717,7 @@
               else { setUnsavedGuard(); await navigate(operation.kind === 'archive' ? '#archives' : '#boards'); toast(t(operation.kind === 'archive' ? 'admin.board.archived' : 'admin.board.deleted'), 'ok'); }
               return;
             }
-            await refresh(); paintOperation();
+            // Boards and overview are refreshed by refreshMaintenance below; this loop only tracks progress.
           } catch (err) { if (context.isCurrent()) { error.textContent = err.message; error.hidden = false; } }
           if (context.isCurrent()) routeTimer(context, poll, 1000);
         }
