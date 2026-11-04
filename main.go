@@ -73,19 +73,23 @@ func run(configPath string) error {
 		log.Printf("WARNING admin.session_secret is empty: a random key is used and every restart logs the admin out")
 	}
 
-	creds := fetcher.NewCredentials(filepath.Join(cfg.Storage.Dir, ".state", "cookie.json"))
+	creds, err := sharedCredentials(cfg)
+	if err != nil {
+		return err
+	}
 	n := notify.New(cfg.Notify)
 	var alert func(event, message string)
 	if n != nil {
 		alert = n.Send
 	}
 	mgr, err := board.NewManager(board.Options{
-		Root:     cfg.Storage.Dir,
-		TempDir:  cfg.Storage.TempDir,
-		Magma:    cfg.Magma,
-		Schedule: cfg.Schedule,
-		Shared:   creds,
-		Alert:    alert,
+		Root:      cfg.Storage.Dir,
+		LegacyURL: cfg.Magma.URL,
+		TempDir:   cfg.Storage.TempDir,
+		Magma:     cfg.Magma,
+		Schedule:  cfg.Schedule,
+		Shared:    creds,
+		Alert:     alert,
 	})
 	if err != nil {
 		return fmt.Errorf("open boards: %w", err)
@@ -134,6 +138,24 @@ func run(configPath string) error {
 	}
 	<-drained
 	return nil
+}
+
+// sharedCredentials migrates the legacy cookie before boards.json commits the
+// upgrade, so a failed migration or interrupted startup can be retried.
+func sharedCredentials(cfg *config.Config) (*fetcher.Credentials, error) {
+	_, err := os.Lstat(board.RegistryPath(cfg.Storage.Dir))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("check board registry: %w", err)
+	}
+	creds := fetcher.NewCredentials(filepath.Join(cfg.Storage.Dir, ".state", "cookie.json"))
+	if err == nil {
+		if cfg.Magma.URL != "" || cfg.Magma.Cookie != "" {
+			log.Printf("WARNING magma.url and magma.cookie are ignored: boards and cookies are managed in /admin; remove these legacy keys from config.yaml")
+		}
+	} else if err := creds.MigrateLegacy(cfg.Magma.Cookie); err != nil {
+		return nil, fmt.Errorf("migrate legacy cookie: %w", err)
+	}
+	return creds, nil
 }
 
 // shutdown drains HTTP requests and board work concurrently within one deadline.

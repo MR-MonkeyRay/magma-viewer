@@ -34,17 +34,21 @@
 cp deploy/compose/config.example.yaml deploy/compose/config.yaml
 ```
 
-编辑 `deploy/compose/config.yaml`：将 `admin.password` 改为自己的密码；将 `magma.url` 和 `magma.cookie` 配置为自己的画板地址和凭据。不要把配置文件或 Cookie 提交到公开仓库。
+编辑 `deploy/compose/config.yaml`：将 `admin.password` 改为自己的密码。不要把配置文件或 Cookie 提交到公开仓库。
 
 ```bash
 docker compose -f deploy/compose/docker-compose.yml up -d
 ```
 
-打开 `http://localhost:8080` 浏览图片，访问 `http://localhost:8080/admin` 管理画板。首次抓取需要有效的画板地址和 Cookie。
+1. 打开 `http://localhost:8080/admin`，使用管理员账号登录。
+2. 添加画板，填写 Magma 画板地址。
+3. 保存 Cookie。
+4. 打开 `http://localhost:8080` 浏览图片。
 
 ## 配置与维护
 
 - 配置样例：[deploy/compose/config.example.yaml](./deploy/compose/config.example.yaml)。`schedule` 控制默认抓取频率，也可在管理后台为画板单独设置。
+- 从旧版单画板升级时，若旧 `config.yaml` 仍含 `magma.url` / `magma.cookie`，新版首次启动会自动迁移：地址成为「默认画板」的地址，Cookie 成为共享 Cookie。迁移后这两项不再使用，可从 `config.yaml` 中删除。
 - 数据保存在 `deploy/compose/images/`。备份时保留整个目录，包括其中的状态和归档数据；配置文件也应单独安全备份。
 - 镜像默认使用 `latest`；可在 `deploy/compose/.env` 中设置 `MAGMA_VIEWER_TAG` 固定版本。
 - Linux systemd 安装脚本和样例位于 [deploy/systemd/](./deploy/systemd/)；反向代理配置说明见 [deploy/nginx/README.md](./deploy/nginx/README.md)。

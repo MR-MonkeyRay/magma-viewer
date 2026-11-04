@@ -21,7 +21,7 @@ func BoardDir(root, id string) string { return filepath.Join(root, "boards", id)
 
 // Open loads <root>/.state/boards.json, migrating a single-board layout into
 // boards/default first when the registry does not exist yet.
-func Open(root string, now time.Time) (*Registry, error) {
+func Open(root, legacyURL string, now time.Time) (*Registry, error) {
 	path := RegistryPath(root)
 	if _, err := os.Lstat(path); err == nil {
 		return Load(path)
@@ -55,7 +55,7 @@ func Open(root string, now time.Time) (*Registry, error) {
 		}
 	}
 	st := State{Version: Version}
-	if len(names) == 0 {
+	if len(names) == 0 && legacyURL == "" {
 		return Create(path, st)
 	}
 
@@ -99,7 +99,7 @@ func Open(root string, now time.Time) (*Registry, error) {
 	st.LegacyBoardID = LegacyID
 	st.Boards = []Board{{
 		ID:        LegacyID,
-		Settings:  Settings{Name: "默认画板"},
+		Settings:  Settings{Name: "默认画板", URL: strings.TrimSpace(legacyURL)},
 		Lifecycle: Active,
 		Created:   now.UTC(),
 	}}

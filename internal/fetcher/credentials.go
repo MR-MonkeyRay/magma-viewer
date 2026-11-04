@@ -1,6 +1,7 @@
 package fetcher
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +34,27 @@ func NewCredentials(path string) *Credentials {
 	c.load()
 	logToken(c.Token(), c.now())
 	return c
+}
+
+// MigrateLegacy preserves a matching v0.2.x page override; otherwise it saves
+// the legacy config cookie. Call only before the first board registry is created.
+func (c *Credentials) MigrateLegacy(cookie string) error {
+	if cookie == "" {
+		return nil
+	}
+	data, err := os.ReadFile(c.path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read legacy cookie: %w", err)
+	}
+	if err == nil {
+		var o struct {
+			ConfigSHA string `json:"config_sha256"`
+		}
+		if json.Unmarshal(data, &o) == nil && o.ConfigSHA == fmt.Sprintf("%x", sha256.Sum256([]byte(cookie))) {
+			return nil
+		}
+	}
+	return c.Set(cookie)
 }
 
 func (c *Credentials) load() {

@@ -22,13 +22,14 @@ import (
 )
 
 type Options struct {
-	Root     string
-	TempDir  string
-	Magma    config.Magma
-	Schedule string
-	Shared   *fetcher.Credentials
-	Alert    func(event, message string)
-	Now      func() time.Time
+	Root      string
+	TempDir   string
+	Magma     config.Magma
+	LegacyURL string
+	Schedule  string
+	Shared    *fetcher.Credentials
+	Alert     func(event, message string)
+	Now       func() time.Time
 }
 
 type Runtime struct {
@@ -94,7 +95,7 @@ func NewManager(o Options) (*Manager, error) {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	r, err := Open(o.Root, o.Now())
+	r, err := Open(o.Root, o.LegacyURL, o.Now())
 	if err != nil {
 		return nil, err
 	}

@@ -14,6 +14,9 @@ admin:
   session_ttl: 168h
 
 magma:
+  # 以下旧配置项仅用于首次升级迁移；迁移后由管理后台管理，并应从 config.yaml 删除。
+  # url: "https://magma.com/..."
+  # cookie: "..."
   # 可选额外请求头，所有画板共用；Cookie 请求头会被忽略，请在管理后台更新 Cookie。
   headers:
     User-Agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"

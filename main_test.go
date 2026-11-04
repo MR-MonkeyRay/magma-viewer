@@ -1,10 +1,107 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"log"
+	"os"
+	"strings"
 	"testing"
 	"time"
+
+	"magma-viewer/internal/board"
+	"magma-viewer/internal/config"
 )
+
+func TestSharedCredentialsLegacyMigration(t *testing.T) {
+	root := t.TempDir()
+	cfg := &config.Config{
+		Storage:  config.Storage{Dir: root, TempDir: t.TempDir()},
+		Magma:    config.Magma{URL: "https://example.com/legacy", Cookie: "sid=config"},
+		Schedule: "* * * * *",
+	}
+	for range 2 { // Retry a startup interrupted before registry creation.
+		creds, err := sharedCredentials(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cookie, _ := creds.Cookie(); cookie != cfg.Magma.Cookie {
+			t.Fatalf("shared cookie = %q", cookie)
+		}
+		if _, err := os.Stat(board.RegistryPath(root)); !os.IsNotExist(err) {
+			t.Fatalf("cookie migration created registry: %v", err)
+		}
+	}
+	creds, err := sharedCredentials(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := board.NewManager(board.Options{
+		Root: root, TempDir: cfg.Storage.TempDir, LegacyURL: cfg.Magma.URL,
+		Magma: cfg.Magma, Schedule: cfg.Schedule, Shared: creds,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Stop()
+	if boards := mgr.List(true); len(boards) != 1 || boards[0].URL != cfg.Magma.URL {
+		t.Fatalf("migrated boards = %+v", boards)
+	}
+
+	// Subsequent starts keep admin-managed credentials and warn once even if
+	// the legacy config values have changed.
+	if err := creds.Set("sid=admin"); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Magma.Cookie = "sid=changed-config"
+	cfg.Magma.URL = "https://example.com/changed-config"
+	var logs bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previous)
+	creds, err = sharedCredentials(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cookie, _ := creds.Cookie(); cookie != "sid=admin" {
+		t.Fatalf("existing registry replaced shared cookie: %q", cookie)
+	}
+	if got := logs.String(); strings.Count(got, "WARNING") != 1 || !strings.Contains(got, "magma.url and magma.cookie are ignored") || !strings.Contains(got, "/admin") || !strings.Contains(got, "config.yaml") {
+		t.Fatalf("legacy warning = %q", got)
+	}
+	if err := creds.Clear(); err != nil {
+		t.Fatal(err)
+	}
+	creds, err = sharedCredentials(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cookie, _ := creds.Cookie(); cookie != "" {
+		t.Fatalf("existing registry resurrected cleared cookie: %q", cookie)
+	}
+}
+
+func TestSharedCredentialsLegacyFailureLeavesRegistryAbsent(t *testing.T) {
+	root := t.TempDir()
+	cfg := &config.Config{
+		Storage: config.Storage{Dir: root},
+		Magma:   config.Magma{Cookie: "sid="},
+	}
+	if _, err := sharedCredentials(cfg); err == nil {
+		t.Fatal("invalid legacy cookie did not fail migration")
+	}
+	if _, err := os.Stat(board.RegistryPath(root)); !os.IsNotExist(err) {
+		t.Fatalf("failed cookie migration created registry: %v", err)
+	}
+	cfg.Magma.Cookie = "sid=fixed"
+	creds, err := sharedCredentials(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cookie, _ := creds.Cookie(); cookie != cfg.Magma.Cookie {
+		t.Fatalf("retried cookie = %q", cookie)
+	}
+}
 
 func waitForShutdown(t *testing.T, ch <-chan struct{}) {
 	t.Helper()

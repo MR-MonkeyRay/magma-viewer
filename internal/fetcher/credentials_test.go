@@ -1,6 +1,8 @@
 package fetcher
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +11,66 @@ import (
 	"testing"
 	"time"
 )
+
+func TestCredentialsMigrateLegacy(t *testing.T) {
+	const legacy = "sid=config"
+	updated := time.Date(2026, 11, 2, 12, 34, 56, 0, time.UTC)
+	matching, err := json.Marshal(struct {
+		Cookie    string    `json:"cookie"`
+		ConfigSHA string    `json:"config_sha256"`
+		Updated   time.Time `json:"updated"`
+	}{"sid=page", fmt.Sprintf("%x", sha256.Sum256([]byte(legacy))), updated})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name string
+		file string
+		want string
+	}{
+		{"missing file", "", legacy},
+		{"matching override", string(matching), "sid=page"},
+		{"config changed", `{"cookie":"sid=old","config_sha256":"old"}`, legacy},
+		{"unreadable override", `{`, legacy},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "cookie.json")
+			if tt.file != "" {
+				if err := os.WriteFile(path, []byte(tt.file), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			c := NewCredentials(path)
+			if err := c.MigrateLegacy(legacy); err != nil {
+				t.Fatal(err)
+			}
+			if cookie, _ := c.Cookie(); cookie != tt.want {
+				t.Fatalf("Cookie = %q, want %q", cookie, tt.want)
+			}
+			restarted := NewCredentials(path)
+			if cookie, _ := restarted.Cookie(); cookie != tt.want {
+				t.Fatalf("restarted Cookie = %q, want %q", cookie, tt.want)
+			}
+			if tt.name == "matching override" {
+				data, err := os.ReadFile(path)
+				if err != nil || string(data) != tt.file {
+					t.Fatalf("matching cookie file changed: %q, %v", data, err)
+				}
+			}
+		})
+	}
+}
+
+func TestCredentialsMigrateEmptyLegacyDoesNothing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cookie.json")
+	c := NewCredentials(path)
+	if err := c.MigrateLegacy(""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("empty legacy cookie created file: %v", err)
+	}
+}
 
 func TestCredentialsSetClearAndRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".state", "cookie.json")

@@ -35,10 +35,35 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
-func TestRemovedMagmaCredentialsAreIgnored(t *testing.T) {
-	c, err := load(t, minimal+`magma: {url: "https://example.com", cookie: "secret"}`)
-	if err != nil || c.Magma.Timeout != 30*time.Second || c.Magma.Headers != nil {
-		t.Fatalf("removed fields affected config: %+v, %v", c.Magma, err)
+func TestLoadLegacyMagmaFields(t *testing.T) {
+	c, err := load(t, minimal+`magma: {url: "https://example.com/board", cookie: "legacy-cookie"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Magma.URL != "https://example.com/board" || c.Magma.Cookie != "legacy-cookie" {
+		t.Fatalf("legacy magma fields: %+v", c.Magma)
+	}
+}
+
+func TestLegacyMagmaURLValidation(t *testing.T) {
+	for name, yaml := range map[string]string{
+		"empty": minimal + `magma: {url: ""}`,
+		"http":  minimal + `magma: {url: "http://example.com/board"}`,
+		"https": minimal + `magma: {url: "https://example.com/board"}`,
+	} {
+		if _, err := load(t, yaml); err != nil {
+			t.Errorf("%s: rejected: %v", name, err)
+		}
+	}
+
+	for name, yaml := range map[string]string{
+		"relative": minimal + `magma: {url: "/board"}`,
+		"no host":  minimal + `magma: {url: "https://"}`,
+		"non-http": minimal + `magma: {url: "ftp://example.com/board"}`,
+	} {
+		if _, err := load(t, yaml); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }
 
