@@ -5,6 +5,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,35 @@ import (
 	"magma-viewer/internal/board"
 	"magma-viewer/internal/config"
 )
+
+func TestStorageDir(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		config  string
+		want    string
+		wantErr bool
+	}{
+		{name: "flow mapping", config: "storage: {dir: /custom, temp_dir: /tmp}\n", want: "/custom\n"},
+		{name: "quoted keys", config: "\"storage\": {\"dir\": /quoted}\n", want: "/quoted\n"},
+		{name: "default", want: "/data/images\n"},
+		{name: "invalid config", config: "storage: [\n", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(path, []byte("admin: {username: admin, password: test-password}\n"+tc.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			err := storageDir(path, &out)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("storageDir() error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if got := out.String(); got != tc.want {
+				t.Fatalf("storageDir() output = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestSharedCredentialsLegacyMigration(t *testing.T) {
 	root := t.TempDir()

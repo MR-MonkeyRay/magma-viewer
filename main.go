@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -54,10 +55,25 @@ func main() {
 		}
 		fmt.Println("config ok")
 		return
+	case "storage-dir":
+		if err := storageDir(*configPath, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
 	}
 	if err := run(*configPath); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func storageDir(configPath string, out io.Writer) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, cfg.Storage.Dir)
+	return err
 }
 
 func run(configPath string) error {

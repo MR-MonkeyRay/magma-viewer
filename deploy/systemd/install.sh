@@ -142,27 +142,10 @@ if [[ ! -e /etc/magma-viewer/config.yaml ]]; then
 fi
 install -m 0644 -o root -g magma-viewer "$work/package/config.example.yaml" /etc/magma-viewer/config.example.yaml
 
-# checkconfig only validates, so read the storage.dir scalar from the service config.
-storage_dir=/var/lib/magma-viewer/images
-in_storage=false
-while IFS= read -r line || [[ -n "$line" ]]; do
-  if [[ "$line" =~ ^storage:[[:space:]]*(#.*)?$ ]]; then
-    in_storage=true
-    continue
-  fi
-  [[ "$line" =~ ^[^[:space:]#] ]] && in_storage=false
-  if "$in_storage" && [[ "$line" =~ ^[[:space:]]+dir:[[:space:]]*(.*)$ ]]; then
-    value=${BASH_REMATCH[1]}
-    case "$value" in
-      \"*) value=${value#\"}; value=${value%%\"*} ;;
-      \'*) value=${value#\'}; value=${value%%\'*} ;;
-      \#*) value='' ;;
-      *) value=${value%%[[:space:]]#*}; value=${value%"${value##*[![:space:]]}"} ;;
-    esac
-    [[ -n "$value" ]] && storage_dir=$value
-    break
-  fi
-done < /etc/magma-viewer/config.yaml
+# Use the new binary's config loader so YAML syntax and defaults match the service.
+if ! storage_dir=$("$work/package/magma-viewer" -config /etc/magma-viewer/config.yaml storage-dir 2>"$work/storage-dir.err"); then
+  fail "Could not determine storage.dir from /etc/magma-viewer/config.yaml: $(<"$work/storage-dir.err")"
+fi
 boards_registry="$storage_dir/.state/boards.json"
 had_boards_registry=false
 [[ -e "$boards_registry" ]] && had_boards_registry=true
