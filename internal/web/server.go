@@ -49,6 +49,12 @@ type Server struct {
 		mu      sync.Mutex
 		byBoard map[string]*overviewCache
 	}
+	adminOverview struct {
+		mu          sync.Mutex
+		built       time.Time
+		generations map[string]uint64
+		body        map[string]any
+	}
 	ready struct {
 		mu      sync.Mutex
 		expires time.Time
@@ -60,6 +66,12 @@ type Server struct {
 	Version string
 	// Notifier sends test alerts from the admin page; nil when no webhook is configured.
 	Notifier *notify.Notifier
+}
+
+func (s *Server) invalidateOverview() {
+	s.adminOverview.mu.Lock()
+	s.adminOverview.body = nil
+	s.adminOverview.mu.Unlock()
 }
 
 // Go's built-in table lacks woff2, and slim images ship no /etc/mime.types.
@@ -506,6 +518,7 @@ func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	s.invalidateOverview()
 	s.writeStatus(w, rt)
 }
 
@@ -552,6 +565,7 @@ func (s *Server) handleSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "schedule_save_failed", "保存定时任务状态失败")
 		return
 	}
+	s.invalidateOverview()
 	s.writeStatus(w, rt)
 }
 

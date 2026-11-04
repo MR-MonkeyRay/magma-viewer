@@ -3,6 +3,7 @@ package web
 import (
 	"errors"
 	"log"
+	"maps"
 	"net/http"
 	"os"
 	"slices"
@@ -85,8 +86,37 @@ func (s *Server) handleBoards(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminOverview(w http.ResponseWriter, _ *http.Request) {
-	boards := s.boards.List(true)
-	archives := s.boards.Archives()
+	s.adminOverview.mu.Lock()
+	generations := make(map[string]uint64)
+	for _, b := range s.boards.All() {
+		generations[b.ID] = 0 // Track inactive board IDs too, so removals invalidate the cache.
+		if b.Lifecycle == board.Active {
+			if rt, _, err := s.boards.Resolve(b.ID); err == nil {
+				generations[b.ID] = rt.Store.Generation()
+			}
+		}
+	}
+	if s.adminOverview.body == nil || time.Since(s.adminOverview.built) > 30*time.Second || !maps.Equal(generations, s.adminOverview.generations) {
+		boards := s.boards.List(true)
+		archives := s.boards.Archives()
+		d := diskSpace(s.cfg.Storage.Dir)
+		if d != nil {
+			for _, b := range boards {
+				d.Archive += b.Bytes
+			}
+		}
+		_, cookie := s.creds.Cookie()
+		s.adminOverview.body = map[string]any{
+			"boards": boards, "shared_cookie": cookie, "shared_token": tokenInfo(s.creds.Token()),
+			"notify": s.Notifier != nil, "schedule": s.cfg.Schedule, "disk": d, "version": s.Version,
+			"archives": map[string]any{"count": len(archives), "bytes": archiveBytes(archives)},
+		}
+		s.adminOverview.generations = generations
+		s.adminOverview.built = time.Now()
+	}
+	body := maps.Clone(s.adminOverview.body)
+	s.adminOverview.mu.Unlock()
+
 	var maintenance *board.Operation
 	for _, b := range s.boards.All() {
 		if op, ok := s.boards.Operation(b.ID); ok && op.Finished.IsZero() {
@@ -94,19 +124,8 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, _ *http.Request) {
 			break
 		}
 	}
-	d := diskSpace(s.cfg.Storage.Dir)
-	if d != nil {
-		for _, b := range boards {
-			d.Archive += b.Bytes
-		}
-	}
-	_, cookie := s.creds.Cookie()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"boards": boards, "shared_cookie": cookie, "shared_token": tokenInfo(s.creds.Token()),
-		"notify": s.Notifier != nil, "schedule": s.cfg.Schedule, "disk": d, "version": s.Version,
-		"archives":    map[string]any{"count": len(archives), "bytes": archiveBytes(archives)},
-		"maintenance": maintenance,
-	})
+	body["maintenance"] = maintenance
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) handleAdminBoards(w http.ResponseWriter, _ *http.Request) {
@@ -153,6 +172,7 @@ func (s *Server) handleArchiveBoard(w http.ResponseWriter, r *http.Request) {
 		writeBoardError(w, err)
 		return
 	}
+	s.invalidateOverview()
 	op, _ := s.boards.Operation(id)
 	writeJSON(w, http.StatusAccepted, map[string]any{"operation": op})
 }
@@ -169,6 +189,7 @@ func (s *Server) handleDeleteBoard(w http.ResponseWriter, r *http.Request) {
 		writeBoardError(w, err)
 		return
 	}
+	s.invalidateOverview()
 	op, _ := s.boards.Operation(id)
 	writeJSON(w, http.StatusAccepted, map[string]any{"operation": op})
 }
@@ -222,6 +243,7 @@ func (s *Server) handleDeleteArchive(w http.ResponseWriter, r *http.Request) {
 		writeArchiveError(w, err)
 		return
 	}
+	s.invalidateOverview()
 	writeJSON(w, http.StatusOK, map[string]any{"items": s.boards.Archives()})
 }
 
@@ -251,6 +273,7 @@ func (s *Server) handleSaveBoard(w http.ResponseWriter, r *http.Request) {
 		writeBoardError(w, err)
 		return
 	}
+	s.invalidateOverview()
 	writeJSON(w, status, summary)
 }
 
@@ -351,6 +374,7 @@ func (s *Server) handleCookie(w http.ResponseWriter, r *http.Request) {
 		writeCookieError(w, err)
 		return
 	}
+	s.invalidateOverview()
 	writeJSON(w, http.StatusOK, s.cookieInfo(rt))
 }
 
@@ -373,6 +397,7 @@ func (s *Server) handleDeleteCookie(w http.ResponseWriter, r *http.Request) {
 		writeCookieError(w, err)
 		return
 	}
+	s.invalidateOverview()
 	writeJSON(w, http.StatusOK, s.cookieInfo(rt))
 }
 
