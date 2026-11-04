@@ -1,8 +1,11 @@
 package store
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/png"
@@ -373,6 +376,48 @@ func absDiff(a, b uint8) uint8 {
 		return a - b
 	}
 	return b - a
+}
+
+func TestOversizedImageIsUndecodable(t *testing.T) {
+	// A valid RGB PNG header declaring 10 billion pixels. Omit IDAT so even
+	// a regressed implementation cannot allocate the declared pixel buffer.
+	data := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 25)...)
+	binary.BigEndian.PutUint32(data[8:12], 13)
+	copy(data[12:16], "IHDR")
+	binary.BigEndian.PutUint32(data[16:20], 100000)
+	binary.BigEndian.PutUint32(data[20:24], 100000)
+	data[24], data[25] = 8, 2 // 8-bit RGB
+	binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || cfg.Width != 100000 || cfg.Height != 100000 {
+		t.Fatalf("invalid test header: %+v, %v", cfg, err)
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "bomb.png")
+	if err := os.WriteFile(src, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Ensure("bomb.png"); !errors.Is(err, errUndecodable) || !strings.Contains(err.Error(), "pixel limit") {
+		t.Fatalf("expected rejection before full decode: %v", err)
+	}
+	if _, ok := s.undecoded.Load("bomb.png"); !ok {
+		t.Fatal("oversized image rejection not remembered")
+	}
+	for _, size := range []Size{Small, Preview} {
+		if _, err := s.Thumb("bomb.png", size); !errors.Is(err, errUndecodable) {
+			t.Fatalf("Thumb(%v): %v", size, err)
+		}
+	}
+	if p, err := s.Path("bomb.png"); err != nil || p != src {
+		t.Fatalf("original unavailable: %q, %v", p, err)
+	}
+	if got, err := os.ReadFile(src); err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("original changed: %v", err)
+	}
 }
 
 func TestUndecodableImageIsNotRetriedUntilChanged(t *testing.T) {

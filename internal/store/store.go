@@ -766,9 +766,27 @@ func pixelReader(img image.Image) func(x, y int) (uint8, uint8, uint8) {
 	}
 }
 
+// maxDecodePixels bounds memory used by a single source image decode.
+const maxDecodePixels = 64 << 20
+
 func makeThumbs(src, previewDst, smallDst string) error {
 	f, err := os.Open(src)
 	if err != nil {
+		return err
+	}
+	cfg, _, err := image.DecodeConfig(f)
+	if err != nil {
+		f.Close()
+		return fmt.Errorf("%w: %v", errUndecodable, err)
+	}
+	w, h := int64(cfg.Width), int64(cfg.Height)
+	// Bound each side first so the product cannot overflow int64.
+	if w <= 0 || h <= 0 || w > maxDecodePixels || h > maxDecodePixels || w*h > maxDecodePixels {
+		f.Close()
+		return fmt.Errorf("%w: image dimensions %dx%d exceed pixel limit %d", errUndecodable, w, h, maxDecodePixels)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		f.Close()
 		return err
 	}
 	img, _, err := image.Decode(f)
