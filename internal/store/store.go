@@ -42,6 +42,10 @@ var (
 	namePattern = regexp.MustCompile(`^(\d{8}-\d{6})_([0-9a-f]{32})\.[a-z]+$`)
 
 	allowedExt = map[string]bool{".jpg": true, ".jpeg": true, ".png": true, ".webp": true, ".gif": true}
+
+	// Decoding a 4K image needs ~35 MB. This is shared across all stores so
+	// several boards cannot multiply decode memory.
+	thumbSem = make(chan struct{}, min(2, runtime.NumCPU()))
 )
 
 type Item struct {
@@ -69,7 +73,6 @@ type Store struct {
 	gen    uint64    // bumped on every index change
 	synced time.Time // when the last full rescan finished
 
-	thumbSem   chan struct{}
 	thumbLocks sync.Map // name -> *sync.Mutex, held while rendering
 	undecoded  sync.Map // name -> fileStamp of a source that failed to decode, so it is not retried on every request
 }
@@ -79,8 +82,6 @@ func New(dir string) (*Store, error) {
 		dir:      dir,
 		thumbDir: filepath.Join(dir, ".thumbs"),
 		tmpDir:   filepath.Join(dir, ".state", "tmp"),
-		// Decoding a 4K image needs ~35 MB, so keep concurrency low.
-		thumbSem: make(chan struct{}, min(2, runtime.NumCPU())),
 	}
 	for _, d := range []string{s.thumbDir, s.tmpDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -503,6 +504,11 @@ const (
 
 var sizeEdge = map[Size]int{Small: 480, Preview: 1600}
 
+func previewIsOriginal(it Item) bool {
+	return strings.EqualFold(filepath.Ext(it.Name), ".gif") ||
+		(it.W > 0 && it.H > 0 && max(it.W, it.H) <= sizeEdge[Preview])
+}
+
 func (s *Store) cachePath(name string, size Size) string {
 	if size == Preview {
 		return filepath.Join(s.thumbDir, name+".m.jpg")
@@ -518,8 +524,7 @@ func (s *Store) Thumb(name string, size Size) (string, error) {
 		return "", ErrNotFound
 	}
 	src := filepath.Join(s.dir, name)
-	if size == Preview && (strings.EqualFold(filepath.Ext(name), ".gif") ||
-		(it.W > 0 && max(it.W, it.H) <= sizeEdge[Preview])) {
+	if size == Preview && previewIsOriginal(it) {
 		return src, nil
 	}
 	dst := s.cachePath(name, size)
@@ -536,7 +541,11 @@ func (s *Store) Thumb(name string, size Size) (string, error) {
 func (s *Store) Ensure(name string) error {
 	src := filepath.Join(s.dir, name)
 	small, preview := s.cachePath(name, Small), s.cachePath(name, Preview)
-	if fresh(small, src) && fresh(preview, src) {
+	if it, ok := s.Get(name); ok && previewIsOriginal(it) {
+		_ = os.Remove(preview) // best effort: remove renditions no longer used
+		preview = ""
+	}
+	if fresh(small, src) && (preview == "" || fresh(preview, src)) {
 		return nil
 	}
 	info, err := os.Stat(src)
@@ -559,15 +568,15 @@ func (s *Store) Ensure(name string) error {
 		// a request racing past this only repeats an idempotent render.
 		s.thumbLocks.CompareAndDelete(name, mu)
 	}()
-	if fresh(small, src) && fresh(preview, src) {
+	if fresh(small, src) && (preview == "" || fresh(preview, src)) {
 		return nil
 	}
 	if s.knownUndecodable(name, stamp) { // decided by whoever held the lock before us
 		return fmt.Errorf("thumbnail %s: %w", name, errUndecodable)
 	}
 
-	s.thumbSem <- struct{}{}
-	defer func() { <-s.thumbSem }()
+	thumbSem <- struct{}{}
+	defer func() { <-thumbSem }()
 	if err := makeThumbs(src, preview, small); err != nil {
 		if errors.Is(err, errUndecodable) {
 			s.undecoded.Store(name, stamp)
@@ -638,7 +647,12 @@ func (s *Store) Warm(stop <-chan struct{}) {
 		default:
 		}
 		src := filepath.Join(s.dir, it.Name)
-		if fresh(s.cachePath(it.Name, Small), src) && fresh(s.cachePath(it.Name, Preview), src) {
+		preview := s.cachePath(it.Name, Preview)
+		original := previewIsOriginal(it)
+		if original {
+			_ = os.Remove(preview) // also clean up when the small thumbnail is fresh
+		}
+		if fresh(s.cachePath(it.Name, Small), src) && (original || fresh(preview, src)) {
 			continue
 		}
 		if err := s.Ensure(it.Name); err != nil {
@@ -765,9 +779,27 @@ func pixelReader(img image.Image) func(x, y int) (uint8, uint8, uint8) {
 	}
 }
 
+// maxDecodePixels bounds memory used by a single source image decode.
+const maxDecodePixels = 64 << 20
+
 func makeThumbs(src, previewDst, smallDst string) error {
 	f, err := os.Open(src)
 	if err != nil {
+		return err
+	}
+	cfg, _, err := image.DecodeConfig(f)
+	if err != nil {
+		f.Close()
+		return fmt.Errorf("%w: %v", errUndecodable, err)
+	}
+	w, h := int64(cfg.Width), int64(cfg.Height)
+	// Bound each side first so the product cannot overflow int64.
+	if w <= 0 || h <= 0 || w > maxDecodePixels || h > maxDecodePixels || w*h > maxDecodePixels {
+		f.Close()
+		return fmt.Errorf("%w: image dimensions %dx%d exceed pixel limit %d", errUndecodable, w, h, maxDecodePixels)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		f.Close()
 		return err
 	}
 	img, _, err := image.Decode(f)
@@ -775,12 +807,15 @@ func makeThumbs(src, previewDst, smallDst string) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", errUndecodable, err)
 	}
-	preview := scale(img, sizeEdge[Preview])
-	if err := writeJPEG(previewDst, preview, 85); err != nil {
-		return err
+	if previewDst != "" {
+		preview := scale(img, sizeEdge[Preview])
+		if err := writeJPEG(previewDst, preview, 85); err != nil {
+			return err
+		}
+		// Downscaling from the preview is much cheaper than from the original.
+		img = preview
 	}
-	// Downscaling from the preview is much cheaper than from the original.
-	return writeJPEG(smallDst, scale(preview, sizeEdge[Small]), 80)
+	return writeJPEG(smallDst, scale(img, sizeEdge[Small]), 80)
 }
 
 func writeJPEG(dst string, img image.Image, quality int) error {

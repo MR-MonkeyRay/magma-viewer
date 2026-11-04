@@ -49,8 +49,9 @@ func (f *Fetcher) loadHistory() {
 		return
 	}
 	// Failures from before a cookie update say nothing about the new cookie.
+	updated := f.Cookie().Updated
 	for _, r := range f.history {
-		if r.Result != ResultError || r.Time.Before(f.cookie.Updated) {
+		if r.Result != ResultError || r.Time.Before(updated) {
 			break
 		}
 		f.status.Failures++

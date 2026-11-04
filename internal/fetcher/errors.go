@@ -9,13 +9,20 @@ import (
 // Error codes are stable keys the page translates into advice; the message
 // keeps the technical detail for admins.
 const (
-	CodeNetwork  = "network"   // could not reach magma.url
+	CodeNetwork  = "network"   // could not reach the board URL
 	CodeTimeout  = "timeout"   // reached it, but no answer in time
 	CodeAuth     = "auth"      // 401/403: the cookie is missing, expired or invalid
 	CodeHTTP     = "http"      // any other unexpected status
 	CodeNotImage = "not_image" // 200, but a login page or similar instead of a picture
 	CodeTooLarge = "too_large" // over maxImageBytes
 	CodeSave     = "save"      // the download worked, writing it to disk did not
+)
+
+// Run rejects operations that cannot start with these errors.
+var (
+	ErrBusy     = errors.New("board is fetching")
+	ErrInactive = errors.New("board is inactive")
+	ErrNoURL    = errors.New("board has no URL")
 )
 
 var errTooManyRedirects = errors.New("stopped after 10 redirects")

@@ -20,7 +20,7 @@ Config: /etc/magma-viewer/config.yaml (root:magma-viewer, 0640)
 Data:   /var/lib/magma-viewer/images
 Existing configuration and images are preserved on upgrade. The last binary known to work is
 kept as /usr/local/bin/magma-viewer.prev, and an upgrade that does not become ready within 30 seconds
-is rolled back to it.
+is rolled back to it unless the upgrade migrated the data to the multi-board layout.
 EOF
 }
 
@@ -142,12 +142,23 @@ if [[ ! -e /etc/magma-viewer/config.yaml ]]; then
 fi
 install -m 0644 -o root -g magma-viewer "$work/package/config.example.yaml" /etc/magma-viewer/config.example.yaml
 
+# Use the new binary's config loader so YAML syntax and defaults match the service.
+if ! storage_dir=$("$work/package/magma-viewer" -config /etc/magma-viewer/config.yaml storage-dir 2>"$work/storage-dir.err"); then
+  fail "Could not determine storage.dir from /etc/magma-viewer/config.yaml: $(<"$work/storage-dir.err")"
+fi
+boards_registry="$storage_dir/.state/boards.json"
+had_boards_registry=false
+[[ -e "$boards_registry" ]] && had_boards_registry=true
+
 # Keep the last version known to work beside the new one; an upgrade that never becomes ready is rolled back to it.
 # The marker stands for "the installed binary has not passed the readiness check yet" (left by --no-start or a
 # failed upgrade), so such a binary never replaces the kept version.
 bin=/usr/local/bin/magma-viewer
 unit=/etc/systemd/system/magma-viewer.service
 unverified=/usr/local/bin/.magma-viewer.unverified
+if "$start" && ! "$had_boards_registry" && [[ -f "$bin" ]]; then
+  printf 'Notice: data will be migrated to the multi-board layout on first start and the old version cannot use it afterwards; back up %s first if you have not.\n' "$storage_dir"
+fi
 if [[ -f "$bin" && ! -e "$unverified" ]]; then
   install -m 0755 "$bin" "$bin.prev"
   [[ -f "$unit" ]] && install -m 0644 "$unit" "$work/unit.prev"
@@ -161,13 +172,14 @@ mv -f /usr/local/bin/.magma-viewer.new "$bin"
 install -m 0644 "$work/package/magma-viewer.service" "$unit"
 systemctl daemon-reload
 
-# Ready means answering /healthz on the configured listen address, not merely running.
+# Ready means answering /readyz with writable storage on the configured listen address.
+# Always use the new packaged binary: a rolled-back binary may not support readycheck.
 ready() {
-  # A deadline rather than a round count: one healthcheck can itself take seconds when the service hangs.
+  # A deadline rather than a round count: one readycheck can itself take seconds when the service hangs.
   local deadline=$((SECONDS + 30))
   while ((SECONDS < deadline)); do
     if systemctl is-active --quiet magma-viewer.service \
-      && "$bin" -config /etc/magma-viewer/config.yaml healthcheck >/dev/null 2>&1; then
+      && "$work/package/magma-viewer" -config /etc/magma-viewer/config.yaml readycheck >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
@@ -180,6 +192,10 @@ if "$start"; then
   if systemctl restart magma-viewer.service && ready; then
     rm -f "$unverified"
   else
+    # The registry is written last by migration; the old binary cannot safely use the new layout.
+    if ! "$had_boards_registry" && [[ -e "$boards_registry" ]]; then
+      fail "The data directory ($storage_dir) was migrated to the multi-board layout; the previous version cannot use it. The new version remains installed but unverified. Inspect journalctl -u magma-viewer.service -n 50. To go back to the old version, stop the service, restore the storage directory from the backup taken before upgrading, then reinstall the old version."
+    fi
     if ! "$previous"; then
       fail 'Service did not become ready; inspect journalctl -u magma-viewer.service -n 50'
     fi
@@ -196,7 +212,7 @@ if "$start"; then
 fi
 printf '\nInstalled magma-viewer %s (%s).\nConfig: /etc/magma-viewer/config.yaml\nData: /var/lib/magma-viewer/images\n' "$version" "$arch"
 if "$new_config"; then
-  printf 'Edit config.yaml to set your Magma URL/cookie. The admin password and session secret were generated randomly.\n'
+  printf 'Open the admin page to add a Magma board and update its cookie. The admin password and session secret were generated randomly.\n'
 fi
 if "$start"; then
   printf 'Service started. Default URL: http://127.0.0.1:8080 (or your configured listen address).\n'

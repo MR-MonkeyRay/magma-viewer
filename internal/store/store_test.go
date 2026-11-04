@@ -1,10 +1,14 @@
 package store
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"image"
 	"image/color"
+	"image/gif"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -129,6 +133,92 @@ func TestThumb(t *testing.T) {
 	}
 	if _, err := s.Thumb("missing.png", Small); err != ErrNotFound {
 		t.Fatalf("missing: %v", err)
+	}
+}
+
+func TestEnsurePreviewRenditionsAndFreshCleanup(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		w, h        int
+		unknown     bool
+		wantPreview bool
+	}{
+		{"small.png", 64, 48, false, false},
+		{"large.png", 1700, 10, false, true},
+		{"unknown.png", 64, 48, true, true},
+		{"large.GIF", 1700, 10, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			f, err := os.Create(filepath.Join(dir, tc.name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			img := image.NewRGBA(image.Rect(0, 0, tc.w, tc.h))
+			if filepath.Ext(tc.name) == ".GIF" {
+				err = gif.Encode(f, img, nil)
+			} else {
+				err = png.Encode(f, img)
+			}
+			closeErr := f.Close()
+			if err != nil || closeErr != nil {
+				t.Fatalf("write image: %v, close: %v", err, closeErr)
+			}
+			s, err := New(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.unknown {
+				s.items[0].W, s.items[0].H = 0, 0
+			}
+			small, preview := s.cachePath(tc.name, Small), s.cachePath(tc.name, Preview)
+			stale := time.Now().Add(-time.Hour)
+			if !tc.wantPreview {
+				touch(t, s.thumbDir, filepath.Base(preview), stale)
+			}
+			if err := s.Ensure(tc.name); err != nil {
+				t.Fatal(err)
+			}
+			if w, h := imageSize(small); w != min(tc.w, sizeEdge[Small]) || h == 0 {
+				t.Fatalf("small dimensions = %dx%d", w, h)
+			}
+			if tc.wantPreview {
+				if w, h := imageSize(preview); w != min(tc.w, sizeEdge[Preview]) || h == 0 {
+					t.Fatalf("preview dimensions = %dx%d", w, h)
+				}
+				return
+			}
+			if _, err := os.Stat(preview); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("unused preview survived Ensure: %v", err)
+			}
+			if p, err := s.Thumb(tc.name, Preview); err != nil || p != filepath.Join(dir, tc.name) {
+				t.Fatalf("preview = %q, %v; want original", p, err)
+			}
+
+			// Both fast paths clean old previews without regenerating a fresh small file.
+			future := time.Now().Add(time.Hour)
+			if err := os.Chtimes(small, future, future); err != nil {
+				t.Fatal(err)
+			}
+			for _, run := range []struct {
+				name string
+				fn   func() error
+			}{
+				{"Ensure", func() error { return s.Ensure(tc.name) }},
+				{"Warm", func() error { s.Warm(nil); return nil }},
+			} {
+				touch(t, s.thumbDir, filepath.Base(preview), stale)
+				if err := run.fn(); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := os.Stat(preview); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("unused preview survived %s: %v", run.name, err)
+				}
+				if info, err := os.Stat(small); err != nil || !info.ModTime().Equal(future) {
+					t.Fatalf("%s regenerated fresh small thumbnail: %v", run.name, err)
+				}
+			}
+		})
 	}
 }
 
@@ -373,6 +463,48 @@ func absDiff(a, b uint8) uint8 {
 		return a - b
 	}
 	return b - a
+}
+
+func TestOversizedImageIsUndecodable(t *testing.T) {
+	// A valid RGB PNG header declaring 10 billion pixels. Omit IDAT so even
+	// a regressed implementation cannot allocate the declared pixel buffer.
+	data := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 25)...)
+	binary.BigEndian.PutUint32(data[8:12], 13)
+	copy(data[12:16], "IHDR")
+	binary.BigEndian.PutUint32(data[16:20], 100000)
+	binary.BigEndian.PutUint32(data[20:24], 100000)
+	data[24], data[25] = 8, 2 // 8-bit RGB
+	binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || cfg.Width != 100000 || cfg.Height != 100000 {
+		t.Fatalf("invalid test header: %+v, %v", cfg, err)
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "bomb.png")
+	if err := os.WriteFile(src, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Ensure("bomb.png"); !errors.Is(err, errUndecodable) || !strings.Contains(err.Error(), "pixel limit") {
+		t.Fatalf("expected rejection before full decode: %v", err)
+	}
+	if _, ok := s.undecoded.Load("bomb.png"); !ok {
+		t.Fatal("oversized image rejection not remembered")
+	}
+	for _, size := range []Size{Small, Preview} {
+		if _, err := s.Thumb("bomb.png", size); !errors.Is(err, errUndecodable) {
+			t.Fatalf("Thumb(%v): %v", size, err)
+		}
+	}
+	if p, err := s.Path("bomb.png"); err != nil || p != src {
+		t.Fatalf("original unavailable: %q, %v", p, err)
+	}
+	if got, err := os.ReadFile(src); err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("original changed: %v", err)
+	}
 }
 
 func TestUndecodableImageIsNotRetriedUntilChanged(t *testing.T) {

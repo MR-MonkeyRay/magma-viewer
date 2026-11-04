@@ -19,6 +19,7 @@
   const VIEWS = ['grid', 'list'];
 
   const state = {
+    board: '',
     page: 1,
     size: Number(store.get('size', 48)),
     sort: store.get('sort', 'desc'),
@@ -39,13 +40,14 @@
 
   const el = {
     bar: $('#bar'), main: $('#main'), toTop: $('#to-top'),
+    boardSwitch: $('#board-switch'), boardMenu: $('#board-menu'), currentBoard: $('#current-board'),
     history: $('#history'), historyBar: $('#history-bar'), gallery: $('#gallery'), summary: $('#summary'), empty: $('#empty'), pager: $('#pager'),
     now: $('#now'), nowImg: $('#now-img'), nowTime: $('#now-time'), nowAgo: $('#now-ago'), nowDate: $('#now-date'), nowFacts: $('#now-facts'), nowDl: $('#now-dl'),
     nowBadge: $('#now-badge'), nowView: $('#now-view'), nowPrev: $('#now-prev'), nowNext: $('#now-next'), nowBack: $('#now-back'), reel: $('#reel'), reelTrack: $('#reel-track'),
     reelHeat: $('#reel-heat'), reelFill: $('#reel-fill'), reelHead: $('#reel-head'), reelTip: $('#reel-tip'), reelPlay: $('#reel-play'),
     reelPos: $('#reel-pos'), reelSpeed: $('#reel-speed'), reelQuality: $('#reel-quality'), reelLoop: $('#reel-loop'), reelTimed: $('#reel-timed'),
     seg: $('.seg'), sort: $('#sort'), size: $('#size'), group: $('#group'), selectMode: $('#select-mode'),
-    theme: $('#theme'), lang: $('#lang'), account: $('#account'), acctMenu: $('#acct-menu'), noticeBtn: $('#notice-btn'), foot: $('.foot'), version: $('#version'),
+    theme: $('#theme'), lang: $('#lang'), account: $('#account'), acctMenu: $('#acct-menu'), acctFetch: $('#acct-fetch'), noticeBtn: $('#notice-btn'), foot: $('.foot'), version: $('#version'),
     selbar: $('#selbar'), selCount: $('#sel-count'), fresh: $('#fresh'),
     toast: $('#toast'), toastText: $('#toast span'), toastIcon: $('#toast use'), announce: $('#announce'), alert: $('#alert'),
     lb: $('#lightbox'), lbStage: $('#lb-stage'), lbImg: $('#lb-img'), lbTime: $('#lb-time'), lbSub: $('#lb-sub'),
@@ -54,18 +56,12 @@
     lbpDate: $('#lbp-date'), lbpTime: $('#lbp-time'), lbpAgo: $('#lbp-ago'), lbpDownload: $('#lbp-download'),
     lbpSize: $('#lbp-size'), lbpSizeMenu: $('#lbp-size-menu'), lbpGrid: $('#lbp-grid'), lbpName: $('#lbp-name'), lbpZone: $('#lbp-zone'),
     loginDialog: $('#login-dialog'), loginForm: $('#login-form'), loginError: $('#login-error'), loginSubmit: $('#login-submit'),
-    statusDialog: $('#status-dialog'), adminStats: $('#admin-stats'), fetchNow: $('#fetch-now'),
-    adminRuns: $('#admin-runs'), runsList: $('#runs-list'), notifyTest: $('#notify-test'),
     lbCompare: $('#lb-compare'), cmp: $('#lb-cmp'), cmpOld: $('#cmp-old'), cmpDiff: $('#cmp-diff'), cmpLine: $('#cmp-line'),
     cmpBar: $('#lb-cmpbar'), cmpNote: $('#cmp-note'), selCompare: $('#sel-compare'), selVideo: $('#sel-video'), reelVideo: $('#reel-video'),
     videoDialog: $('#video-dialog'), videoForm: $('#video-form'), videoFrame: $('#video-frame'), videoEst: $('#video-est'),
     videoProgress: $('#video-progress'), videoBar: $('#video-bar'), videoStep: $('#video-step'), videoError: $('#video-error'), videoStart: $('#video-start'),
-    cookieDialog: $('#cookie-dialog'), cookieForm: $('#cookie-form'), cookieState: $('#cookie-state'), cookieError: $('#cookie-error'), cookieSave: $('#cookie-save'),
-    scheduleDialog: $('#schedule-dialog'), scheduleStats: $('#schedule-stats'), toggleSchedule: $('#toggle-schedule'), scheduleHint: $('#schedule-hint'),
     noticeDialog: $('#notice-dialog'), noticeList: $('#notice-list'), noticeActions: $('#notice-actions'),
     noticeBanner: $('#notice-banner'), noticeBannerTitle: $('#notice-banner-title'),
-    naDialog: $('#notice-admin-dialog'), naList: $('#na-list'), naForm: $('#na-form'), naState: $('#na-state'), naCount: $('#na-count'),
-    naError: $('#na-error'), naDelete: $('#na-delete'), naDraft: $('#na-draft'), naPublish: $('#na-publish'),
     keysDialog: $('#keys-dialog'), task: $('#task'), nowWarn: $('#now-warn'),
   };
 
@@ -139,6 +135,149 @@
   const validTime = (v) => !!v && !v.startsWith('0001');
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const enc = encodeURIComponent;
+
+  // Keep the board in one place for API calls, files, downloads and shared links.
+  function boardURL(path, id = state.board) {
+    const url = new URL(path, location.href);
+    url.searchParams.set('board', id);
+    return url.pathname + url.search + url.hash;
+  }
+
+  // ---------- boards ----------
+  const boards = { items: [], suggested: '', legacy_id: '', query: null, ready: false, loading: null };
+
+  function boardFromURL() {
+    const url = new URL(location.href);
+    const id = url.searchParams.get('board');
+    if (boards.items.some((b) => b.id === id)) return id;
+    const fallback = boards.items.some((b) => b.id === boards.suggested) ? boards.suggested : (boards.items[0]?.id || '');
+    if (url.searchParams.has('board')) {
+      url.searchParams.delete('board');
+      if (fallback) url.searchParams.set('board', fallback);
+      history.replaceState(null, '', url.pathname + url.search + url.hash);
+      toast(t('board.notFound'), 'error');
+    } else if (new URLSearchParams(url.hash.slice(1)).has('img') && boards.items.some((b) => b.id === boards.legacy_id)) {
+      return boards.legacy_id;
+    }
+    return fallback;
+  }
+
+  function renderBoard() {
+    const board = boards.items.find((b) => b.id === state.board);
+    el.boardSwitch.hidden = boards.items.length < 2;
+    el.boardSwitch.querySelector('span').textContent = board ? board.name : '';
+    el.boardSwitch.title = board ? t('board.switch', { name: board.name }) : '';
+    el.boardSwitch.setAttribute('aria-label', el.boardSwitch.title);
+    el.currentBoard.textContent = board ? board.name : '';
+    el.currentBoard.hidden = !board;
+    document.title = board ? `${board.name} · ${t('app.title')}` : t('app.title');
+    $('#download-all').setAttribute('href', board ? boardURL('/download/all') : '#');
+    // Refreshing an open list should keep the keyboard on the same board.
+    const focused = el.boardMenu.contains(document.activeElement) ? document.activeElement.dataset.board : '';
+    const items = boards.items.slice().sort((a, b) => Number(b.id === boards.suggested) - Number(a.id === boards.suggested));
+    el.boardMenu.innerHTML = items.map((b) => {
+      const current = b.id === state.board;
+      const badge = (key) => `<em class="board-badge">${esc(t(key))}</em>`;
+      return `<button type="button" role="menuitemradio" aria-checked="${current}"${current ? ' aria-current="true"' : ''} data-board="${esc(b.id)}">
+        <svg class="board-check" aria-hidden="true"><use href="#i-ok"/></svg><span class="board-name">${esc(b.name)}</span>
+        ${validTime(b.latest) ? `<time data-ago="${esc(b.latest)}">${fmtAgo(new Date(b.latest), false)}</time>` : ''}
+        ${b.state !== 'syncing' ? badge('board.' + b.state) : ''}${b.id === boards.suggested ? badge('board.latest') : ''}${b.hidden ? badge('board.hidden') : ''}</button>`;
+    }).join('');
+    if (menuBtn === el.boardSwitch) {
+      if (el.boardSwitch.hidden) closeMenu(true);
+      else if (focused) [...el.boardMenu.querySelectorAll('button')].find((b) => b.dataset.board === focused)?.focus();
+    }
+  }
+
+  function renderNoBoards() {
+    render({ animate: false });
+    el.historyBar.hidden = true;
+    el.now.hidden = true;
+    el.now.classList.remove('pending');
+  }
+
+  async function refreshBoards() {
+    // Naming the open board lets a guest keep a hidden one reached by direct link; other hidden boards stay unlisted.
+    const id = state.board || new URL(location.href).searchParams.get('board');
+    Object.assign(boards, await api(id ? `/api/boards?board=${encodeURIComponent(id)}` : '/api/boards'), { ready: true });
+    if (!boards.items.length) {
+      // With no board, /api/images cannot supply the usual admin flag.
+      try { await api('/api/admin/overview'); state.admin = true; } catch (e) { if (e.status === 401) state.admin = false; else throw e; }
+    }
+  }
+
+  async function startBoards() {
+    if (boards.loading) return boards.loading;
+    boards.loading = (async () => {
+      try {
+        await refreshBoards();
+        switchBoard(boardFromURL());
+      } catch (e) { renderError(e); }
+      finally { boards.loading = null; }
+    })();
+    return boards.loading;
+  }
+
+  async function openBoardMenu() {
+    if (el.boardSwitch.hidden) return;
+    if (menuBtn === el.boardSwitch) { closeMenu(true); return; }
+    openMenu(el.boardSwitch);
+    try {
+      await refreshBoards();
+      if (!boards.items.some((b) => b.id === state.board)) switchBoard(boardFromURL());
+      else renderBoard();
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  function switchBoard(id, push = false) {
+    if (push && id === state.board) { closeMenu(true); return; }
+    if (push) {
+      const url = new URL(boardURL(location.pathname + location.search, id), location.origin);
+      history.pushState(null, '', url.pathname + url.search); // a new board starts on page one
+    }
+    boards.query = new URLSearchParams(location.search).get('board');
+    closeMenu();
+    closeCal();
+    endTour();
+    leaveRoute();
+    closeLightbox(true);
+    lbHistory = false;
+    expectPop = false;
+    loadSeq++;
+    overviewSeq++;
+    pollSeq++;
+    nowVer++;
+    olderGen++;
+    olderItems.clear();
+    cmp.diff = null;
+    reelStop();
+    reelForget(null, true);
+    reel.failed.clear();
+    Object.assign(reel, { items: [], times: [], heat: [], at: -1, from: 0, to: 0, thumbsWarm: false });
+    Object.assign(overview, { recent: null, first: '', days: new Map() });
+    clearTimeout(pollTimer);
+    awaitRun = '';
+    awaitUntil = 0;
+    stopVideo();
+    closeDialog(el.videoDialog, true);
+    Object.assign(state, { board: id, page: 1, date: null, items: [], total: 0, pages: 1, latest: undefined, task: null, lastIndex: null });
+    el.gallery.innerHTML = '';
+    clearSelection();
+    hide(el.fresh);
+    el.now.hidden = true;
+    el.nowImg.removeAttribute('src');
+    delete el.now.dataset.name;
+    delete el.now.dataset.thumb;
+    el.empty.hidden = true;
+    el.historyBar.hidden = !id;
+    renderBoard();
+    renderAcct();
+    renderReel();
+    if (!id) { renderNoBoards(); return; }
+    loadOverview();
+    followHash();
+    if (push) { el.boardSwitch.focus({ preventScroll: true }); scrollToTop(); }
+  }
 
   // Elements with data-ago / data-until keep their relative time current.
   function tickTimes() {
@@ -288,10 +427,11 @@
 
   // Posted as a form, since a large selection outgrows a URL; the attachment downloads without leaving the page.
   async function downloadZip(names) {
-    if (!(await preflight('/download/zip?check=1', { method: 'POST', body: new URLSearchParams(names.map((n) => ['f', n])) }))) return false;
+    const action = boardURL('/download/zip');
+    if (!(await preflight(action + '&check=1', { method: 'POST', body: new URLSearchParams(names.map((n) => ['f', n])) }))) return false;
     const form = document.createElement('form');
     form.method = 'post';
-    form.action = '/download/zip';
+    form.action = action;
     form.hidden = true;
     for (const n of names) form.append(Object.assign(document.createElement('input'), { type: 'hidden', name: 'f', value: n }));
     document.body.appendChild(form);
@@ -348,9 +488,16 @@
     return { img, date };
   }
   const imgHash = (name) => `#img=${encodeURIComponent(name)}`;
+  // History entries name the displayed board; a clean home URL stays clean until navigation.
+  function setHash(hash, push = false, entry = null) {
+    history[push ? 'pushState' : 'replaceState'](entry, '', boardURL(location.pathname + location.search + hash));
+    boards.query = state.board;
+  }
   // Shows what the address names; on start-up and when retrying a failed load. A retried picture link that failed
   // while being restored is restored again, so its entry is kept rather than doubled.
   function followHash(retry = false) {
+    if (!boards.ready) return startBoards();
+    if (!state.board) { renderNoBoards(); return; }
     const link = readHash();
     if (link.img) openLinked(link.img, retry && linkFailedRestore);
     else if (link.date) goDate(link.date, false);
@@ -361,7 +508,7 @@
   function writeHash(push = false) {
     if (lbHistory) return;
     const h = state.date && state.date.page === state.page ? `#date=${state.date.key}` : state.page > 1 ? `#p=${state.page}` : '';
-    if (location.hash !== h) history[push ? 'pushState' : 'replaceState'](null, '', h || location.pathname + location.search);
+    if (location.hash !== h) setHash(h, push);
   }
   const viewerZone = () => {
     try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { return ''; } // server time then
@@ -377,6 +524,7 @@
   // answer arrives or nothing is shown.
   // date (YYYY-MM-DD in the viewer's zone) does the same for the first picture of a day.
   async function load({ scroll = false, silent = false, around = '', date = '', guard = null } = {}) {
+    if (!state.board) { renderNoBoards(); return false; }
     const seq = ++loadSeq;
     if (!silent) {
       foreground++;
@@ -389,7 +537,7 @@
     const anchor = state.lastIndex !== null && state.items[state.lastIndex] ? state.items[state.lastIndex].name : null;
     try {
       const at = around ? `&around=${enc(around)}` : date ? `&date=${date}&tz=${enc(viewerZone())}` : '';
-      const d = await api(`/api/images?page=${state.page}&size=${state.size}&sort=${state.sort}${at}`);
+      const d = await api(boardURL(`/api/images?page=${state.page}&size=${state.size}&sort=${state.sort}${at}`));
       if (seq !== loadSeq || (guard && !guard())) return null;
       Object.assign(state, { items: d.items, total: d.total, page: d.page, size: d.size, pages: d.pages, admin: d.admin, guestLimit: d.guest_limit, task: d.task });
       if (date) state.date = { key: date, page: d.page, focus: d.focus || '' };
@@ -461,7 +609,7 @@
   async function goDate(key, push = true) {
     leaveRoute();
     const seq = routeSeq;
-    if (push) history.pushState(null, '', `#date=${key}`);
+    if (push) setHash(`#date=${key}`, true);
     state.lastIndex = null;
     const ok = await load({ date: key, guard: () => seq === routeSeq });
     // Another load on the same route (signing in or out) replaced it: show the day again.
@@ -543,11 +691,11 @@
     const list = state.view === 'list';
     return `<figure class="tile${sel ? ' selected' : ''}" data-i="${i}" style="--d:${i}">
       <button type="button" class="tile-check" aria-label="${esc(t('tile.selectAt', { time: fmtFull(d) }))}" aria-pressed="${sel}"><svg><use href="#i-check"/></svg></button>
-      <button type="button" class="tile-open" aria-label="${esc(t('tile.view', { time: fmtFull(d) }))}" title="${esc(fmtFull(d))}"><img ${tileLoading(i)} decoding="async" src="/thumb/${enc(it.name)}"${it.w ? ` width="${it.w}" height="${it.h}"` : ''} alt=""></button>
+      <button type="button" class="tile-open" aria-label="${esc(t('tile.view', { time: fmtFull(d) }))}" title="${esc(fmtFull(d))}"><img ${tileLoading(i)} decoding="async" src="${esc(boardURL(`/thumb/${enc(it.name)}`))}"${it.w ? ` width="${it.w}" height="${it.h}"` : ''} alt=""></button>
       <figcaption class="tile-cap">
         <time datetime="${esc(it.time)}">${list ? fmtFull(d) : fmtTile(d)}</time>
         ${list ? `<span class="name" title="${name}">${name}</span><span class="size">${it.w ? `<span class="dims">${it.w}×${it.h} · </span>` : ''}${fmtSize(it.size)}</span>` : ''}
-        <a class="tile-dl" href="/download/${enc(it.name)}" download title="${t('tile.download')}" aria-label="${t('tile.download')}"><svg><use href="#i-download"/></svg></a>
+        <a class="tile-dl" href="${esc(boardURL(`/download/${enc(it.name)}`))}" download title="${t('tile.download')}" aria-label="${t('tile.download')}"><svg><use href="#i-download"/></svg></a>
       </figcaption>
     </figure>`;
   }
@@ -581,7 +729,7 @@
       <div><dt>${t('now.dims')}</dt><dd>${shown.w ? `${shown.w}×${shown.h}` : '—'}</dd></div>
       <div><dt>${t('now.size')}</dt><dd>${fmtSize(shown.size)}</dd></div>
       <div><dt>${t('now.recent')}</dt><dd>${overview.recent === null ? '—' : t('now.recentCount', { n: overview.recent })}</dd></div>`;
-    el.nowDl.href = `/download/${enc(shown.name)}`;
+    el.nowDl.href = boardURL(`/download/${enc(shown.name)}`);
     renderReelHead();
     // Playback shows frames of the chosen quality, which reelTick has already loaded and decoded. A quality change or a
     // thumbnail fallback swaps the frame of the same picture too.
@@ -605,8 +753,8 @@
     el.now.dataset.name = shown.name;
     // The first picture and scrubbing show the small thumbnail at once; the preview replaces it once decoded. On the
     // first picture the fade-in hides that swap when the preview comes straight from the cache.
-    const thumb = `/thumb/${enc(shown.name)}`;
-    const src = saveData ? thumb : `/preview/${enc(shown.name)}`;
+    const thumb = boardURL(`/thumb/${enc(shown.name)}`);
+    const src = saveData ? thumb : boardURL(`/preview/${enc(shown.name)}`);
     const swap = () => {
       if (ver !== nowVer) return;
       if (shown.w) { el.nowImg.width = shown.w; el.nowImg.height = shown.h; }
@@ -657,10 +805,11 @@
   };
   let overviewSeq = 0;
   async function loadOverview() {
+    if (!state.board) return;
     const seq = ++overviewSeq;
     try {
       const tz = viewerZone();
-      const o = await api(`/api/overview${tz ? `?tz=${enc(tz)}` : ''}`);
+      const o = await api(boardURL(`/api/overview${tz ? `?tz=${enc(tz)}` : ''}`));
       if (seq !== overviewSeq) return; // a later request is on its way; an older answer must not overwrite it
       // A rolling 24 hours (the reel's window) rather than since midnight, so the count does not drop to zero
       // overnight; the server's heat counts are not capped like the recent pictures.
@@ -741,8 +890,8 @@
   }
   // Failures are kept per URL, so one at another quality never downgrades the frame chosen now.
   function reelSrc(it) {
-    const src = REEL_QUALITY[reel.quality].path + enc(it.name);
-    return reel.failed.has(src) ? `/thumb/${enc(it.name)}` : src;
+    const src = boardURL(REEL_QUALITY[reel.quality].path + enc(it.name));
+    return reel.failed.has(src) ? boardURL(`/thumb/${enc(it.name)}`) : src;
   }
 
   // Loads and decodes the frame of picture it once. The promise settles either way: a failed frame falls back to the
@@ -824,7 +973,7 @@
     reel.thumbsWarm = true;
     const at = reel.at >= 0 ? reel.at : reel.items.length - 1;
     const from = Math.max(0, Math.min(at - 25, reel.items.length - 50));
-    const queue = reel.items.slice(from, from + 50).map((it) => `/thumb/${enc(it.name)}`);
+    const queue = reel.items.slice(from, from + 50).map((it) => boardURL(`/thumb/${enc(it.name)}`));
     const next = () => { const src = queue.shift(); if (src) prefetch(src).catch(() => {}).finally(next); };
     for (let k = 0; k < 3; k++) next();
   }
@@ -951,7 +1100,7 @@
   function reelTip(i) {
     const it = reel.items[i];
     const img = el.reelTip.querySelector('img');
-    const src = `/thumb/${enc(it.name)}`;
+    const src = boardURL(`/thumb/${enc(it.name)}`);
     if (img.getAttribute('src') !== src) img.src = src;
     const time = el.reelTip.querySelector('time');
     time.dateTime = it.time;
@@ -1055,7 +1204,7 @@
   el.nowBack.addEventListener('click', reelToLatest);
 
   // Repeated failures mean the picture may be out of date. Guests are told just that; admins get the reason and a
-  // way to the run history.
+  // link to the run history in the admin console.
   function renderFail(task) {
     const failing = !!task && task.result === 'error' && task.failures > 0;
     el.nowWarn.hidden = !failing;
@@ -1067,24 +1216,32 @@
     const key = `fail.${task.code}`;
     el.nowWarn.innerHTML = `<p class="now-warn-title"><svg><use href="#i-alert"/></svg>${t('fail.title', { n: task.failures })}</p>
       <p>${t(key) !== key ? t(key) : t('fail.other')}</p>
-      <button type="button" class="linkish" id="now-warn-more">${t('fail.details')}</button>`;
+      <a class="linkish" href="/admin#boards/${encodeURIComponent(state.board)}/history">${t('fail.details')}</a>`;
   }
 
   function renderTask() {
     const task = state.task;
     renderFail(task);
+    renderAcct();
     el.task.hidden = !task;
     if (!task) return;
     const at = validTime(task.last_fetched) ? new Date(task.last_fetched) : null;
-    const next = !task.paused && validTime(task.next_run) ? task.next_run : '';
-    const retry = !task.paused && backingOff(task) ? task.retry_at : '';
-    el.task.classList.toggle('paused', task.paused);
-    el.task.innerHTML = `<dt>${t('task.title')}</dt><dd><span class="task-state"><span class="task-dot" aria-hidden="true"></span>${t(task.paused ? 'task.paused' : 'task.running')}</span></dd>
+    // Next run and retry only matter while the board is inside its sync window and not paused.
+    const sync = taskState(task);
+    const active = sync === 'syncing';
+    const next = active && validTime(task.next_run) ? task.next_run : '';
+    const retry = active && backingOff(task) ? task.retry_at : '';
+    el.task.classList.toggle('paused', !active);
+    el.task.innerHTML = `<dt>${t('task.title')}</dt><dd><span class="task-state"><span class="task-dot" aria-hidden="true"></span>${t(active ? 'task.running' : sync === 'paused' ? 'task.paused' : `board.${sync}`)}</span></dd>
       <dt>${t('task.lastFetched')}</dt><dd title="${at ? esc(fmtFull(at)) : t('task.none')}">${at ? `<span data-ago="${esc(task.last_fetched)}">${fmtAgo(at, false)}</span>` : t('task.none')}</dd>
       ${retry ? `<dt>${t('task.retry')}</dt><dd title="${esc(fmtFull(new Date(retry)))}"><span data-until="${esc(retry)}">${fmtUntil(new Date(retry))}</span></dd>`
     : next ? `<dt>${t('task.next')}</dt><dd title="${esc(fmtFull(new Date(next)))}"><span data-until="${esc(next)}">${fmtUntil(new Date(next))}</span></dd>` : ''}`;
   }
 
+  // paused, pending (before sync_from), ended (after sync_until) or syncing; older responses only carry paused.
+  function taskState(task) {
+    return ['paused', 'pending', 'ended', 'syncing'].includes(task.state) ? task.state : task.paused ? 'paused' : 'syncing';
+  }
   // After repeated failures scheduled runs before retry_at are skipped (the server allows 2 s of slack), so the next
   // scheduled run is not the next attempt.
   function backingOff(task) {
@@ -1093,6 +1250,10 @@
 
   function renderSummary() {
     el.empty.hidden = state.total > 0;
+    el.empty.querySelector('.empty-title').textContent = t(state.board ? 'empty.title' : 'board.empty');
+    el.empty.querySelector('.empty-title').dataset.i18n = state.board ? 'empty.title' : 'board.empty';
+    el.empty.querySelector('[data-i18n="empty.text"]').hidden = !state.board;
+    $('#empty-admin').hidden = !!state.board || !state.admin;
     el.summary.hidden = state.total === 0;
     const from = (state.page - 1) * state.size + 1;
     const to = from + state.items.length - 1;
@@ -1270,6 +1431,7 @@
   function toggleLang() {
     i18n.set(i18n.lang === 'zh' ? 'en' : 'zh');
     i18n.apply();
+    renderBoard();
     renderReel();
     // A skeleton or an error has nothing to relabel yet; the next load renders in the new language.
     if (el.gallery.matches('.skeleton') || el.gallery.querySelector('.load-error')) renderControls(); else render();
@@ -1279,11 +1441,7 @@
     if (state.lbIndex >= 0) { updateLightboxMeta(); applyZoom(); renderSelection(); renderCmp(); }
     setPasswordVisible(el.loginForm.elements.password.type === 'text');
     if (el.noticeDialog.open) renderNotices();
-    if (el.naDialog.open) { resetDelete(); renderNaForm(); renderNaList(); }
-    if (el.statusDialog.open || el.scheduleDialog.open) refreshStatus();
     if (el.videoDialog.open) renderVideoText();
-    const res = $('#acct-result');
-    if (res.textContent) res.textContent = t('status.error');
   }
 
   // ---------- selection ----------
@@ -1391,7 +1549,7 @@
   // The 1600px preview covers most screens; HiDPI displays and deep zoom get the original.
   function fullSrc(it, scale = 1) {
     const need = el.lbImg.offsetWidth * scale * (window.devicePixelRatio || 1);
-    return it.w > 1600 && need > 1600 ? `/img/${enc(it.name)}` : `/preview/${enc(it.name)}`;
+    return it.w > 1600 && need > 1600 ? boardURL(`/img/${enc(it.name)}`) : boardURL(`/preview/${enc(it.name)}`);
   }
 
   function updateLightboxMeta() {
@@ -1402,7 +1560,7 @@
     el.lbTime.title = fmtFull(new Date(it.time));
     el.lbSub.textContent = `${it.w ? `${it.w}×${it.h} · ` : ''}${fmtSize(it.size)}`;
     el.lbCount.textContent = `${fmtNum((state.page - 1) * state.size + i + 1)} / ${fmtNum(state.total)}`;
-    el.lbDownload.href = `/download/${enc(it.name)}`;
+    el.lbDownload.href = boardURL(`/download/${enc(it.name)}`);
     el.lbPrev.disabled = i === 0 && state.page === 1;
     el.lbNext.disabled = i === state.items.length - 1 && state.page === state.pages;
 
@@ -1412,7 +1570,7 @@
     el.lbpAgo.dataset.ago = it.time;
     el.lbpAgo.dataset.saved = '1';
     el.lbpAgo.textContent = fmtAgo(d);
-    el.lbpDownload.href = `/download/${enc(it.name)}`;
+    el.lbpDownload.href = boardURL(`/download/${enc(it.name)}`);
     el.lbpName.textContent = it.name;
     const zone = nameZone(it);
     el.lbpZone.hidden = !zone;
@@ -1422,15 +1580,15 @@
     // GIFs are served as-is for the preview, so only the thumbnail is offered.
     const dims = it.w ? `${it.w} × ${it.h}` : t('lbp.unknown');
     const base = it.name.replace(/\.[^.]+$/, '');
-    const sizes = [[`/download/${enc(it.name)}`, t('lbp.original'), `${extOf(it.name)} · ${dims} · ${fmtSize(it.size)}`, '']];
+    const sizes = [[boardURL(`/download/${enc(it.name)}`), t('lbp.original'), `${extOf(it.name)} · ${dims} · ${fmtSize(it.size)}`, '']];
     const preview = it.w ? fitEdge(it.w, it.h, 1600) : null;
     if (preview && Math.max(it.w, it.h) > 1600 && extOf(it.name) !== 'GIF') {
       const [w, h] = preview;
-      sizes.push([`/preview/${enc(it.name)}`, t('lbp.large'), `JPG · ${w} × ${h}`, `${base}-${w}.jpg`]);
+      sizes.push([boardURL(`/preview/${enc(it.name)}`), t('lbp.large'), `JPG · ${w} × ${h}`, `${base}-${w}.jpg`]);
     }
     if (preview && Math.max(it.w, it.h) > 480) {
       const [w, h] = fitEdge(...preview, 480);
-      sizes.push([`/thumb/${enc(it.name)}`, t('lbp.thumb'), `JPG · ${w} × ${h}`, `${base}-${w}.jpg`]);
+      sizes.push([boardURL(`/thumb/${enc(it.name)}`), t('lbp.thumb'), `JPG · ${w} × ${h}`, `${base}-${w}.jpg`]);
     }
     el.lbpSizeMenu.innerHTML = sizes.map(([href, label, sub, file]) =>
       `<a role="menuitem" href="${href}" download="${esc(file)}"><strong>${label}</strong><span>${esc(sub)}</span></a>`).join('');
@@ -1507,9 +1665,9 @@
   // pixels that changed. The last pair is kept, so switching modes back and forth does not redo it.
   const DIFF_EDGE = 800;
   async function diffOf(older, newer) {
-    const key = older + '|' + newer;
+    const key = state.board + '|' + older + '|' + newer;
     if (cmp.diff && cmp.diff.key === key) return cmp.diff;
-    const [a, b] = await Promise.all([older, newer].map((n) => decoded(`/preview/${enc(n)}`)));
+    const [a, b] = await Promise.all([older, newer].map((n) => decoded(boardURL(`/preview/${enc(n)}`))));
     const s = Math.min(1, DIFF_EDGE / Math.max(b.naturalWidth, b.naturalHeight));
     const w = Math.max(1, Math.round(b.naturalWidth * s));
     const h = Math.max(1, Math.round(b.naturalHeight * s));
@@ -1554,7 +1712,7 @@
     $('#cmp-tag-new').textContent = fmtStamp(new Date(state.items[state.lbIndex].time));
     placeCmp();
     setCmpPos(cmp.pos);
-    const src = `/preview/${enc(base.name)}`;
+    const src = boardURL(`/preview/${enc(base.name)}`);
     if (el.cmpOld.getAttribute('src') !== src) el.cmpOld.src = src;
     el.cmpOld.alt = t('cmp.old', { time: fmtFull(new Date(base.time)) });
     const diff = cmp.mode === 'diff';
@@ -1575,7 +1733,7 @@
   async function findItem(name) {
     const here = state.items.find((it) => it.name === name);
     if (here) return here;
-    const d = await api(`/api/images?around=${enc(name)}&size=12&sort=${state.sort}`);
+    const d = await api(boardURL(`/api/images?around=${enc(name)}&size=12&sort=${state.sort}`));
     return (d.focus === name && d.items.find((it) => it.name === name)) || null;
   }
 
@@ -1673,15 +1831,15 @@
       // A picture opened by hand ends any link still being looked up. Its entry is the one being restored, if any;
       // otherwise the address is put back to the page (a link given up on may still be in it) and a new entry pushed.
       if (!linking) { ++routeSeq; lbRestore = 0; }
-      if (lbHistory) history.replaceState(history.state, '', imgHash(it.name));
-      else { writeHash(); lbBase = location.hash; history.pushState({ lightbox: true }, '', imgHash(it.name)); lbHistory = true; }
+      if (lbHistory) setHash(imgHash(it.name), false, history.state);
+      else { writeHash(); lbBase = location.hash; setHash(imgHash(it.name), true, { lightbox: true }); lbHistory = true; }
       $('#lb-close').focus({ preventScroll: true });
       maybeTour();
     } else if (lbHistory) {
-      history.replaceState(history.state, '', imgHash(it.name)); // the address follows the picture shown
+      setHash(imgHash(it.name), false, history.state); // the address follows the picture shown
     }
     // Show the image already on the page at once, then swap in the sharp one when it is decoded.
-    img.src = from && from.currentSrc ? from.currentSrc : `/thumb/${enc(it.name)}`;
+    img.src = from && from.currentSrc ? from.currentSrc : boardURL(`/thumb/${enc(it.name)}`);
     img.alt = fmtFull(new Date(it.time));
     fitImage();
     if (opening) {
@@ -1750,16 +1908,19 @@
   // stepping by position would skip a picture or show one twice. Resolves to the neighbour's name, null when there
   // is none, or undefined when it could not be found (the caller then falls back to the next page).
   async function neighbour(name, delta) {
-    const list = (q) => api(`/api/images?${q}&size=${state.size}&sort=${state.sort}`);
+    const board = state.board;
+    const list = (q) => api(boardURL(`/api/images?${q}&size=${state.size}&sort=${state.sort}`, board));
     try {
       for (let attempt = 0; attempt < 3; attempt++) {
         const d = await list(`around=${enc(name)}`);
+        if (board !== state.board) return undefined;
         const j = d.focus === name ? d.items.findIndex((it) => it.name === name) : -1;
         if (j < 0) return undefined;
         if (d.items[j + delta]) return d.items[j + delta].name;
         const page = d.page + delta;
         if (page < 1 || page > d.pages) return null;
         const e = await list(`page=${page}`);
+        if (board !== state.board) return undefined;
         if (e.page !== page) return undefined;
         // A picture saved between the two requests can bring the current one onto this page as well.
         const k = e.items.findIndex((it) => it.name === name);
@@ -1871,9 +2032,9 @@
 
   // ---------- link menu ----------
   function linkText(fmt, it) {
-    const url = new URL(`/img/${enc(it.name)}`, location.href).href;
+    const url = new URL(boardURL(`/img/${enc(it.name)}`), location.href).href;
     const alt = fmtFull(new Date(it.time));
-    const page = new URL(imgHash(it.name), location.href).href; // this page with the picture open
+    const page = new URL(boardURL(location.pathname) + imgHash(it.name), location.origin).href; // this page with the picture open
     return { url, page, md: `![${alt}](${url})`, html: `<img src="${url}" alt="${alt}">`, bb: `[img]${url}[/img]` }[fmt];
   }
 
@@ -1884,7 +2045,7 @@
     menu.hidden = false;
     btn.setAttribute('aria-expanded', 'true');
     menuBtn = btn;
-    menu.querySelector('button, a').focus();
+    (menu.querySelector('[aria-current="true"]') || menu.querySelector('button, a'))?.focus();
   }
 
   function closeMenu(refocus) {
@@ -1902,6 +2063,8 @@
     if (e.key === 'Escape' || e.key === 'Tab') closeMenu(e.key === 'Escape');
     else if (e.key === 'ArrowDown') items[(at + 1) % items.length].focus();
     else if (e.key === 'ArrowUp') items[(at - 1 + items.length) % items.length].focus();
+    else if (e.key === 'Home') items[0]?.focus();
+    else if (e.key === 'End') items[items.length - 1]?.focus();
     // Links ignore Space natively; click both kinds so Enter and Space behave alike.
     else if ((e.key === 'Enter' || e.key === ' ') && at >= 0) items[at].click();
     else return false;
@@ -1917,203 +2080,35 @@
     return ok;
   }
 
-  // ---------- admin ----------
-  // The avatar opens a menu of admin sections; each section is its own dialog.
+  // ---------- account menu ----------
+  const fetchingBoards = new Set();
+
   function renderAcct() {
     $('#acct-sub').textContent = t('acct.archived', { n: fmtNum(state.total) });
-    const task = state.task;
-    const sch = $('#acct-schedule');
-    sch.textContent = task ? t(task.paused ? 'task.paused' : 'task.running') : '';
-    sch.className = task && !task.paused ? 'ok' : '';
-    const count = na.items.length || notices.items.length;
-    $('#acct-notices').textContent = count ? t('acct.noticeCount', { n: count }) : '';
+    const fetching = fetchingBoards.has(state.board);
+    el.acctFetch.disabled = !state.board || fetching;
+    el.acctFetch.classList.toggle('loading', fetching);
+    el.acctFetch.querySelector('svg').toggleAttribute('hidden', fetching);
+    const label = el.acctFetch.querySelector('[data-i18n]');
+    label.dataset.i18n = fetching ? 'acct.fetching' : 'acct.fetchBoard';
+    label.textContent = t(label.dataset.i18n);
+    const result = state.task && state.task.result;
+    const res = $('#acct-result');
+    // Only a failure is worth a hint here; a fetch that worked already showed a toast.
+    res.textContent = result === 'error' ? t('status.error') : '';
+    res.className = result === 'error' ? 'bad' : '';
   }
 
   function openAcctMenu() {
     renderAcct();
     openMenu(el.account);
-    // Fill in the last fetch result and catch an expired session without waiting for a click.
-    api('/api/status').then(renderStats, (e) => { if (e.status === 401) handleAuthError(e); });
   }
-
-  async function refreshStatus() {
-    try {
-      renderStats(await api('/api/status'));
-    } catch (e) { handleAuthError(e); }
-  }
-
-  function openStatus() {
-    el.adminStats.innerHTML = `<dt class="loading-row">${t('status.loadingRow')}</dt><dd class="loading-row">${t('dialog.loading')}</dd>`;
-    openDialog(el.statusDialog);
-    refreshStatus();
-  }
-
-  function openSchedule() {
-    el.scheduleStats.innerHTML = `<dt class="loading-row">${t('schedule.plan')}</dt><dd class="loading-row">${t('dialog.loading')}</dd>`;
-    el.toggleSchedule.disabled = true;
-    el.scheduleHint.textContent = t('dialog.loading');
-    openDialog(el.scheduleDialog);
-    refreshStatus();
-  }
-
-  function renderStats(s) {
-    const f = s.fetch;
-    const at = (v) => (validTime(v) ? fmtFull(new Date(v)) : t('status.none'));
-    const result = { saved: `<span class="ok">${t('status.saved')}</span>`, unchanged: t('status.unchanged'), error: `<span class="bad">${t('status.error')}</span>` }[f.result] || t('status.never');
-    el.adminStats.innerHTML = `
-      <dt>${t('status.count')}</dt><dd>${t('status.countValue', { n: fmtNum(s.count) })}</dd>
-      <dt>${t('status.lastRun')}</dt><dd>${at(f.last_run)}</dd>
-      <dt>${t('status.lastFetched')}</dt><dd>${at(f.last_fetched)}</dd>
-      <dt>${t('status.result')}</dt><dd>${result}${f.message ? `<br><span class="bad">${esc(f.message)}</span>` : ''}</dd>
-      <dt>${t('status.lastSaved')}</dt><dd>${at(f.last_saved)}</dd>
-      <dt>${t('status.session')}</dt><dd>${t('status.sessionValue', { runs: f.runs, saved: f.saved })}</dd>${tokenRow(s.token)}${cookieRow(s.cookie)}${diskRow(s.disk)}`;
-    renderRuns(s.history || []);
-    state.cookie = s.cookie;
-    renderCookieState();
-    el.notifyTest.hidden = !s.notify;
-    const next = !f.paused && validTime(s.next_run) ? s.next_run : '';
-    const plan = describeSchedule(s.schedule);
-    el.scheduleStats.innerHTML = `
-      <dt>${t('schedule.plan')}</dt><dd>${plan ? `${esc(plan)} ` : ''}<code>${esc(s.schedule)}</code></dd>
-      <dt>${t('schedule.next')}</dt><dd>${next ? `<span data-until="${esc(next)}">${fmtUntil(new Date(next))}</span>` : f.paused ? t('schedule.paused') : '—'}</dd>
-      <dt>${t('schedule.lastFetched')}</dt><dd>${at(f.last_fetched)}</dd>`;
-    el.toggleSchedule.disabled = false;
-    el.toggleSchedule.setAttribute('aria-checked', String(!f.paused));
-    el.scheduleHint.textContent = t(f.paused ? 'schedule.pausedHint' : 'schedule.activeHint');
-    const res = $('#acct-result');
-    res.textContent = f.result === 'error' ? t('status.error') : '';
-    res.className = f.result === 'error' ? 'bad' : '';
-    state.task = Object.assign({}, state.task, {
-      paused: f.paused, last_fetched: f.last_fetched, next_run: s.next_run, last_run: f.last_run,
-      result: f.result, code: f.code || '', failures: f.failures || 0, retry_at: f.retry_at || '',
-    });
-    renderTask();
-    renderAcct();
-    schedulePoll();
-  }
-
-  // Common schedules in words beside the expression; '' for the rest. Times of day follow the server's clock.
-  function describeSchedule(spec) {
-    spec = String(spec).trim();
-    const every = /^@every\s+(\S+)$/.exec(spec);
-    if (every) {
-      const sec = goDuration(every[1]);
-      return sec >= 1 ? t('cron.every', { gap: fmtGap(sec) }) : '';
-    }
-    if (spec === '@hourly') return t('cron.hourlyAt', { m: '00' });
-    if (spec === '@daily' || spec === '@midnight') return t('cron.dailyAt', { time: '00:00' });
-    const f = spec.split(/\s+/);
-    if (f.length !== 5 || f.slice(2).some((x) => x !== '*')) return '';
-    const [m, h] = f;
-    const num = (x, max) => /^\d+$/.test(x) && Number(x) <= max;
-    const step = /^\*\/(\d+)$/.exec(m);
-    if (h === '*' && m === '*') return t('cron.everyMinute');
-    // */N restarts at each full hour, so only a divisor of 60 gives an even interval.
-    if (h === '*' && step && Number(step[1]) >= 1 && 60 % Number(step[1]) === 0) return t('cron.every', { gap: fmtGap(step[1] * 60) });
-    if (h === '*' && num(m, 59)) return t('cron.hourlyAt', { m: pad(Number(m)) });
-    if (num(h, 23) && num(m, 59)) return t('cron.dailyAt', { time: `${pad(Number(h))}:${pad(Number(m))}` });
-    return '';
-  }
-
-  // Seconds in a Go duration such as 90s, 5m or 1h30m; NaN when it is not one.
-  function goDuration(v) {
-    const units = { h: 3600, m: 60, s: 1, ms: 1e-3 };
-    let sec = 0;
-    const rest = v.replace(/(\d+(?:\.\d+)?)(ms|h|m|s)/g, (_, n, u) => { sec += n * units[u]; return ''; });
-    return rest === '' && v !== '' ? sec : NaN;
-  }
-
-  function tokenRow(tok) {
-    if (!tok) return '';
-    const exp = new Date(tok.expires);
-    const days = Math.floor((exp - Date.now()) / 86400000);
-    const left = days < 0 ? `<span class="bad">${t('token.expired')}</span>`
-      : `<span class="${days < 7 ? 'bad' : 'ok'}">${t('token.daysLeft', { n: days })}</span>`;
-    return `<dt>${t('token.label')}</dt><dd>${t('token.value', { cookie: esc(tok.cookie), time: fmtShort(exp), left })}</dd>`;
-  }
-
-  function cookieRow(c) {
-    if (!c) return '';
-    const value = c.source === 'page' && validTime(c.updated) ? t('cookie.fromPage', { time: fmtShort(new Date(c.updated)) }) : t('cookie.fromConfig');
-    return `<dt>${t('cookie.label')}</dt><dd>${value}</dd>`;
-  }
-
-  function diskRow(d) {
-    if (!d || !d.total) return '';
-    const pct = Math.round((1 - d.free / d.total) * 100);
-    return `<dt>${t('disk.label')}</dt><dd><span class="meter${pct >= 90 ? ' bad' : ''}" aria-hidden="true"><span style="width: ${pct}%"></span></span>${t('disk.value', { pct, archive: fmtSize(d.archive), free: fmtSize(d.free) })}</dd>`;
-  }
-
-  // The recorded runs, newest first: what each attempt got, so an outage can be read without the server log.
-  function renderRuns(runs) {
-    el.adminRuns.hidden = !runs.length;
-    el.runsList.innerHTML = runs.map((r) => {
-      const key = `fail.${r.code}`;
-      const what = r.result === 'saved' ? t('status.saved') : r.result === 'unchanged' ? t('status.unchanged') : t(key) !== key ? t(key) : t('fail.other');
-      const meta = [r.http ? `HTTP ${r.http}` : '', r.bytes ? fmtSize(r.bytes) : '', t('runs.took', { s: fmtNum(r.ms / 1000, 1) })].filter(Boolean).join(' · ');
-      const d = new Date(r.time);
-      return `<li class="run ${esc(r.result)}"${r.message ? ` title="${esc(r.message)}"` : ''}>
-        <time datetime="${esc(r.time)}" title="${esc(fmtFull(d))}">${fmtShort(d)}</time>
-        <span class="run-what">${what}${r.manual ? ` <em>${t('runs.manual')}</em>` : ''}</span>
-        <span class="run-meta">${meta}</span></li>`;
-    }).join('');
-  }
-
-  function renderCookieState() {
-    const c = state.cookie;
-    el.cookieState.textContent = !c ? '' : c.source === 'page' && validTime(c.updated)
-      ? t('cookie.fromPage', { time: fmtShort(new Date(c.updated)) }) : t('cookie.fromConfig');
-  }
-
-  function openCookie() {
-    el.cookieForm.reset();
-    showCookieError('');
-    renderCookieState();
-    openDialog(el.cookieDialog);
-    el.cookieForm.elements.cookie.focus();
-    refreshStatus();
-  }
-
-  function showCookieError(msg) {
-    el.cookieError.hidden = !msg;
-    el.cookieError.textContent = msg;
-    el.cookieForm.elements.cookie.toggleAttribute('aria-invalid', !!msg);
-    if (msg) announce(msg, true);
-  }
-
-  el.cookieForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const value = el.cookieForm.elements.cookie.value.trim();
-    if (!value) { showCookieError(t('err.invalid_cookie')); el.cookieForm.elements.cookie.focus(); return; }
-    el.cookieSave.disabled = true;
-    el.cookieSave.classList.add('loading');
-    try {
-      const s = await api('/api/cookie', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cookie: value }) });
-      renderStats(s);
-      closeDialog(el.cookieDialog, true);
-      toast(t('cookie.saved'), 'ok');
-    } catch (err) {
-      if (err.status === 401) handleAuthError(err); else showCookieError(err.message);
-    } finally {
-      el.cookieSave.disabled = false;
-      el.cookieSave.classList.remove('loading');
-    }
-  });
-  el.cookieForm.elements.cookie.addEventListener('input', () => { if (!el.cookieError.hidden) showCookieError(''); });
-
-  el.notifyTest.addEventListener('click', async () => {
-    closeMenu(true);
-    try {
-      await api('/api/notify/test', { method: 'POST' });
-      toast(t('notify.sent'), 'ok');
-    } catch (e) { handleAuthError(e); }
-  });
 
   function handleAuthError(e) {
     if (e.status === 401) {
       state.admin = false;
       closeMenu();
-      [el.statusDialog, el.scheduleDialog, el.naDialog, el.cookieDialog, el.videoDialog].forEach((d) => closeDialog(d, true));
+      closeDialog(el.videoDialog, true);
       renderControls();
       toast(t('login.expired'), 'error');
     } else {
@@ -2168,6 +2163,7 @@
   // longer rather than being skipped, and one that fails to load is left out.
   async function recordVideo(frames, size, frameMs, job, progress) {
     const type = videoType();
+    const board = state.board;
     // Every wait gives way to Cancel or to the recorder failing, so a picture that never finishes loading cannot hold
     // the recording open. A wait listens only while it lasts: one raced against a promise that stays pending would keep
     // every decoded picture alive until the end.
@@ -2182,7 +2178,7 @@
     const fail = (err) => { failure = err; for (const wake of job.wake) wake(err); };
     const loads = new Map();
     const get = (k) => {
-      if (!loads.has(k)) loads.set(k, decoded(`/${size}/${enc(frames[k].name)}`).catch(() => null));
+      if (!loads.has(k)) loads.set(k, decoded(boardURL(`/${size}/${enc(frames[k].name)}`, board)).catch(() => null));
       return loads.get(k);
     };
     // The first picture that loads sets the size; encoders want even sides.
@@ -2433,144 +2429,6 @@
     if (el.noticeDialog.open) renderNotices();
   }
 
-  // ---------- notice editor (admin) ----------
-  const na = { items: [], id: null, base: { title: '', body: '' }, delTimer: 0, discardUntil: 0 };
-  const naFields = () => el.naForm.elements;
-  const naCurrent = () => na.items.find((n) => n.id === na.id) || null;
-  const naDirty = () => naFields().title.value !== na.base.title || naFields().body.value !== na.base.body;
-  // Leaving unsaved edits takes a second try within 4 seconds; the first one explains why nothing happened.
-  function naDiscard() {
-    if (!naDirty() || Date.now() < na.discardUntil) { na.discardUntil = 0; return true; }
-    na.discardUntil = Date.now() + 4000;
-    showNaError(t('na.discard'));
-    return false;
-  }
-  el.naDialog.beforeClose = naDiscard;
-
-  async function openNoticeAdmin() {
-    editNotice(null);
-    openDialog(el.naDialog);
-    try {
-      na.items = (await api('/api/notices/all')).items;
-    } catch (e) { handleAuthError(e); return; }
-    if (!naDirty() && na.items.length) editNotice(na.items[0].id); else renderNaList();
-    renderAcct();
-    if (!na.id) naFields().title.focus();
-  }
-
-  function editNotice(id) {
-    const n = na.items.find((x) => x.id === id) || null;
-    na.id = n && n.id;
-    na.base = { title: n ? n.title : '', body: n ? n.body : '' };
-    naFields().title.value = na.base.title;
-    naFields().body.value = na.base.body;
-    clearNaError();
-    resetDelete();
-    renderNaForm();
-    renderNaList();
-  }
-
-  function renderNaList() {
-    el.naList.innerHTML = na.items.length ? na.items.map((n) => {
-      const pub = validTime(n.published);
-      return `<li><button type="button" class="na-item" data-id="${esc(n.id)}"${n.id === na.id ? ' aria-current="true"' : ''}>
-        <strong>${esc(n.title)}</strong>
-        <span><span class="na-tag${pub ? ' on' : ''}">${t(pub ? 'na.tagPublished' : 'na.tagDraft')}</span>${fmtShort(new Date(pub ? n.published : n.updated))}</span></button></li>`;
-    }).join('') : `<li class="na-empty">${t('na.empty')}</li>`;
-  }
-
-  function renderNaForm() {
-    const n = naCurrent();
-    const pub = n && validTime(n.published);
-    el.naState.innerHTML = !n ? t('na.stateNew')
-      : pub ? `<span class="na-tag on">${t('na.tagPublished')}</span>${t('na.statePublished', { time: fmtShort(new Date(n.published)) })}`
-        : `<span class="na-tag">${t('na.tagDraft')}</span>${t('na.stateDraft', { time: fmtShort(new Date(n.updated)) })}`;
-    el.naDelete.hidden = !n;
-    el.naDraft.textContent = t(pub ? 'na.unpublish' : 'na.saveDraft');
-    el.naPublish.lastElementChild.textContent = t(pub ? 'na.update' : 'na.publish');
-    renderNaCount();
-  }
-
-  function renderNaCount() {
-    const len = naFields().body.value.length;
-    el.naCount.textContent = `${len} / 5000`;
-    el.naCount.classList.toggle('near', len > 4500);
-  }
-
-  function showNaError(msg, field) {
-    el.naError.innerHTML = `<svg><use href="#i-alert"/></svg>${esc(msg)}`;
-    el.naError.hidden = false;
-    if (field) field.setAttribute('aria-invalid', 'true');
-    announce(msg, true);
-  }
-
-  function clearNaError() {
-    el.naError.hidden = true;
-    na.discardUntil = 0;
-    naFields().title.removeAttribute('aria-invalid');
-  }
-
-  function resetDelete() {
-    clearTimeout(na.delTimer);
-    el.naDelete.classList.remove('confirm');
-    el.naDelete.textContent = t('na.delete');
-  }
-
-  async function saveNotice(publish) {
-    const f = naFields();
-    if (!f.title.value.trim()) {
-      showNaError(t('na.titleRequired'), f.title);
-      f.title.focus();
-      return;
-    }
-    const n = naCurrent();
-    const wasPub = !!n && validTime(n.published);
-    const btn = publish ? el.naPublish : el.naDraft;
-    el.naPublish.disabled = el.naDraft.disabled = true;
-    btn.classList.add('loading');
-    try {
-      const d = await api(n ? `/api/notices/${enc(n.id)}` : '/api/notices', {
-        method: n ? 'PUT' : 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: f.title.value, body: f.body.value, publish }),
-      });
-      na.items = d.items;
-      editNotice(d.notice.id);
-      renderAcct();
-      toast(t(publish ? (wasPub ? 'na.updated' : 'na.published') : (wasPub ? 'na.unpublished' : 'na.draftSaved')), 'ok');
-      // The author has read what they just published; their own bell stays calm.
-      if (publish && !wasPub) setNoticesSeen(noticeTime(d.notice));
-      loadNotices();
-    } catch (e) {
-      if (e.status === 401) handleAuthError(e); else showNaError(e.message);
-    } finally {
-      el.naPublish.disabled = el.naDraft.disabled = false;
-      btn.classList.remove('loading');
-    }
-  }
-
-  // Deleting takes a second click within 3 seconds.
-  async function deleteNotice() {
-    const n = naCurrent();
-    if (!n) return;
-    if (!el.naDelete.classList.contains('confirm')) {
-      el.naDelete.classList.add('confirm');
-      el.naDelete.textContent = t('na.confirmDelete');
-      na.delTimer = setTimeout(resetDelete, 3000);
-      return;
-    }
-    resetDelete();
-    try {
-      na.items = (await api(`/api/notices/${enc(n.id)}`, { method: 'DELETE' })).items;
-      editNotice(na.items.length ? na.items[0].id : null);
-      renderAcct();
-      toast(t('na.deleted'), 'ok');
-      loadNotices();
-    } catch (e) {
-      if (e.status === 401) handleAuthError(e); else showNaError(e.message);
-    }
-  }
-
   // ---------- events: header & gallery ----------
   document.querySelectorAll('.seg [data-view]').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
   el.sort.addEventListener('click', toggleSort);
@@ -2674,7 +2532,7 @@
     if (i < 0) {
       // Renamed to this picture and restored like a link, so a failure leaves Retry on it.
       if (takeover) {
-        history.replaceState(history.state, '', imgHash(name));
+        setHash(imgHash(name), false, history.state);
         openLinked(name, true);
         return;
       }
@@ -2692,7 +2550,7 @@
       // Not on this page (an older reel frame, say) the picture gets an entry of its own and is restored into it like
       // a link: its page is shown under it, and closing goes back to the entry left, which shows its page again.
       if (i < 0) {
-        history.pushState({ lightbox: true }, '', imgHash(name));
+        setHash(imgHash(name), true, { lightbox: true });
         openLinked(name, true);
         return;
       }
@@ -2734,7 +2592,7 @@
   $('#sel-zip').addEventListener('click', async () => {
     const names = [...state.selected];
     if (!names.length) return;
-    if (await (names.length === 1 ? downloadFile(`/download/${enc(names[0])}`) : downloadZip(names))) toast(t('sel.started', { n: names.length }), 'ok');
+    if (await (names.length === 1 ? downloadFile(boardURL(`/download/${enc(names[0])}`)) : downloadZip(names))) toast(t('sel.started', { n: names.length }), 'ok');
   });
   // Every download link is checked first, the smaller sizes in the detail panel included; clicks with a modifier keep
   // the browser's own handling (new tab, save as).
@@ -2743,7 +2601,7 @@
     if (!a || e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
     e.preventDefault();
     const href = a.getAttribute('href');
-    if (href === '/download/all') preflight('/download/all?check=1').then((ok) => ok && download(href));
+    if (new URL(href, location.href).pathname === '/download/all') preflight(href + '&check=1').then((ok) => ok && download(href));
     else downloadFile(href, a.getAttribute('download') || '');
   });
 
@@ -2936,6 +2794,12 @@
   });
 
   window.addEventListener('popstate', () => {
+    if (!boards.ready) return;
+    if (new URLSearchParams(location.search).get('board') !== boards.query) {
+      const id = boardFromURL();
+      switchBoard(id);
+      return;
+    }
     if (expectPop) {
       expectPop = false;
     } else if (lbHistory) {
@@ -3058,6 +2922,7 @@
     else if ((k === '[' || k === ']') && !el.reel.hidden && !el.now.hidden) stepReelSpeed(k === '[' ? -1 : 1);
     else if (k === '?') openDialog(el.keysDialog);
     else if (k === 'n') openNotices();
+    else if (k === 'b' && !el.boardSwitch.hidden) openBoardMenu();
     else if (k === 'Escape' && (state.selectMode || state.selected.size)) clearSelection();
     else return;
     e.preventDefault();
@@ -3072,9 +2937,10 @@
     return tiles.find((n) => { const r = n.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; }) || tiles[0];
   };
   const TOURS = {
-    home: [['#now-view', 'home.now'], ['#reel', 'home.reel'], ['#history-bar .controls', 'home.history'], ['.bar-actions', 'home.bar']],
-    admin: [['#account', 'admin.menu'], ['#acct-exports', 'admin.exports', { enter: openAcctMenu, leave: () => closeMenu() }],
-      ['#reel-video', 'admin.video']],
+    home: [['#board-switch', 'board'], ['#now-view', 'home.now'], ['#reel', 'home.reel'], ['#history-bar .controls', 'home.history'], ['.bar-actions', 'home.bar']],
+    admin: [['#acct-console', 'admin.console', { enter: openAcctMenu, leave: () => closeMenu() }],
+      ['#acct-fetch', 'admin.fetch', { enter: openAcctMenu, leave: () => closeMenu() }],
+      ['#acct-exports', 'admin.exports', { enter: openAcctMenu, leave: () => closeMenu() }], ['#board-switch', 'board']],
     select: [[firstTileInView, 'sel.pick'], ['#selbar', 'sel.bar']],
     lightbox: [['#lb-img', 'lb.stage'], ['#lb-compare', 'lb.compare'], ['.lb-actions', 'lb.tools']],
     compare: [['#lb-cmpbar .lb-seg', 'cmp.modes'], ['#cmp-line', 'cmp.line']],
@@ -3082,7 +2948,7 @@
   const tourEl = { root: $('#tour'), hole: $('#tour-hole'), tip: $('#tour-tip'), title: $('#tour-title'), text: $('#tour-text'),
     dots: $('#tour-dots'), back: $('#tour-back'), next: $('#tour-next') };
   // A tour whose content changed gets a new revision, so viewers who saw the old one are shown it again.
-  const TOUR_REV = { admin: '2' };
+  const TOUR_REV = { admin: '3' };
   const tourSeen = (n) => store.get('tour.' + n) === (TOUR_REV[n] || '1');
   let tour = null;
   let tourTimer = 0;
@@ -3166,9 +3032,9 @@
   function renderTour() {
     const { steps, i } = tour;
     const key = steps[i][1];
-    tourEl.title.textContent = t(`tour.${key}.title`);
+    tourEl.title.textContent = t(key === 'board' ? 'board.tourTitle' : `tour.${key}.title`);
     const touch = coarse.matches && t(`tour.${key}.touch`);
-    tourEl.text.textContent = touch && touch !== `tour.${key}.touch` ? touch : t(`tour.${key}.text`);
+    tourEl.text.textContent = key === 'board' ? t('board.tourText') : touch && touch !== `tour.${key}.touch` ? touch : t(`tour.${key}.text`);
     tourEl.dots.innerHTML = steps.map((s, k) => `<i${k === i ? ' class="on"' : ''}></i>`).join('');
     tourEl.dots.setAttribute('aria-label', t('tour.step', { k: i + 1, n: steps.length }));
     tourEl.dots.hidden = steps.length < 2;
@@ -3258,6 +3124,11 @@
     setPasswordVisible(false);
     openDialog(el.loginDialog);
   });
+  el.boardSwitch.addEventListener('click', openBoardMenu);
+  el.boardMenu.addEventListener('click', (e) => {
+    const item = e.target.closest('[data-board]');
+    if (item) switchBoard(item.dataset.board, true);
+  });
   $('#login-cancel').addEventListener('click', () => closeDialog(el.loginDialog));
 
   const pwToggle = $('#pw-toggle');
@@ -3283,7 +3154,10 @@
       });
       closeDialog(el.loginDialog);
       toast(t('login.ok'), 'ok');
-      await load();
+      state.admin = true;
+      await refreshBoards();
+      if (!boards.items.some((b) => b.id === state.board)) switchBoard(boardFromURL());
+      else { renderBoard(); await load(); }
     } catch (err) {
       el.loginError.innerHTML = `<svg><use href="#i-alert"/></svg>${esc(err.message)}`;
       el.loginError.hidden = false;
@@ -3296,16 +3170,11 @@
     }
   });
 
-  // Focus goes back to the avatar first, so closing the section's dialog returns it there.
-  const SECTIONS = { 'status-dialog': openStatus, 'schedule-dialog': openSchedule, 'notice-admin-dialog': openNoticeAdmin, 'cookie-dialog': openCookie };
   el.acctMenu.addEventListener('click', (e) => {
-    const item = e.target.closest('[data-open]');
-    if (item) { closeMenu(true); SECTIONS[item.dataset.open](); }
-    else if (e.target.closest('#download-all')) closeMenu(true);
+    if (e.target.closest('#download-all, #acct-console')) closeMenu(true);
     else if (e.target.closest('#acct-video')) { closeMenu(true); openVideo(state.selected.size >= 2 ? 'picked' : 'recent'); }
   });
 
-  el.nowWarn.addEventListener('click', (e) => { if (e.target.closest('#now-warn-more')) openStatus(); });
   $('#now-more').addEventListener('click', (e) => {
     const open = el.now.querySelector('.now-card').classList.toggle('expanded');
     const b = e.currentTarget;
@@ -3314,72 +3183,41 @@
     b.querySelector('span').dataset.i18n = open ? 'now.less' : 'now.more';
   });
 
-  el.naList.addEventListener('click', (e) => {
-    const b = e.target.closest('.na-item');
-    if (b && b.dataset.id !== na.id && naDiscard()) editNotice(b.dataset.id);
-  });
-  $('#na-new').addEventListener('click', () => {
-    if (!naDiscard()) return;
-    editNotice(null);
-    naFields().title.focus();
-  });
-  el.naForm.addEventListener('submit', (e) => { e.preventDefault(); saveNotice(true); });
-  // Enter in the title would submit, and so publish; move on to the body instead.
-  naFields().title.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); naFields().body.focus(); }
-  });
-  naFields().body.addEventListener('input', renderNaCount);
-  // Typing answers whatever the message asked for.
-  el.naForm.addEventListener('input', () => { if (!el.naError.hidden) clearNaError(); });
-  el.naDraft.addEventListener('click', () => saveNotice(false));
-  el.naDelete.addEventListener('click', deleteNotice);
-
   $('#logout').addEventListener('click', async () => {
     closeMenu(true);
-    await api('/api/logout', { method: 'POST' }).catch(() => {});
+    // The session ends only when the response clears the HttpOnly cookie; on failure stay signed in.
+    try { await api('/api/logout', { method: 'POST' }); } catch (error) { toast(error.message, 'error'); return; }
     // Guests are capped, so trim an oversized selection.
     if (state.selected.size > state.guestLimit) state.selected = new Set([...state.selected].slice(0, state.guestLimit));
     toast(t('logout.ok'), 'ok');
-    await load();
+    state.admin = false;
+    await refreshBoards();
+    if (!boards.items.some((b) => b.id === state.board)) switchBoard(boardFromURL());
+    else { renderBoard(); await load(); }
   });
-  el.fetchNow.addEventListener('click', async () => {
-    const label = el.fetchNow.querySelector('span');
-    el.fetchNow.disabled = true;
-    el.fetchNow.classList.add('loading');
-    label.textContent = t('status.fetching');
+  el.acctFetch.addEventListener('click', async () => {
+    if (!state.board || fetchingBoards.has(state.board)) return;
+    const board = state.board;
+    fetchingBoards.add(board);
+    renderAcct();
     try {
-      const s = await api('/api/fetch', { method: 'POST' });
-      renderStats(s);
-      if (s.fetch.result === 'saved') { toast(t('fetch.saved'), 'ok'); await goNewest(); }
-      else if (s.fetch.result === 'unchanged') toast(t('fetch.unchanged'));
-      else toast(t('fetch.failed', { msg: s.fetch.message }), 'error');
+      const s = await api(boardURL('/api/fetch'), { method: 'POST' });
+      if (board !== state.board) return;
+      const f = s.fetch;
+      state.task = Object.assign({}, state.task, {
+        paused: f.paused, last_fetched: f.last_fetched, next_run: s.next_run, last_run: f.last_run,
+        result: f.result, code: f.code || '', failures: f.failures || 0, retry_at: f.retry_at || '',
+      });
+      renderTask();
+      schedulePoll();
+      if (f.result === 'saved') { toast(t('fetch.saved'), 'ok'); await goNewest(); }
+      else if (f.result === 'unchanged') toast(t('fetch.unchanged'));
+      else toast(t('fetch.failed', { msg: f.message }), 'error');
     } catch (e) {
-      handleAuthError(e);
+      if (board === state.board || e.status === 401) handleAuthError(e);
     } finally {
-      el.fetchNow.disabled = false;
-      el.fetchNow.classList.remove('loading');
-      label.textContent = t('status.fetchNow');
-    }
-  });
-
-  el.toggleSchedule.addEventListener('click', async () => {
-    const sw = el.toggleSchedule;
-    if (sw.dataset.busy) return;
-    const paused = sw.getAttribute('aria-checked') === 'true';
-    sw.dataset.busy = '1';
-    sw.setAttribute('aria-checked', String(!paused)); // flip now; the response confirms or reverts
-    try {
-      renderStats(await api('/api/schedule', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paused }),
-      }));
-      toast(t(paused ? 'schedule.pausedToast' : 'schedule.resumedToast'), 'ok');
-    } catch (e) {
-      sw.setAttribute('aria-checked', String(paused));
-      handleAuthError(e);
-    } finally {
-      delete sw.dataset.busy;
+      fetchingBoards.delete(board);
+      renderAcct();
     }
   });
 
@@ -3399,7 +3237,7 @@
       awaitRun = '';
       awaitUntil = 0;
       const t = state.task;
-      if (t && !t.paused && validTime(t.next_run) && !backingOff(t)) {
+      if (t && taskState(t) === 'syncing' && validTime(t.next_run) && !backingOff(t)) {
         const wait = new Date(t.next_run) - Date.now() + 5000;
         if (wait <= 65000) { delay = Math.max(wait, 5000); awaitRun = t.next_run; }
       }
@@ -3410,12 +3248,13 @@
   let pollSeq = 0;
   async function poll() {
     clearTimeout(pollTimer);
+    if (!state.board) return;
     if (document.hidden) return; // resumed by visibilitychange
     lastPoll = Date.now();
     const seq = ++pollSeq;
     let again = false;
     try {
-      const d = await api('/api/images?page=1&size=12&sort=desc');
+      const d = await api(boardURL('/api/images?page=1&size=12&sort=desc'));
       // Polls overlap when the network comes back mid-tick; only the newest one applies and reschedules.
       if (seq !== pollSeq) return;
       checkNotices(d.notice);
@@ -3426,7 +3265,7 @@
       // not finished, or failed (last_run then reaches it with an error); give it up to 45 s. Backoff skips it.
       const since = (v) => validTime(v) && new Date(v) >= new Date(awaitRun) - 1000;
       const finished = since(t.last_fetched) || (since(t.last_run) && t.result === 'error');
-      if (awaitRun && !t.paused && !finished && !backingOff(t)) {
+      if (awaitRun && taskState(t) === 'syncing' && !finished && !backingOff(t)) {
         if (!awaitUntil) awaitUntil = Date.now() + 45000;
         again = Date.now() < awaitUntil;
       }
@@ -3458,7 +3297,6 @@
   window.addEventListener('offline', () => toast(t('net.offline'), 'error'));
   window.addEventListener('online', () => { toast(t('net.online'), 'ok'); poll(); });
   setInterval(() => { if (!document.hidden) tickTimes(); }, 1000);
-  loadOverview();
 
   $('#fresh-btn').addEventListener('click', () => { hide(el.fresh); goNewest(); });
 
@@ -3508,7 +3346,9 @@
     }, 150);
   });
   // Back and Forward between pages, or a link pasted into the address bar.
-  window.addEventListener('hashchange', () => {
+  window.addEventListener('hashchange', (e) => {
+    if (!boards.ready || !state.board) return;
+    if (new URL(e.oldURL).searchParams.get('board') !== new URL(e.newURL).searchParams.get('board')) return; // popstate restored the board and hash together
     leaveRoute();
     const before = state.page;
     const link = readHash();
@@ -3524,5 +3364,5 @@
   renderControls();
   renderTheme();
   onScroll();
-  followHash();
+  startBoards();
 })();

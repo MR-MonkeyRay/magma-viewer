@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -14,18 +15,15 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 	_ "time/tzdata" // the scratch image has no zoneinfo; honour TZ anyway
 
-	"github.com/robfig/cron/v3"
-
+	"magma-viewer/internal/board"
 	"magma-viewer/internal/config"
 	"magma-viewer/internal/fetcher"
 	"magma-viewer/internal/notice"
 	"magma-viewer/internal/notify"
-	"magma-viewer/internal/store"
 	"magma-viewer/internal/web"
 )
 
@@ -50,6 +48,8 @@ func main() {
 	switch flag.Arg(0) {
 	case "healthcheck":
 		os.Exit(healthcheck(*configPath))
+	case "readycheck":
+		os.Exit(readycheck(*configPath))
 	case "checkconfig":
 		if _, err := config.Load(*configPath); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -57,10 +57,25 @@ func main() {
 		}
 		fmt.Println("config ok")
 		return
+	case "storage-dir":
+		if err := storageDir(*configPath, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
 	}
 	if err := run(*configPath); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func storageDir(configPath string, out io.Writer) error {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, cfg.Storage.Dir)
+	return err
 }
 
 func run(configPath string) error {
@@ -71,40 +86,35 @@ func run(configPath string) error {
 	if err := os.MkdirAll(cfg.Storage.TempDir, 0o755); err != nil {
 		return err
 	}
-	st, err := store.New(cfg.Storage.Dir)
-	if err != nil {
-		return fmt.Errorf("open storage dir: %w", err)
-	}
 	log.Printf("magma-viewer %s", strings.TrimSpace(version))
 	if cfg.Admin.SessionSecret == "" {
 		log.Printf("WARNING admin.session_secret is empty: a random key is used and every restart logs the admin out")
 	}
-	log.Printf("storage %s: %d images", cfg.Storage.Dir, st.Count())
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	f := fetcher.New(cfg.Magma, cfg.Storage.TempDir, st)
-	n := notify.New(cfg.Notify)
-	if n != nil {
-		f.Alert = n.Send
-		go f.WatchToken(ctx.Done())
-	}
-	c := cron.New(cron.WithChain(cron.SkipIfStillRunning(cron.DefaultLogger)))
-	entry, err := c.AddFunc(cfg.Schedule, func() { f.RunScheduled(ctx) })
+	creds, err := sharedCredentials(cfg)
 	if err != nil {
 		return err
 	}
-	c.Start()
-	var startup sync.WaitGroup
-	startup.Go(func() { f.RunScheduled(ctx) })
-	log.Printf("fetch schedule: %q", cfg.Schedule)
-
-	go st.Watch(ctx.Done(), time.Minute)
-	go func() {
-		st.Cleanup(cfg.Storage.TempDir)
-		st.Warm(ctx.Done())
-	}()
+	n := notify.New(cfg.Notify)
+	var alert func(event, message string)
+	if n != nil {
+		alert = n.Send
+	}
+	mgr, err := board.NewManager(board.Options{
+		Root:      cfg.Storage.Dir,
+		LegacyURL: cfg.Magma.URL,
+		TempDir:   cfg.Storage.TempDir,
+		Magma:     cfg.Magma,
+		Schedule:  cfg.Schedule,
+		Shared:    creds,
+		Alert:     alert,
+	})
+	if err != nil {
+		return fmt.Errorf("open boards: %w", err)
+	}
+	for _, b := range mgr.List(true) {
+		log.Printf("board %q (%s): %d images", b.Name, b.ID, b.Count)
+	}
 
 	ns, err := notice.Open(filepath.Join(cfg.Storage.Dir, ".state", "notices.json"))
 	if err != nil {
@@ -115,10 +125,14 @@ func run(configPath string) error {
 	if err != nil {
 		return err
 	}
-	ws := web.New(cfg, st, f, ns, static)
-	ws.NextRun = func() time.Time { return c.Entry(entry).Next }
+	ws := web.New(cfg, mgr, creds, ns, static)
 	ws.Version = strings.TrimSpace(version)
 	ws.Notifier = n
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	mgr.Start(ctx)
+
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           ws.Handler(),
@@ -134,20 +148,7 @@ func run(configPath string) error {
 		<-ctx.Done()
 		stopCtx, cancel := context.WithTimeout(context.Background(), stopBudget)
 		defer cancel()
-		fetches := make(chan struct{})
-		go func() {
-			<-c.Stop().Done()
-			startup.Wait()
-			close(fetches)
-		}()
-		if err := srv.Shutdown(stopCtx); err != nil {
-			log.Printf("shutdown: %v", err)
-		}
-		select {
-		case <-fetches:
-		case <-stopCtx.Done():
-			log.Printf("shutdown: a fetch is still running")
-		}
+		shutdown(stopCtx, srv.Shutdown, mgr.Stop)
 	}()
 	log.Printf("listening on %s", cfg.Listen)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
@@ -157,15 +158,71 @@ func run(configPath string) error {
 	return nil
 }
 
+// sharedCredentials migrates the legacy cookie before boards.json commits the
+// upgrade, so a failed migration or interrupted startup can be retried.
+func sharedCredentials(cfg *config.Config) (*fetcher.Credentials, error) {
+	_, err := os.Lstat(board.RegistryPath(cfg.Storage.Dir))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("check board registry: %w", err)
+	}
+	creds := fetcher.NewCredentials(filepath.Join(cfg.Storage.Dir, ".state", "cookie.json"))
+	if err == nil {
+		if cfg.Magma.URL != "" || cfg.Magma.Cookie != "" {
+			log.Printf("WARNING magma.url and magma.cookie are ignored: boards and cookies are managed in /admin; remove these legacy keys from config.yaml")
+		}
+	} else if err := creds.MigrateLegacy(cfg.Magma.Cookie); err != nil {
+		return nil, fmt.Errorf("migrate legacy cookie: %w", err)
+	}
+	return creds, nil
+}
+
+// shutdown drains HTTP requests and board work concurrently within one deadline.
+func shutdown(ctx context.Context, shutdownServer func(context.Context) error, stop func()) {
+	httpDone := make(chan error, 1)
+	stopped := make(chan struct{})
+	go func() { httpDone <- shutdownServer(ctx) }()
+	go func() {
+		stop()
+		close(stopped)
+	}()
+	for httpDone != nil || stopped != nil {
+		select {
+		case err := <-httpDone:
+			if err != nil {
+				log.Printf("shutdown: %v", err)
+			}
+			httpDone = nil
+		case <-stopped:
+			stopped = nil
+		case <-ctx.Done():
+			if httpDone != nil {
+				log.Printf("shutdown: HTTP requests are still running")
+			}
+			if stopped != nil {
+				log.Printf("shutdown: a fetch is still running")
+			}
+			return
+		}
+	}
+}
+
 // healthcheck lets the scratch image run a Docker HEALTHCHECK without curl.
 func healthcheck(configPath string) int {
+	return probe(configPath, "/healthz")
+}
+
+func readycheck(configPath string) int {
+	return probe(configPath, "/readyz")
+}
+
+func probe(configPath, path string) int {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get("http://" + probeAddr(cfg.Listen) + "/healthz")
+	resp, err := client.Get("http://" + probeAddr(cfg.Listen) + path)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

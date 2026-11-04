@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN" data-title-key="admin.title">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f7dfe7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#231b25" media="(prefers-color-scheme: dark)">
+<title>管理后台 · Magma 画板存档</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath d='M32 5c3 7 9 10 15 15 9 7 12 17 9 26-3 9-12 14-24 14S11 55 8 46c-3-9 0-19 9-26 6-5 12-8 15-15z' fill='%23ff8fa8' stroke='%2365364f' stroke-width='4' stroke-linejoin='round'/%3E%3Cellipse cx='24' cy='38' rx='4' ry='5' fill='%233a1f2e'/%3E%3Cellipse cx='40' cy='38' rx='4' ry='5' fill='%233a1f2e'/%3E%3Cellipse cx='15' cy='46' rx='5' ry='3' fill='%23ff4f86' opacity='.6'/%3E%3Cellipse cx='49' cy='46' rx='5' ry='3' fill='%23ff4f86' opacity='.6'/%3E%3C/svg%3E">
+<link rel="preload" href="fonts/nunito-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/fredoka-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="admin.css">
+<script src="theme.js"></script>
+<script src="i18n.js"></script>
+</head>
+<body class="admin-console">
+<svg id="admin-sprite" width="0" height="0" aria-hidden="true">
+<defs><linearGradient id="mv-lava" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffb3c7"/><stop offset=".55" stop-color="#ff8fa8"/><stop offset="1" stop-color="#ffab73"/></linearGradient></defs>
+<symbol id="i-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 6 8.5 12l6 6"/></symbol>
+<symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4.5H7a2.5 2.5 0 0 0-2.5 2.5v10A2.5 2.5 0 0 0 7 19.5h3M15 8l4 4-4 4M19 12H9.5"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="mascot" viewBox="0 0 64 64">
+    <path d="M32 5c3 7 9 10 15 15 9 7 12 17 9 26-3 9-12 14-24 14S11 55 8 46c-3-9 0-19 9-26 6-5 12-8 15-15z" fill="url(#mv-lava)" stroke="#65364f" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M17.5 30c1.5-3.5 4-6.5 8-8.5" fill="none" stroke="#fff" stroke-opacity=".75" stroke-width="3" stroke-linecap="round"/>
+    <g fill="#3a1f2e"><ellipse cx="24" cy="38" rx="3.2" ry="4"><animate attributeName="ry" values="4;4;.5;4" keyTimes="0;.92;.95;1" dur="4.2s" repeatCount="indefinite"/></ellipse><ellipse cx="40" cy="38" rx="3.2" ry="4"><animate attributeName="ry" values="4;4;.5;4" keyTimes="0;.92;.95;1" dur="4.2s" repeatCount="indefinite"/></ellipse><g fill="#fff"><circle cx="25.2" cy="36.4" r="1.2"/><circle cx="41.2" cy="36.4" r="1.2"/><animate attributeName="opacity" values="1;1;0;1" keyTimes="0;.92;.95;1" dur="4.2s" repeatCount="indefinite"/></g></g>
+    <ellipse cx="16.5" cy="44.5" rx="4" ry="2.4" fill="#ff4f86" opacity=".5"/><ellipse cx="47.5" cy="44.5" rx="4" ry="2.4" fill="#ff4f86" opacity=".5"/>
+    <path d="M28.5 44.5q1.75 2.2 3.5 0 1.75 2.2 3.5 0" fill="none" stroke="#3a1f2e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+<symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v1.5M12 20v1.5M2.5 12H4M20 12h1.5M5.3 5.3l1.1 1.1M17.6 17.6l1.1 1.1M5.3 18.7l1.1-1.1M17.6 6.4l1.1-1.1"/></symbol>
+<symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 14.5A7.5 7.5 0 1 1 9.5 4.5a6 6 0 0 0 10 10z"/><path d="M17 3.5v3M15.5 5h3" stroke-width="2"/></symbol>
+<symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.75"/></symbol>
+<symbol id="i-eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m3.5 3.5 17 17M10.4 5.7A8.6 8.6 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a16 16 0 0 1-2.3 3.1M6.6 6.6C4 8.3 2.5 12 2.5 12S6 18.5 12 18.5a8.7 8.7 0 0 0 5.4-1.8M10 10a2.8 2.8 0 0 0 4 4"/></symbol>
+<symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10.5M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="m5.5 12.5 4.5 4.5 8.5-9.5"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 10.5A7.7 7.7 0 0 0 5.6 7.5M4.5 4v4h4M4.5 13.5a7.7 7.7 0 0 0 13.9 3M19.5 20v-4h-4"/></symbol>
+<symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.75v.01"/></symbol>
+<symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V13M12 16.25v.01"/></symbol>
+<symbol id="i-ok" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.75 2.75L16 10"/></symbol>
+<symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 3.5 3.5 10.5l7 3 3 7z"/><path d="m10.5 13.5 10-10"/></symbol>
+<symbol id="mascot-oops" viewBox="0 0 64 64">
+  <path d="M32 5c3 7 9 10 15 15 9 7 12 17 9 26-3 9-12 14-24 14S11 55 8 46c-3-9 0-19 9-26 6-5 12-8 15-15z" fill="url(#mv-lava)" stroke="#65364f" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M17.5 30c1.5-3.5 4-6.5 8-8.5" fill="none" stroke="#fff" stroke-opacity=".75" stroke-width="3" stroke-linecap="round"/>
+  <path d="m21 35 5 3-5 3M43 35l-5 3 5 3" fill="none" stroke="#3a1f2e" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <ellipse cx="16.5" cy="44.5" rx="4" ry="2.4" fill="#ff4f86" opacity=".5"/><ellipse cx="47.5" cy="44.5" rx="4" ry="2.4" fill="#ff4f86" opacity=".5"/>
+  <path d="M28 48.5q4-3.5 8 0" fill="none" stroke="#3a1f2e" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M51 17c2 3 3.2 5 1.8 6.6-1.2 1.3-3.6.5-3.4-1.6.1-1.5.8-3.1 1.6-5z" fill="#9fdcff" stroke="#65364f" stroke-width="1.6" stroke-linejoin="round"/>
+</symbol>
+<symbol id="mascot-sleep" viewBox="0 0 64 64">
+  <path d="M32 5c3 7 9 10 15 15 9 7 12 17 9 26-3 9-12 14-24 14S11 55 8 46c-3-9 0-19 9-26 6-5 12-8 15-15z" fill="url(#mv-lava)" stroke="#65364f" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M17.5 30c1.5-3.5 4-6.5 8-8.5" fill="none" stroke="#fff" stroke-opacity=".75" stroke-width="3" stroke-linecap="round"/>
+  <path d="M20.5 37.5q3.5 3 7 0M36.5 37.5q3.5 3 7 0" fill="none" stroke="#3a1f2e" stroke-width="2.4" stroke-linecap="round"/>
+  <ellipse cx="16.5" cy="44.5" rx="4" ry="2.4" fill="#ff4f86" opacity=".5"/><ellipse cx="47.5" cy="44.5" rx="4" ry="2.4" fill="#ff4f86" opacity=".5"/>
+  <ellipse cx="32" cy="46.5" rx="2" ry="2.4" fill="#3a1f2e"/>
+  <path d="M47 5h6l-6 7h6M55.5 13h3.5l-3.5 4h3.5" fill="none" stroke="#65364f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><animateTransform attributeName="transform" type="translate" values="0 0;0 -3;0 0" dur="2.6s" repeatCount="indefinite"/><animate attributeName="opacity" values="1;.5;1" dur="2.6s" repeatCount="indefinite"/></path>
+</symbol>
+</svg>
+<div class="progress" aria-hidden="true"></div>
+<a class="admin-skip" href="#admin-content" data-i18n="admin.skip">跳至内容</a>
+<header class="bar" id="admin-bar">
+  <div class="brand"><svg class="brand-mark mascot" aria-hidden="true"><use href="#mascot"/></svg><span class="brand-name" data-i18n="admin.heading">管理后台</span></div>
+  <div class="bar-actions">
+    <a class="icon-btn" href="/" title="返回画廊" aria-label="返回画廊" data-i18n-title="admin.gallery" data-i18n-label="admin.gallery"><svg aria-hidden="true"><use href="#i-left"/></svg></a>
+    <button type="button" class="icon-btn" id="admin-theme" data-i18n-label="theme.label" data-i18n-title="theme.tip"><svg aria-hidden="true"><use href="#i-moon"/></svg></button>
+    <button type="button" class="icon-btn lang-btn" id="admin-lang" data-i18n="lang.switch" data-i18n-label="lang.switchLabel" data-i18n-title="lang.switchTip">EN</button>
+    <button type="button" class="icon-btn" id="admin-logout" hidden title="退出登录" aria-label="退出登录" data-i18n-title="acct.logout" data-i18n-label="acct.logout"><svg aria-hidden="true"><use href="#i-logout"/></svg></button>
+  </div>
+</header>
+<div class="admin-layout" id="admin-shell" hidden>
+  <nav class="admin-nav" id="admin-nav" data-i18n-label="admin.navigation"></nav>
+  <main id="admin-content" class="admin-content" tabindex="-1"></main>
+</div>
+<section class="admin-login modal" id="admin-login" aria-labelledby="login-title" hidden>
+  <form id="login-form">
+    <svg class="mascot admin-login-mascot" aria-hidden="true"><use href="#mascot"/></svg>
+    <h2 id="login-title" data-i18n="login.title">管理员登录</h2>
+    <label><span data-i18n="login.username">用户名</span><input name="username" autocomplete="username" required></label>
+    <label><span data-i18n="login.password">密码</span><span class="pw">
+      <input name="password" type="password" autocomplete="current-password" required aria-describedby="login-error">
+      <button type="button" class="pw-toggle" id="pw-toggle" data-i18n-label="login.show" aria-pressed="false"><svg aria-hidden="true"><use href="#i-eye"/></svg></button>
+    </span></label>
+    <p class="form-error" id="login-error" role="alert" hidden></p>
+    <div class="modal-actions"><button type="submit" class="btn primary" id="login-submit"><span class="spinner" aria-hidden="true"></span><span data-i18n="login.submit">登录</span></button></div>
+  </form>
+</section>
+<div class="admin-boot" id="admin-boot" role="status"><svg class="mascot" aria-hidden="true"><use href="#mascot"/></svg><span data-i18n="dialog.loading">加载中…</span></div>
+<div class="toast" id="admin-toast" aria-hidden="true" hidden><svg><use href="#i-info"/></svg><span></span></div>
+<p class="sr-only" id="admin-status" role="status" aria-live="polite" aria-atomic="true"></p>
+<dialog class="modal" id="admin-confirm" aria-labelledby="confirm-title">
+  <form method="dialog">
+    <h2 id="confirm-title" data-i18n="admin.confirmTitle">确认操作</h2>
+    <p id="confirm-message"></p>
+    <label id="confirm-name" hidden><span data-i18n="admin.board.confirmName">输入完整画板名称以确认</span><input id="confirm-name-input" autocomplete="off" aria-describedby="confirm-message"></label>
+    <div class="modal-actions"><button class="btn ghost" value="cancel" data-i18n="login.cancel">取消</button><button class="btn primary" value="confirm" data-i18n="admin.confirm">确认</button></div>
+  </form>
+</dialog>
+<script src="admin.js"></script>
+</body>
+</html>

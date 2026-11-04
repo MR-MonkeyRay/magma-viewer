@@ -94,12 +94,16 @@
   </symbol>
 </svg>
 
-<div class="progress" id="progress" aria-hidden="true"></div>
+<div class="progress" aria-hidden="true"></div>
 
 <header class="bar" id="bar">
   <div class="brand">
     <a class="brand-home" href="#" id="brand" title="回到第一页" aria-label="回到第一页" data-i18n-title="bar.home" data-i18n-label="bar.home"><svg class="brand-mark mascot" aria-hidden="true"><use href="#mascot"/></svg></a>
     <a class="brand-name" href="https://github.com/MR-MonkeyRay/magma-viewer" target="_blank" rel="noopener" title="在 GitHub 查看项目" data-i18n="app.title" data-i18n-title="bar.repo">Magma 画板存档</a>
+    <span class="board-picker">
+      <button type="button" class="board-switch" id="board-switch" aria-haspopup="menu" aria-expanded="false" aria-controls="board-menu" hidden><span></span><svg aria-hidden="true"><use href="#i-down"/></svg></button>
+      <div class="acct-menu board-menu" id="board-menu" role="menu" aria-label="切换画板" data-i18n-label="board.menu" hidden></div>
+    </span>
   </div>
   <div class="bar-actions">
     <button type="button" class="icon-btn" id="theme" title="切换明暗（T）" aria-label="切换明暗" data-i18n-title="theme.tip" data-i18n-label="theme.label"><svg><use href="#i-moon"/></svg></button>
@@ -109,15 +113,12 @@
       <button type="button" class="icon-btn" id="account" title="管理员登录" aria-label="管理员登录"><svg><use href="#i-user"/></svg></button>
       <div class="acct-menu" id="acct-menu" role="menu" aria-label="管理" data-i18n-label="acct.manage" hidden>
         <div class="acct-head"><strong data-i18n="acct.admin">管理员</strong><span id="acct-sub"></span></div>
-        <button type="button" role="menuitem" data-open="status-dialog"><svg><use href="#i-info"/></svg><span data-i18n="acct.status">运行状态</span><em id="acct-result"></em></button>
-        <button type="button" role="menuitem" data-open="schedule-dialog"><svg><use href="#i-clock"/></svg><span data-i18n="task.title">定时抓取</span><em id="acct-schedule"></em></button>
-        <button type="button" role="menuitem" data-open="cookie-dialog"><svg><use href="#i-shield"/></svg><span data-i18n="cookie.menu">更新 Cookie</span></button>
-        <button type="button" role="menuitem" id="notify-test" hidden><svg><use href="#i-send"/></svg><span data-i18n="notify.test">测试通知</span></button>
-        <button type="button" role="menuitem" data-open="notice-admin-dialog"><svg><use href="#i-bell"/></svg><span data-i18n="acct.notices">公告管理</span><em id="acct-notices"></em></button>
+        <a role="menuitem" id="acct-console" href="/admin"><svg><use href="#i-info"/></svg><span data-i18n="acct.console">管理后台</span></a>
+        <button type="button" role="menuitem" id="acct-fetch"><svg aria-hidden="true"><use href="#i-refresh"/></svg><i class="spinner" aria-hidden="true"></i><span data-i18n="acct.fetchBoard">立即抓取当前画板</span><em id="acct-result"></em></button>
         <hr>
         <div class="acct-group" id="acct-exports" role="group" aria-labelledby="acct-exports-label">
           <p class="acct-label" id="acct-exports-label" data-i18n="acct.exports">下载与导出</p>
-          <a role="menuitem" id="download-all" href="/download/all" download><svg><use href="#i-download"/></svg><span data-i18n="acct.downloadAll">下载全部</span><em>ZIP</em></a>
+          <a role="menuitem" id="download-all" download><svg><use href="#i-download"/></svg><span data-i18n="acct.downloadAll">下载全部</span><em>ZIP</em></a>
           <button type="button" role="menuitem" id="acct-video"><svg><use href="#i-film"/></svg><span data-i18n="acct.video">导出延时视频</span></button>
         </div>
         <hr>
@@ -134,6 +135,7 @@
     <button type="button" class="btn ghost" id="notice-banner-open" data-i18n="banner.open">查看</button>
     <button type="button" class="icon-btn" id="notice-banner-close" title="知道了" aria-label="知道了" data-i18n-title="banner.dismiss" data-i18n-label="banner.dismiss"><svg><use href="#i-close"/></svg></button>
   </div>
+  <p class="current-board" id="current-board" hidden></p>
   <section class="now" id="now" aria-label="画板最新状态" data-i18n-label="now.label" hidden>
     <div class="now-stage">
       <div class="now-view" id="now-view">
@@ -236,6 +238,7 @@
       <div class="empty-art" aria-hidden="true"><svg class="mascot"><use href="#mascot-sleep"/></svg></div>
       <p class="empty-title" data-i18n="empty.title">还没有画面</p>
       <p data-i18n="empty.text">画板有变化时会自动保存到这里</p>
+      <p id="empty-admin" hidden><a class="linkish" href="/admin" data-i18n="board.manage">前往管理画板</a></p>
     </div>
     <nav class="pager" id="pager" aria-label="分页" data-i18n-label="pager.label"></nav>
   </section>
@@ -382,36 +385,6 @@
   </form>
 </dialog>
 
-<dialog class="modal" id="status-dialog">
-  <div class="admin">
-    <h2 data-i18n="status.title">运行状态</h2>
-    <dl class="stats" id="admin-stats"></dl>
-    <section class="runs" id="admin-runs" hidden>
-      <h3 data-i18n="runs.title">最近抓取</h3>
-      <ol class="runs-list" id="runs-list"></ol>
-    </section>
-    <div class="modal-actions">
-      <button type="button" class="btn primary" id="fetch-now"><svg><use href="#i-refresh"/></svg><span data-i18n="status.fetchNow">立即抓取</span></button>
-    </div>
-    <button type="button" class="modal-x" data-close aria-label="关闭" data-i18n-label="dialog.close" autofocus><svg><use href="#i-close"/></svg></button>
-  </div>
-</dialog>
-
-<dialog class="modal" id="cookie-dialog">
-  <form class="admin" id="cookie-form" novalidate>
-    <h2 data-i18n="cookie.title">更新 Cookie</h2>
-    <p class="cookie-state" id="cookie-state"></p>
-    <label data-i18n="cookie.field">新的 Cookie<textarea name="cookie" rows="4" maxlength="8192" spellcheck="false" autocomplete="off" required aria-describedby="cookie-error cookie-hint"></textarea></label>
-    <p class="cookie-hint" id="cookie-hint" data-i18n="cookie.hint">可以粘贴整段 Cookie 请求头、NAME=value 形式，或只粘贴 AUTH_TOKEN 的值。保存后立即生效，重启后也会保留；之后若修改了配置文件中的 magma.cookie，则以配置文件为准。</p>
-    <p class="form-error" id="cookie-error" hidden></p>
-    <div class="modal-actions">
-      <button type="button" class="btn ghost" data-close data-i18n="login.cancel">取消</button>
-      <button type="submit" class="btn primary" id="cookie-save"><span class="spinner" aria-hidden="true"></span><span data-i18n="cookie.save">保存并启用</span></button>
-    </div>
-    <button type="button" class="modal-x" data-close aria-label="关闭" data-i18n-label="dialog.close"><svg><use href="#i-close"/></svg></button>
-  </form>
-</dialog>
-
 <dialog class="modal" id="video-dialog">
   <form class="admin" id="video-form" novalidate>
     <h2 data-i18n="video.title">导出延时视频</h2>
@@ -444,21 +417,6 @@
   </form>
 </dialog>
 
-<dialog class="modal" id="schedule-dialog">
-  <div class="admin">
-    <h2 data-i18n="schedule.title">定时抓取</h2>
-    <div class="switch-row">
-      <div class="switch-text">
-        <strong id="schedule-title" data-i18n="schedule.auto">按计划自动抓取</strong>
-        <span id="schedule-hint">加载中…</span>
-      </div>
-      <button type="button" class="switch" role="switch" id="toggle-schedule" aria-checked="false" aria-labelledby="schedule-title" disabled></button>
-    </div>
-    <dl class="stats" id="schedule-stats"></dl>
-    <button type="button" class="modal-x" data-close aria-label="关闭" data-i18n-label="dialog.close" autofocus><svg><use href="#i-close"/></svg></button>
-  </div>
-</dialog>
-
 <dialog class="modal" id="notice-dialog">
   <div class="admin">
     <h2 data-i18n="notice.title">公告</h2>
@@ -467,33 +425,6 @@
       <button type="button" class="btn primary" id="notice-read"><svg><use href="#i-check"/></svg><span data-i18n="notice.markRead">标为已读</span></button>
     </div>
     <button type="button" class="modal-x" data-close aria-label="关闭" data-i18n-label="dialog.close" autofocus><svg><use href="#i-close"/></svg></button>
-  </div>
-</dialog>
-
-<dialog class="modal" id="notice-admin-dialog">
-  <div class="admin">
-    <h2 data-i18n="na.title">公告管理</h2>
-    <div class="na">
-      <div class="na-side">
-        <button type="button" class="btn ghost" id="na-new"><svg><use href="#i-plus"/></svg><span data-i18n="na.new">新建公告</span></button>
-        <ul class="na-list" id="na-list" aria-label="公告列表" data-i18n-label="na.list"></ul>
-      </div>
-      <form class="na-edit" id="na-form" novalidate>
-        <p class="na-state" id="na-state"></p>
-        <label data-i18n="na.fieldTitle">标题<input name="title" maxlength="100" autocomplete="off" required aria-describedby="na-error"></label>
-        <label data-i18n="na.fieldBody">内容<textarea name="body" maxlength="5000" rows="9" placeholder="支持换行，网址会自动变成链接" data-i18n-placeholder="na.placeholder"></textarea></label>
-        <p class="na-count" id="na-count"></p>
-        <p class="form-error" id="na-error" hidden></p>
-        <div class="modal-actions spread">
-          <button type="button" class="btn ghost danger" id="na-delete">删除</button>
-          <div class="row">
-            <button type="button" class="btn ghost" id="na-draft">存为草稿</button>
-            <button type="submit" class="btn primary" id="na-publish"><span class="spinner" aria-hidden="true"></span><span>发布</span></button>
-          </div>
-        </div>
-      </form>
-    </div>
-    <button type="button" class="modal-x" data-close aria-label="关闭" data-i18n-label="dialog.close"><svg><use href="#i-close"/></svg></button>
   </div>
 </dialog>
 
@@ -516,6 +447,7 @@
         <dt><kbd>T</kbd></dt><dd data-i18n="keys.theme">切换明暗</dd>
         <dt><kbd>L</kbd></dt><dd data-i18n="keys.lang">切换语言</dd>
         <dt><kbd>N</kbd></dt><dd data-i18n="keys.notices">查看公告</dd>
+        <dt><kbd>B</kbd></dt><dd data-i18n="board.keys">切换画板</dd>
       </dl>
       <h3 data-i18n="keys.viewer">大图</h3>
       <dl>

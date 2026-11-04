@@ -97,16 +97,22 @@ func (a *auth) checkCredentials(user, pass string) bool {
 // clientIP is the TCP peer, or X-Real-IP when the peer is a trusted reverse
 // proxy (nginx overwrites any value the client sent).
 func (a *auth) clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	if peer, err := netip.ParseAddr(host); err == nil && a.trusted(peer.Unmap()) {
+	host, trusted := a.trustedPeer(r)
+	if trusted {
 		if real, err := netip.ParseAddr(strings.TrimSpace(r.Header.Get("X-Real-IP"))); err == nil {
 			return real.Unmap().String()
 		}
 	}
 	return host
+}
+
+func (a *auth) trustedPeer(r *http.Request) (string, bool) {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	peer, err := netip.ParseAddr(host)
+	return host, err == nil && a.trusted(peer.Unmap())
 }
 
 func (a *auth) trusted(peer netip.Addr) bool {
@@ -154,13 +160,14 @@ func (a *auth) clearFailures(ip string) {
 
 func (a *auth) setSession(w http.ResponseWriter, r *http.Request) {
 	tok, exp := a.newToken()
+	_, trusted := a.trustedPeer(r)
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    tok,
 		Path:     "/",
 		Expires:  exp,
 		HttpOnly: true,
-		Secure:   r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
+		Secure:   r.TLS != nil || trusted && strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https"),
 		SameSite: http.SameSiteLaxMode,
 	})
 }

@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"magma-viewer/internal/board"
 	"magma-viewer/internal/config"
 	"magma-viewer/internal/fetcher"
 	"magma-viewer/internal/notice"
@@ -37,21 +38,24 @@ const (
 
 type Server struct {
 	cfg     *config.Config
-	store   *store.Store
-	fetcher *fetcher.Fetcher
+	boards  *board.Manager
+	creds   *fetcher.Credentials
 	notices *notice.Store
 	auth    *auth
 	assets  map[string]asset // embedded page files by path
 
 	zones    sync.Map // tz name -> *time.Location
 	overview struct {
-		mu     sync.Mutex
-		gen    uint64
-		byZone map[string][]byte // encoded responses for gen
+		mu      sync.Mutex
+		byBoard map[string]*overviewCache
+	}
+	ready struct {
+		mu      sync.Mutex
+		expires time.Time
+		code    int
+		body    map[string]any
 	}
 
-	// NextRun reports when the scheduler fires next; nil leaves next_run unset.
-	NextRun func() time.Time
 	// Version is the release shown in the page footer.
 	Version string
 	// Notifier sends test alerts from the admin page; nil when no webhook is configured.
@@ -61,7 +65,7 @@ type Server struct {
 // Go's built-in table lacks woff2, and slim images ship no /etc/mime.types.
 func init() { _ = mime.AddExtensionType(".woff2", "font/woff2") }
 
-func New(cfg *config.Config, st *store.Store, f *fetcher.Fetcher, ns *notice.Store, static fs.FS) *Server {
+func New(cfg *config.Config, boards *board.Manager, creds *fetcher.Credentials, ns *notice.Store, static fs.FS) *Server {
 	a := newAuth(cfg.Admin.Username, cfg.Admin.Password, cfg.Admin.SessionSecret, cfg.Admin.SessionTTL)
 	a.proxies = cfg.TrustedProxyPrefixes()
 	assets, err := loadAssets(static)
@@ -70,8 +74,8 @@ func New(cfg *config.Config, st *store.Store, f *fetcher.Fetcher, ns *notice.Sto
 	}
 	return &Server{
 		cfg:     cfg,
-		store:   st,
-		fetcher: f,
+		boards:  boards,
+		creds:   creds,
 		notices: ns,
 		auth:    a,
 		assets:  assets,
@@ -81,9 +85,31 @@ func New(cfg *config.Config, st *store.Store, f *fetcher.Fetcher, ns *notice.Sto
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.handleAsset)
+	mux.HandleFunc("GET /admin", s.handleAsset)
+	mux.HandleFunc("GET /admin/{$}", func(w http.ResponseWriter, r *http.Request) {
+		target := "/admin"
+		if r.URL.RawQuery != "" {
+			target += "?" + r.URL.RawQuery
+		}
+		http.Redirect(w, r, target, http.StatusPermanentRedirect)
+	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { io.WriteString(w, "ok") })
 	mux.HandleFunc("GET /readyz", s.handleReady)
 
+	mux.HandleFunc("GET /api/boards", s.handleBoards)
+	mux.HandleFunc("GET /api/admin/overview", s.adminOnly(s.handleAdminOverview))
+	mux.HandleFunc("GET /api/admin/boards", s.adminOnly(s.handleAdminBoards))
+	mux.HandleFunc("POST /api/admin/boards", s.adminOnly(s.handleSaveBoard))
+	mux.HandleFunc("PUT /api/admin/boards/{id}", s.adminOnly(s.handleSaveBoard))
+	mux.HandleFunc("POST /api/admin/boards/{id}/archive", s.adminOnly(s.handleArchiveBoard))
+	mux.HandleFunc("DELETE /api/admin/boards/{id}", s.adminOnly(s.handleDeleteBoard))
+	mux.HandleFunc("GET /api/admin/boards/{id}/operation", s.adminOnly(s.handleBoardOperation))
+	mux.HandleFunc("GET /api/admin/archives", s.adminOnly(s.handleArchives))
+	mux.HandleFunc("GET /api/admin/archives/{id}/download", sameOriginOnly(s.adminOnly(s.handleDownloadArchive)))
+	mux.HandleFunc("DELETE /api/admin/archives/{id}", s.adminOnly(s.handleDeleteArchive))
+	mux.HandleFunc("GET /api/admin/history", s.adminOnly(s.handleHistory))
+	mux.HandleFunc("GET /api/cookie", s.adminOnly(s.handleCookieInfo))
+	mux.HandleFunc("DELETE /api/cookie", s.adminOnly(s.handleDeleteCookie))
 	mux.HandleFunc("GET /api/images", s.handleList)
 	mux.HandleFunc("GET /api/overview", s.handleOverview)
 	mux.HandleFunc("POST /api/login", s.handleLogin)
@@ -212,13 +238,18 @@ func intParam(r *http.Request, key string, def int) int {
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
+	rt, b, ok := s.resolveBoard(w, r, false)
+	if !ok {
+		return
+	}
 	size := min(max(intParam(r, "size", defaultPageSize), minPageSize), maxPageSize)
 	asc := r.URL.Query().Get("sort") == "asc"
 	// around= or date= ask for the page holding that picture or day instead.
-	items, total, page, focus := s.store.ListAt(intParam(r, "page", 1), size, asc, s.locator(r, asc))
-	task := s.fetcher.Status()
+	items, total, page, focus := rt.Store.ListAt(intParam(r, "page", 1), size, asc, s.locator(r, asc))
+	task := rt.Fetcher.Status()
 	pages := max((total+size-1)/size, 1)
 	writeJSON(w, http.StatusOK, map[string]any{
+		"board":       rt.ID,
 		"items":       items,
 		"total":       total,
 		"page":        page,
@@ -229,7 +260,8 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		"version":     s.Version,
 		// Public subset of the fetch status; errors stay admin-only.
 		"task": map[string]any{
-			"paused": task.Paused, "last_fetched": task.LastFetched, "next_run": s.nextRun(),
+			"state":  b.SyncState(time.Now(), task.Paused),
+			"paused": task.Paused, "last_fetched": task.LastFetched, "next_run": s.boards.NextRun(rt.ID),
 			"last_run": task.LastRun, "result": task.Result, "code": task.Code,
 			// Scheduled runs before retry_at are skipped while failures keep coming.
 			"failures": task.Failures, "retry_at": task.RetryAt,
@@ -269,27 +301,41 @@ func (s *Server) zone(tz string) *time.Location {
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	// Days and hours are counted in the viewer's zone (an IANA name such as Asia/Shanghai) so they match the
 	// times the page shows; an unknown or missing zone falls back to the server's.
-	writeCachedJSON(w, s.overviewJSON(s.zone(r.URL.Query().Get("tz"))))
+	rt, _, ok := s.resolveBoard(w, r, false)
+	if !ok {
+		return
+	}
+	writeCachedJSON(w, s.overviewJSON(rt, s.zone(r.URL.Query().Get("tz"))))
 }
 
-// overviewJSON encodes the overview for loc, reusing it until the index changes.
-func (s *Server) overviewJSON(loc *time.Location) []byte {
-	gen := s.store.Generation()
+type overviewCache struct {
+	gen    uint64
+	byZone map[string][]byte
+}
+
+// overviewJSON caches each board and zone until the index changes.
+func (s *Server) overviewJSON(rt *board.Runtime, loc *time.Location) []byte {
+	gen := rt.Store.Generation()
 	c := &s.overview
 	c.mu.Lock()
-	if c.gen != gen || c.byZone == nil {
-		c.gen, c.byZone = gen, map[string][]byte{}
+	if c.byBoard == nil {
+		c.byBoard = map[string]*overviewCache{}
 	}
-	body, ok := c.byZone[loc.String()]
+	entry := c.byBoard[rt.ID]
+	if entry == nil || entry.gen != gen {
+		entry = &overviewCache{gen: gen, byZone: map[string][]byte{}}
+		c.byBoard[rt.ID] = entry
+	}
+	body, ok := entry.byZone[loc.String()]
 	c.mu.Unlock()
 	if ok {
 		return body
 	}
 	// 96 quarter hours feed the reel's heat strip; playback is capped at the newest 400 pictures.
-	body, _ = json.Marshal(s.store.Overview(24*time.Hour, 96, 400, loc))
+	body, _ = json.Marshal(rt.Store.Overview(24*time.Hour, 96, 400, loc))
 	c.mu.Lock()
-	if c.gen == gen {
-		c.byZone[loc.String()] = body
+	if c.byBoard[rt.ID] == entry {
+		entry.byZone[loc.String()] = body
 	}
 	c.mu.Unlock()
 	return body
@@ -336,13 +382,6 @@ func (s *Server) handleLogout(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"admin": false})
 }
 
-func (s *Server) nextRun() time.Time {
-	if s.NextRun == nil {
-		return time.Time{}
-	}
-	return s.NextRun()
-}
-
 // disk is the space around the archive.
 type disk struct {
 	Free    int64 `json:"free"`
@@ -350,41 +389,79 @@ type disk struct {
 	Archive int64 `json:"archive"` // bytes taken by the indexed pictures
 }
 
-func (s *Server) statusBody() map[string]any {
-	d := diskSpace(s.store.Dir())
+func (s *Server) statusBody(rt *board.Runtime) (map[string]any, error) {
+	summary, err := s.boards.Summary(rt.ID)
+	if err != nil {
+		return nil, err
+	}
+	d := diskSpace(rt.Store.Dir())
 	if d != nil {
-		d.Archive = s.store.Bytes()
+		d.Archive = summary.Bytes
 	}
 	return map[string]any{
-		"fetch":    s.fetcher.Status(),
-		"token":    s.fetcher.Token(),
-		"cookie":   s.fetcher.Cookie(),
-		"history":  s.fetcher.History(),
+		"fetch":    rt.Fetcher.Status(),
+		"token":    tokenInfo(rt.Fetcher.Token()),
+		"cookie":   rt.Fetcher.Cookie(),
+		"history":  rt.Fetcher.History(),
 		"notify":   s.Notifier != nil,
 		"disk":     d,
-		"schedule": s.cfg.Schedule,
-		"next_run": s.nextRun(),
-		"count":    s.store.Count(),
-	}
+		"schedule": summary.Schedule,
+		"next_run": summary.NextRun,
+		"count":    summary.Count,
+		"board":    summary,
+	}, nil
 }
 
-// handleReady is for monitoring: 503 when pictures could not be saved.
-// Fetch health is reported but does not fail the check, since an expired
-// cookie is not something restarting the service would fix.
-func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
-	st := s.fetcher.Status()
-	err := s.store.Writable()
-	code := http.StatusOK
+func (s *Server) writeStatus(w http.ResponseWriter, rt *board.Runtime) {
+	body, err := s.statusBody(rt)
 	if err != nil {
-		log.Printf("readyz: storage not writable: %v", err)
+		writeBoardError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+// handleReady caches storage checks for five seconds, sharing one probe across concurrent requests.
+func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
+	s.ready.mu.Lock()
+	if time.Now().After(s.ready.expires) {
+		s.ready.code, s.ready.body = s.readiness()
+		s.ready.expires = time.Now().Add(5 * time.Second)
+	}
+	code, body := s.ready.code, s.ready.body
+	s.ready.mu.Unlock()
+	writeJSON(w, code, body)
+}
+
+// readiness checks storage for every active board. Fetch failures remain informational.
+func (s *Server) readiness() (int, map[string]any) {
+	var st fetcher.Status
+	if rt, _, err := s.defaultBoard(); err == nil {
+		st = rt.Fetcher.Status()
+	}
+	writable, count := true, 0
+	for _, b := range s.boards.All() {
+		if b.Lifecycle != board.Active {
+			continue
+		}
+		count++
+		rt, _, err := s.boards.Resolve(b.ID)
+		if err == nil {
+			err = rt.Store.Writable()
+		}
+		if err != nil {
+			log.Printf("readyz: board %s storage not writable: %v", b.ID, err)
+			writable = false
+		}
+	}
+	code := http.StatusOK
+	if !writable {
 		code = http.StatusServiceUnavailable
 	}
-	writeJSON(w, code, map[string]any{
-		"ok":               err == nil,
-		"storage_writable": err == nil,
-		"last_fetched":     st.LastFetched,
-		"failures":         st.Failures,
-	})
+	return code, map[string]any{
+		"ok": writable, "storage_writable": writable,
+		"last_fetched": st.LastFetched, "failures": st.Failures, "boards": count,
+	}
 }
 
 func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
@@ -400,34 +477,36 @@ func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"sent": true})
 }
 
-func (s *Server) handleCookie(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Cookie string `json:"cookie"`
-	}
-	if !readJSON(w, r, 16<<10, &body) {
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	rt, _, ok := s.resolveBoard(w, r, false)
+	if !ok {
 		return
 	}
-	if err := s.fetcher.SetCookie(body.Cookie); err != nil {
-		if errors.Is(err, fetcher.ErrInvalidCookie) {
-			writeError(w, http.StatusBadRequest, "invalid_cookie", "Cookie 格式不正确")
-			return
-		}
-		log.Printf("cookie: %v", err)
-		writeError(w, http.StatusInternalServerError, "cookie_save_failed", "保存 Cookie 失败")
-		return
-	}
-	writeJSON(w, http.StatusOK, s.statusBody())
-}
-
-func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.statusBody())
+	s.writeStatus(w, rt)
 }
 
 func (s *Server) handleFetch(w http.ResponseWriter, r *http.Request) {
+	rt, _, ok := s.resolveBoard(w, r, false)
+	if !ok {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.Magma.Timeout+10*time.Second)
 	defer cancel()
-	s.fetcher.Run(ctx)
-	writeJSON(w, http.StatusOK, s.statusBody())
+	if _, err := rt.Fetcher.Run(ctx); err != nil {
+		switch {
+		case errors.Is(err, fetcher.ErrBusy):
+			writeError(w, http.StatusConflict, "board_busy", "正在抓取，请稍后再试")
+		case errors.Is(err, fetcher.ErrNoURL):
+			writeError(w, http.StatusConflict, "no_url", "未设置画板地址")
+		case errors.Is(err, fetcher.ErrInactive):
+			writeError(w, http.StatusConflict, "board_inactive", "画板当前不可抓取")
+		default:
+			log.Printf("fetch: %v", err)
+			writeError(w, http.StatusInternalServerError, "fetch_failed", "抓取失败")
+		}
+		return
+	}
+	s.writeStatus(w, rt)
 }
 
 // readJSON decodes a JSON request body of at most limit bytes into v, answering the error itself.
@@ -437,7 +516,12 @@ func readJSON(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
 		writeError(w, http.StatusUnsupportedMediaType, "bad_request", "请求格式错误")
 		return false
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, limit)).Decode(v); err != nil {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
+	if err := dec.Decode(v); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "请求格式错误")
+		return false
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
 		writeError(w, http.StatusBadRequest, "bad_request", "请求格式错误")
 		return false
 	}
@@ -445,6 +529,10 @@ func readJSON(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
 }
 
 func (s *Server) handleSchedule(w http.ResponseWriter, r *http.Request) {
+	rt, _, ok := s.resolveBoard(w, r, false)
+	if !ok {
+		return
+	}
 	var body struct {
 		Paused *bool `json:"paused"`
 	}
@@ -455,12 +543,16 @@ func (s *Server) handleSchedule(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "请求格式错误")
 		return
 	}
-	if err := s.fetcher.SetPaused(*body.Paused); err != nil {
+	if err := s.boards.SetPaused(rt.ID, *body.Paused); err != nil {
+		if errors.Is(err, board.ErrNotFound) {
+			writeBoardError(w, err)
+			return
+		}
 		log.Printf("schedule: %v", err)
 		writeError(w, http.StatusInternalServerError, "schedule_save_failed", "保存定时任务状态失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.statusBody())
+	s.writeStatus(w, rt)
 }
 
 func (s *Server) handleNotices(w http.ResponseWriter, _ *http.Request) {
@@ -534,26 +626,34 @@ func (s *Server) serveFile(w http.ResponseWriter, r *http.Request, path, cacheCo
 // imageCache picks how long browsers may keep an image or one of its
 // renditions. Archived names embed the content's md5, so they never change;
 // other files dropped in by hand might be replaced under the same name.
-func (s *Server) imageCache(name string) string {
-	if it, ok := s.store.Get(name); ok && it.MD5 != "" {
+func (s *Server) imageCache(st *store.Store, name string) string {
+	if it, ok := st.Get(name); ok && it.MD5 != "" {
 		return "public, max-age=31536000, immutable"
 	}
 	return "public, max-age=86400"
 }
 
 func (s *Server) handleImage(w http.ResponseWriter, r *http.Request) {
+	rt, _, ok := s.resolveBoard(w, r, true)
+	if !ok {
+		return
+	}
 	name := r.PathValue("name")
-	path, err := s.store.Path(name)
+	path, err := rt.Store.Path(name)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	s.serveFile(w, r, path, s.imageCache(name))
+	s.serveFile(w, r, path, s.imageCache(rt.Store, name))
 }
 
 func (s *Server) handleThumb(size store.Size) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		path, err := s.store.Thumb(r.PathValue("name"), size)
+		rt, _, ok := s.resolveBoard(w, r, true)
+		if !ok {
+			return
+		}
+		path, err := rt.Store.Thumb(r.PathValue("name"), size)
 		if errors.Is(err, store.ErrNotFound) {
 			http.NotFound(w, r)
 			return
@@ -564,7 +664,7 @@ func (s *Server) handleThumb(size store.Size) http.HandlerFunc {
 			s.handleImage(w, r)
 			return
 		}
-		s.serveFile(w, r, path, s.imageCache(r.PathValue("name")))
+		s.serveFile(w, r, path, s.imageCache(rt.Store, r.PathValue("name")))
 	}
 }
 
@@ -573,8 +673,12 @@ func attachment(w http.ResponseWriter, name string) {
 }
 
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
+	rt, _, ok := s.resolveBoard(w, r, true)
+	if !ok {
+		return
+	}
 	name := r.PathValue("name")
-	path, err := s.store.Path(name)
+	path, err := rt.Store.Path(name)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -584,6 +688,10 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleZipSelected(w http.ResponseWriter, r *http.Request) {
+	rt, _, ok := s.resolveBoard(w, r, true)
+	if !ok {
+		return
+	}
 	names := r.URL.Query()["f"]
 	if r.Method == http.MethodPost {
 		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
@@ -600,7 +708,7 @@ func (s *Server) handleZipSelected(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		seen[name] = true
-		it, ok := s.store.Get(name)
+		it, ok := rt.Store.Get(name)
 		if !ok {
 			writeError(w, http.StatusNotFound, "image_not_found", "图片不存在: "+name)
 			return
@@ -615,22 +723,43 @@ func (s *Server) handleZipSelected(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "guest_zip_limit", "访客一次最多打包下载 "+strconv.Itoa(GuestZipLimit)+" 张")
 		return
 	}
+	if !checkZipFiles(w, rt.Store, items) {
+		return
+	}
 	if checkOnly(w, r) {
 		return
 	}
-	s.writeZip(w, r, "magma-selected-"+time.Now().Format(store.TimeLayout)+".zip", items)
+	s.writeZip(w, r, rt.ID, rt.Store, "magma-"+rt.ID+"-selected-"+time.Now().Format(store.TimeLayout)+".zip", items)
 }
 
 func (s *Server) handleZipAll(w http.ResponseWriter, r *http.Request) {
-	items := s.store.All()
+	rt, _, ok := s.resolveBoard(w, r, true)
+	if !ok {
+		return
+	}
+	items := rt.Store.All()
 	if len(items) == 0 {
 		writeError(w, http.StatusNotFound, "no_images", "暂无图片")
 		return
 	}
+	if !checkZipFiles(w, rt.Store, items) {
+		return
+	}
 	if checkOnly(w, r) {
 		return
 	}
-	s.writeZip(w, r, "magma-all-"+time.Now().Format(store.TimeLayout)+".zip", items)
+	s.writeZip(w, r, rt.ID, rt.Store, "magma-"+rt.ID+"-all-"+time.Now().Format(store.TimeLayout)+".zip", items)
+}
+
+func checkZipFiles(w http.ResponseWriter, st *store.Store, items []store.Item) bool {
+	for _, it := range items {
+		info, err := os.Stat(filepath.Join(st.Dir(), it.Name))
+		if err != nil || !info.Mode().IsRegular() {
+			writeError(w, http.StatusNotFound, "image_not_found", "图片不存在: "+it.Name)
+			return false
+		}
+	}
+	return true
 }
 
 // checkOnly answers a ?check request once the archive would be served: the
@@ -648,7 +777,7 @@ func checkOnly(w http.ResponseWriter, r *http.Request) bool {
 // compressed, so deflate would only waste CPU. Once streaming has started a
 // failure can only be signalled by cutting the connection: finishing the
 // response normally would hand the browser a corrupt archive it calls complete.
-func (s *Server) writeZip(w http.ResponseWriter, r *http.Request, filename string, items []store.Item) {
+func (s *Server) writeZip(w http.ResponseWriter, r *http.Request, boardID string, st *store.Store, filename string, items []store.Item) {
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Cache-Control", "no-store")
 	attachment(w, filename)
@@ -657,11 +786,13 @@ func (s *Server) writeZip(w http.ResponseWriter, r *http.Request, filename strin
 		if r.Context().Err() != nil {
 			return // the client is gone
 		}
-		f, err := os.Open(filepath.Join(s.store.Dir(), it.Name))
+		f, err := os.Open(filepath.Join(st.Dir(), it.Name))
 		if err != nil {
-			// Deleted by hand since the last rescan: leave it out rather than fail the archive.
-			log.Printf("zip: skip %s: %v", it.Name, err)
-			continue
+			if _, _, resolveErr := s.boards.Resolve(boardID); resolveErr != nil {
+				panic(http.ErrAbortHandler)
+			}
+			log.Printf("zip: open %s: %v", it.Name, err)
+			panic(http.ErrAbortHandler)
 		}
 		err = addToZip(zw, f, it)
 		f.Close()

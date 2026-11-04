@@ -82,15 +82,22 @@ const alertAfter = 3
 const recentSaves = 4
 
 type Fetcher struct {
-	cfg          config.Magma
-	configCookie string // magma.cookie as configured, before any page override
-	tempDir      string
-	store        *store.Store
-	client       *http.Client
-	now          func() time.Time
+	cfg     config.Magma
+	shared  *Credentials
+	tempDir string
+	store   *store.Store
+	client  *http.Client
+	now     func() time.Time
+	ensure  func(string) error
 
-	// Alert, when set, is told about lasting failures, recovery and an
-	// expiring cookie. It must not block.
+	// URL supplies the board URL. Active gates all runs; InWindow gates only
+	// scheduled runs. Set these hooks before starting runs.
+	URL      func() string
+	Active   func() bool
+	InWindow func(now time.Time) bool
+
+	// Alert, when set, is told about lasting failures and recovery.
+	// Token expiry uses WatchToken's callback instead. It must not block.
 	Alert func(event, message string)
 
 	runMu     sync.Mutex // serialises runs (cron + manual trigger)
@@ -98,30 +105,31 @@ type Fetcher struct {
 	recentMD5 []string // the last recentSaves saved images, newest first
 	// Validators of the last good response and the URL that sent them (the
 	// end of any redirect), so an unchanged image can be answered with 304.
-	etag, lastModified, validatorURL string
+	etag, lastModified, validatorURL, validatorCookie string
 
-	stateMu sync.Mutex // serialises writes of stateFile
+	stateMu  sync.Mutex // serialises writes of stateFile
+	ensureWG sync.WaitGroup
 
 	statusMu     sync.RWMutex // guards the fields below
 	status       Status
 	history      []Run // newest first
-	token        TokenInfo
+	boardCookie  string
 	cookie       CookieInfo
 	tokenAlerted time.Time
 }
 
-func New(cfg config.Magma, tempDir string, st *store.Store) *Fetcher {
+func New(cfg config.Magma, tempDir string, st *store.Store, shared *Credentials) *Fetcher {
 	f := &Fetcher{
-		cfg:          cfg,
-		configCookie: cfg.Cookie,
-		tempDir:      tempDir,
-		store:        st,
-		client:       &http.Client{Timeout: cfg.Timeout},
-		now:          time.Now,
-		cookie:       CookieInfo{Source: "config"},
+		cfg:     cfg,
+		shared:  shared,
+		tempDir: tempDir,
+		store:   st,
+		client:  &http.Client{Timeout: cfg.Timeout},
+		now:     time.Now,
+		ensure:  st.Ensure,
 	}
 	f.loadCookie()
-	f.setToken(f.cfg.Cookie)
+	logToken(f.Token(), f.now())
 	f.loadHistory()
 	if it, ok := st.Latest(); ok {
 		sum, err := st.FileMD5(it)
@@ -188,19 +196,30 @@ func (f *Fetcher) saveLastFetched() {
 	}
 }
 
+func (f *Fetcher) sourceURL() string {
+	if f.URL == nil {
+		return ""
+	}
+	return f.URL()
+}
+
 // RunScheduled is the cron entry point; it does nothing while paused or while
 // backing off after repeated failures. The checks happen under runMu so a run
 // queued behind a manual fetch still honours a pause made in the meantime.
 func (f *Fetcher) RunScheduled(ctx context.Context) {
 	f.runMu.Lock()
 	defer f.runMu.Unlock()
+	u := f.sourceURL()
+	if (f.Active != nil && !f.Active()) || u == "" || (f.InWindow != nil && !f.InWindow(f.now())) {
+		return
+	}
 	st := f.Status()
 	// The tolerance keeps a retry due on the very tick it was aimed at from
 	// being skipped by a few milliseconds of jitter.
 	if st.Paused || f.now().Add(2*time.Second).Before(st.RetryAt) {
 		return
 	}
-	f.run(ctx, false)
+	f.run(ctx, false, u)
 }
 
 // backoff is how long scheduled runs pause after the given number of
@@ -219,11 +238,39 @@ func (f *Fetcher) Status() Status {
 	return f.status
 }
 
-// Run performs one fetch cycle and returns the updated status.
-func (f *Fetcher) Run(ctx context.Context) Status {
+// Run performs a manual fetch, bypassing pause, schedule window and backoff.
+// Errors reject a run before it starts; fetch failures are reported in Status.
+func (f *Fetcher) Run(ctx context.Context) (Status, error) {
+	if !f.runMu.TryLock() {
+		return f.Status(), ErrBusy
+	}
+	defer f.runMu.Unlock()
+	if f.Active != nil && !f.Active() {
+		return f.Status(), ErrInactive
+	}
+	u := f.sourceURL()
+	if u == "" {
+		return f.Status(), ErrNoURL
+	}
+	return f.run(ctx, true, u), nil
+}
+
+// ResetBackoff lets the next scheduled run try an updated URL or shared credentials.
+// An in-flight fetch may recalculate backoff from its result afterward;
+// that race is acceptable so credential updates do not wait for a fetch.
+func (f *Fetcher) ResetBackoff() {
+	f.statusMu.Lock()
+	f.status.RetryAt = time.Time{}
+	f.statusMu.Unlock()
+}
+
+// Drain waits for the current fetch and its thumbnail work to finish.
+// The caller must stop new runs before draining.
+// Thumbnail workers do not acquire runMu, so it can stay locked while waiting.
+func (f *Fetcher) Drain() {
 	f.runMu.Lock()
 	defer f.runMu.Unlock()
-	return f.run(ctx, true)
+	f.ensureWG.Wait()
 }
 
 // response describes what the server sent, for the history.
@@ -233,9 +280,10 @@ type response struct {
 }
 
 // run does the work of Run; the caller holds runMu.
-func (f *Fetcher) run(ctx context.Context, manual bool) Status {
+func (f *Fetcher) run(ctx context.Context, manual bool, u string) Status {
 	started := f.now()
-	file, resp, err := f.fetchOnce(ctx, started)
+	cookie, _ := f.effectiveCookie()
+	file, resp, err := f.fetchOnce(ctx, started, cookie, u)
 	ended := f.now()
 	if err != nil && errors.Is(ctx.Err(), context.Canceled) {
 		// Shutting down, or the admin's request went away: an abort, not a
@@ -255,6 +303,7 @@ func (f *Fetcher) run(ctx context.Context, manual bool) Status {
 		}
 	}()
 
+	currentCookie, _ := f.effectiveCookie()
 	f.statusMu.Lock()
 	defer f.statusMu.Unlock()
 	st := &f.status
@@ -265,7 +314,8 @@ func (f *Fetcher) run(ctx context.Context, manual bool) Status {
 		st.Result, st.Code, st.Message = ResultError, ErrorCode(err), err.Error()
 		rec.Result, rec.Code, rec.Message = st.Result, st.Code, st.Message
 		st.Failures++
-		if d := backoff(st.Failures); d > 0 {
+		// A failure with old credentials must not delay trying new ones.
+		if d := backoff(st.Failures); d > 0 && cookie == currentCookie {
 			st.RetryAt = ended.Add(d) // from the end: a slow failure must not eat the pause
 		}
 		// A lasting outage (say an expired cookie) would otherwise log the same line every run.
@@ -299,23 +349,25 @@ func (f *Fetcher) run(ctx context.Context, manual bool) Status {
 }
 
 // fetchOnce returns the stored file name, or "" when the image is unchanged.
-func (f *Fetcher) fetchOnce(ctx context.Context, now time.Time) (file string, info response, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.cfg.URL, nil)
+func (f *Fetcher) fetchOnce(ctx context.Context, now time.Time, cookie, u string) (file string, info response, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return "", info, err
 	}
 	for k, v := range f.cfg.Headers {
-		req.Header.Set(k, v)
+		if !strings.EqualFold(k, "Cookie") {
+			req.Header.Set(k, v)
+		}
 	}
-	if f.cfg.Cookie != "" {
-		req.Header.Set("Cookie", f.cfg.Cookie)
+	if cookie != "" {
+		req.Header.Set("Cookie", cookie)
 	}
-	// Validators only mean something to the URL that issued them, and only
+	// Validators only apply to the URL and credentials that issued them,
 	// while the image they describe is the latest saved one.
 	conditional := func(r *http.Request) {
 		r.Header.Del("If-None-Match")
 		r.Header.Del("If-Modified-Since")
-		if f.lastMD5 == "" || r.URL.String() != f.validatorURL {
+		if f.lastMD5 == "" || r.URL.String() != f.validatorURL || cookie != f.validatorCookie {
 			return
 		}
 		if f.etag != "" {
@@ -388,7 +440,7 @@ func (f *Fetcher) fetchOnce(ctx context.Context, now time.Time) (file string, in
 	// keeping them after a failed save would turn every later answer into a 304.
 	remember := func() {
 		f.etag, f.lastModified = resp.Header.Get("ETag"), resp.Header.Get("Last-Modified")
-		f.validatorURL = resp.Request.URL.String()
+		f.validatorURL, f.validatorCookie = resp.Request.URL.String(), cookie
 	}
 
 	sum := hex.EncodeToString(h.Sum(nil))
@@ -413,11 +465,11 @@ func (f *Fetcher) fetchOnce(ctx context.Context, now time.Time) (file string, in
 	f.recentMD5 = append([]string{sum}, f.recentMD5[:min(len(f.recentMD5), recentSaves-1)]...)
 	remember()
 	// Render thumbnails now so the first visitor does not wait for a 4K decode.
-	go func() {
-		if err := f.store.Ensure(name); err != nil {
+	f.ensureWG.Go(func() {
+		if err := f.ensure(name); err != nil {
 			log.Printf("fetcher: %v", err)
 		}
-	}()
+	})
 	return name, info, nil
 }
 

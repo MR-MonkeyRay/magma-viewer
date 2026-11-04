@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,6 +23,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"magma-viewer/internal/board"
 	"magma-viewer/internal/config"
 	"magma-viewer/internal/fetcher"
 	"magma-viewer/internal/notice"
@@ -55,6 +58,34 @@ func openNotices(t *testing.T) *notice.Store {
 	return ns
 }
 
+func newTestWebServer(t *testing.T, cfg *config.Config, ensureLegacy bool) (*Server, *board.Manager, *board.Runtime) {
+	t.Helper()
+	root := t.TempDir()
+	if ensureLegacy {
+		if err := os.WriteFile(filepath.Join(root, "legacy.png"), []byte("img"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if cfg.Schedule == "" {
+		cfg.Schedule = "* * * * *"
+	}
+	cfg.Storage = config.Storage{Dir: root, TempDir: t.TempDir()}
+	creds := fetcher.NewCredentials(filepath.Join(root, ".state", "cookie.json"))
+	boards, err := board.NewManager(board.Options{Root: root, TempDir: cfg.Storage.TempDir, Magma: cfg.Magma, Schedule: cfg.Schedule, Shared: creds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(boards.Stop)
+	var rt *board.Runtime
+	if id := boards.LegacyID(); id != "" {
+		rt, _, err = boards.Resolve(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return New(cfg, boards, creds, openNotices(t), fstest.MapFS{}), boards, rt
+}
+
 func newTestServer(t *testing.T, n int) (*httptest.Server, string) {
 	t.Helper()
 	srv, q, _ := newTestServerStore(t, n)
@@ -64,36 +95,52 @@ func newTestServer(t *testing.T, n int) (*httptest.Server, string) {
 // newTestServerStore serves n tiny images and returns the server, an f=... query naming them all, and the store.
 func newTestServerStore(t *testing.T, n int) (*httptest.Server, string, *store.Store) {
 	t.Helper()
-	dir := t.TempDir()
+	root := t.TempDir()
 	var names []string
 	for i := 0; i < n; i++ {
 		name := fmt.Sprintf("20261020-1200%02d_%032d.png", i, i)
 		names = append(names, name)
-		os.WriteFile(filepath.Join(dir, name), []byte("img"), 0o644)
+		if err := os.WriteFile(filepath.Join(root, name), []byte("img"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	st, err := store.New(dir)
-	if err != nil {
-		t.Fatal(err)
+	if n == 0 {
+		if err := os.MkdirAll(filepath.Join(root, ".state"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, ".state", "fetcher.json"), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	cfg := &config.Config{
 		Admin:    config.Admin{Username: "admin", Password: "pw", SessionTTL: time.Hour},
-		Magma:    config.Magma{URL: "http://127.0.0.1:1", Timeout: time.Second},
+		Magma:    config.Magma{Timeout: time.Second},
 		Schedule: "* * * * *",
+		Storage:  config.Storage{Dir: root, TempDir: t.TempDir()},
 	}
-	f := fetcher.New(cfg.Magma, t.TempDir(), st)
+	creds := fetcher.NewCredentials(filepath.Join(root, ".state", "cookie.json"))
+	boards, err := board.NewManager(board.Options{Root: root, TempDir: cfg.Storage.TempDir, Magma: cfg.Magma, Schedule: cfg.Schedule, Shared: creds})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(boards.Stop)
+	rt, _, err := boards.Resolve(boards.LegacyID())
+	if err != nil {
+		t.Fatal(err)
+	}
 	static := fstest.MapFS{
 		"index.html":    {Data: []byte(`<html><script src="app.js"></script></html>`)},
 		"app.js":        {Data: []byte("// app\n" + strings.Repeat("console.log('padding so gzip pays off');\n", 20))},
 		"fonts/a.woff2": {Data: []byte("font")},
 	}
-	srv := httptest.NewServer(New(cfg, st, f, openNotices(t), static).Handler())
+	srv := httptest.NewServer(New(cfg, boards, creds, openNotices(t), static).Handler())
 	t.Cleanup(srv.Close)
 
 	q := url.Values{}
 	for _, n := range names {
 		q.Add("f", n)
 	}
-	return srv, q.Encode(), st
+	return srv, q.Encode(), rt.Store
 }
 
 func login(t *testing.T, base string) *http.Cookie {
@@ -170,6 +217,45 @@ func TestLoginRejectsBadPassword(t *testing.T) {
 	}
 }
 
+func TestSessionCookieSecure(t *testing.T) {
+	cases := []struct {
+		name, remote, proto, scheme string
+		proxies                     []netip.Prefix
+		want                        bool
+	}{
+		{name: "untrusted peer", remote: "203.0.113.9:4000", proto: "https"},
+		{name: "trusted loopback", remote: "127.0.0.1:4000", proto: "https", want: true},
+		{name: "excluded peer", remote: "127.0.0.1:4000", proto: "https", proxies: []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}},
+		{name: "direct TLS", remote: "203.0.113.9:4000", scheme: "https", want: true},
+		{name: "plain HTTP", remote: "127.0.0.1:4000"},
+		{name: "normalized protocol", remote: "[::1]:4000", proto: " HTTPS ", want: true},
+		{name: "mapped loopback", remote: "[::ffff:127.0.0.1]:4000", proto: "https", want: true},
+		{name: "invalid peer", remote: "not-an-ip", proto: "https"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := newAuth("admin", "pw", "secret", time.Hour)
+			a.proxies = c.proxies
+			scheme := c.scheme
+			if scheme == "" {
+				scheme = "http"
+			}
+			r := httptest.NewRequest(http.MethodPost, scheme+"://example.com/api/login", nil)
+			r.RemoteAddr = c.remote
+			r.Header.Set("X-Forwarded-Proto", c.proto)
+			w := httptest.NewRecorder()
+			a.setSession(w, r)
+			cookies := w.Result().Cookies()
+			if len(cookies) != 1 || cookies[0].Name != sessionCookie {
+				t.Fatalf("session cookie missing: %v", cookies)
+			}
+			if got := cookies[0].Secure; got != c.want {
+				t.Errorf("Secure = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 func TestSchedulePause(t *testing.T) {
 	srv, _ := newTestServer(t, 0)
 	postAs := func(ct, body string, c *http.Cookie) *http.Response {
@@ -216,14 +302,21 @@ func TestSchedulePause(t *testing.T) {
 }
 
 func TestListReportsNextRunAndVersion(t *testing.T) {
-	st, err := store.New(t.TempDir())
+	root := t.TempDir()
+	cfg := &config.Config{Magma: config.Magma{Timeout: time.Second}, Schedule: "* * * * *", Storage: config.Storage{Dir: root, TempDir: t.TempDir()}}
+	creds := fetcher.NewCredentials(filepath.Join(root, ".state", "cookie.json"))
+	boards, err := board.NewManager(board.Options{Root: root, TempDir: cfg.Storage.TempDir, Magma: cfg.Magma, Schedule: cfg.Schedule, Shared: creds})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{Magma: config.Magma{URL: "http://127.0.0.1:1", Timeout: time.Second}, Schedule: "* * * * *"}
-	s := New(cfg, st, fetcher.New(cfg.Magma, t.TempDir(), st), openNotices(t), fstest.MapFS{})
-	next := time.Date(2026, 10, 21, 12, 1, 0, 0, time.UTC)
-	s.NextRun = func() time.Time { return next }
+	created, err := boards.Create(board.Settings{Name: "test", URL: "http://example.invalid"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	boards.Start(ctx)
+	t.Cleanup(func() { cancel(); boards.Stop() })
+	s := New(cfg, boards, creds, openNotices(t), fstest.MapFS{})
 	s.Version = "1.2.3"
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
@@ -239,11 +332,58 @@ func TestListReportsNextRunAndVersion(t *testing.T) {
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if !body.Task.NextRun.Equal(next) {
-		t.Fatalf("next_run = %v, want %v", body.Task.NextRun, next)
+	if next := boards.NextRun(created.ID); !body.Task.NextRun.Equal(next) || next.IsZero() {
+		t.Fatalf("next_run = %v, want non-zero %v", body.Task.NextRun, next)
 	}
 	if body.Version != "1.2.3" {
 		t.Fatalf("version = %q", body.Version)
+	}
+}
+
+func TestListReportsSyncState(t *testing.T) {
+	s, boards, _ := newTestWebServer(t, &config.Config{}, false)
+	h := s.Handler()
+	now := time.Now()
+	for _, tc := range []struct {
+		state     string
+		from, end time.Time
+		paused    bool
+	}{
+		{"pending", now.Add(24 * time.Hour), time.Time{}, false},
+		{"ended", time.Time{}, now.Add(-24 * time.Hour), false},
+		{"paused", now.Add(24 * time.Hour), time.Time{}, true},
+		{"syncing", time.Time{}, time.Time{}, false},
+	} {
+		t.Run(tc.state, func(t *testing.T) {
+			b, err := boards.Create(board.Settings{
+				Name: tc.state, URL: "http://example.invalid/" + tc.state,
+				SyncFrom: tc.from, SyncUntil: tc.end,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := boards.SetPaused(b.ID, tc.paused); err != nil {
+				t.Fatal(err)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/images?board="+b.ID, nil))
+			var body struct {
+				Task struct {
+					State  string `json:"state"`
+					Paused bool   `json:"paused"`
+				} `json:"task"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if rec.Code != http.StatusOK || body.Task.State != tc.state || body.Task.Paused != tc.paused {
+				t.Fatalf("images: status %d task %+v, want state %q paused %v", rec.Code, body.Task, tc.state, tc.paused)
+			}
+			summary, err := boards.Summary(b.ID)
+			if err != nil || body.Task.State != summary.State {
+				t.Fatalf("task.state %q disagrees with summary.state %q: %v", body.Task.State, summary.State, err)
+			}
+		})
 	}
 }
 
@@ -328,20 +468,60 @@ func TestPasswordChangeEndsSessions(t *testing.T) {
 	}
 }
 
-func TestZipSkipsFileDeletedBehindIndex(t *testing.T) {
+func TestZipRejectsFileDeletedBehindIndex(t *testing.T) {
 	srv, all, st := newTestServerStore(t, 3)
 	gone := st.All()[0].Name
-	os.Remove(filepath.Join(st.Dir(), gone))
+	if err := os.Remove(filepath.Join(st.Dir(), gone)); err != nil {
+		t.Fatal(err)
+	}
 
 	c := login(t, srv.URL)
-	if r := get(t, srv.URL+"/download/zip?"+all, c); r.StatusCode != http.StatusOK || zipCount(t, r) != 2 {
-		t.Fatalf("zip without deleted file: %s", r.Status)
+	for _, path := range []string{
+		"/download/zip?" + all,
+		"/download/zip?check=1&" + all,
+		"/download/all",
+		"/download/all?check=1",
+	} {
+		r := get(t, srv.URL+path, c)
+		body := decode(t, r)
+		if r.StatusCode != http.StatusNotFound || body["code"] != "image_not_found" || body["error"] != "图片不存在: "+gone {
+			t.Fatalf("%s: %s, %v", path, r.Status, body)
+		}
+		if r.Header.Get("Content-Disposition") != "" {
+			t.Fatalf("%s: error offered as an attachment", path)
+		}
 	}
 	r := get(t, srv.URL+"/img/"+gone, nil)
 	r.Body.Close()
 	if r.StatusCode != http.StatusNotFound || r.Header.Get("Cache-Control") != "" {
 		t.Fatalf("deleted image: %s, Cache-Control %q", r.Status, r.Header.Get("Cache-Control"))
 	}
+}
+
+func TestZipAbortsWhenFileDisappearsAfterCheck(t *testing.T) {
+	s, _, rt := newTestWebServer(t, &config.Config{}, true)
+	first := rt.Store.All()[0]
+	if err := rt.Store.Import(strings.NewReader("img"), "later.png"); err != nil {
+		t.Fatal(err)
+	}
+	second, ok := rt.Store.Get("later.png")
+	if !ok {
+		t.Fatal("imported image missing from index")
+	}
+	items := []store.Item{first, second}
+	w := httptest.NewRecorder()
+	if !checkZipFiles(w, rt.Store, items) {
+		t.Fatal("existing files failed check")
+	}
+	if err := os.Remove(filepath.Join(rt.Store.Dir(), second.Name)); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if got := recover(); got != http.ErrAbortHandler {
+			t.Errorf("panic = %v, want http.ErrAbortHandler", got)
+		}
+	}()
+	s.writeZip(w, httptest.NewRequest(http.MethodGet, "/download/all", nil), rt.ID, rt.Store, "images.zip", items)
 }
 
 func TestCrossSiteRequestsRejected(t *testing.T) {
@@ -581,6 +761,79 @@ func TestPageLinksAssetsByContentHash(t *testing.T) {
 	}
 }
 
+func TestAdminAssets(t *testing.T) {
+	assets, err := loadAssets(os.DirFS("../../web"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := (&Server{assets: assets}).Handler()
+	request := func(target string, headers ...string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodGet, target, nil)
+		for i := 0; i+1 < len(headers); i += 2 {
+			r.Header.Set(headers[i], headers[i+1])
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	page := request("/admin")
+	if page.Code != http.StatusOK || !strings.HasPrefix(page.Header().Get("Content-Type"), "text/html") {
+		t.Fatalf("admin: %d type %q", page.Code, page.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(page.Body.String(), `<main id="admin-content"`) || strings.Contains(page.Body.String(), `src="app.js`) {
+		t.Fatal("admin page must have its own root and script")
+	}
+	sum := sha256.Sum256(page.Body.Bytes())
+	etag := fmt.Sprintf(`"%x"`, sum[:8])
+	if page.Header().Get("Cache-Control") != "no-cache" || page.Header().Get("ETag") != etag {
+		t.Fatalf("admin: cache %q etag %q, want %q", page.Header().Get("Cache-Control"), page.Header().Get("ETag"), etag)
+	}
+	if r := request("/admin", "If-None-Match", etag); r.Code != http.StatusNotModified {
+		t.Fatalf("admin revalidation: %d", r.Code)
+	}
+	if r := request("/admin.html"); r.Code != http.StatusOK || !bytes.Equal(r.Body.Bytes(), page.Body.Bytes()) {
+		t.Fatalf("admin.html: %d", r.Code)
+	}
+	for _, query := range []string{"", "?lang=en&next=%2Fapi%2Fadmin"} {
+		if r := request("/admin/" + query); r.Code != http.StatusPermanentRedirect || r.Header().Get("Location") != "/admin"+query {
+			t.Errorf("admin slash%s: %d location %q", query, r.Code, r.Header().Get("Location"))
+		}
+	}
+	base, err := url.Parse("http://example.com/admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"app.css", "admin.css", "theme.js", "i18n.js", "admin.js"} {
+		t.Run(name, func(t *testing.T) {
+			plain := request("/" + name)
+			if plain.Code != http.StatusOK {
+				t.Fatalf("asset: %d", plain.Code)
+			}
+			sum := sha256.Sum256(plain.Body.Bytes())
+			link := fmt.Sprintf("%s?v=%x", name, sum[:8])
+			attr := `src="`
+			if strings.HasSuffix(name, ".css") {
+				attr = `href="`
+			}
+			if !strings.Contains(page.Body.String(), attr+link+`"`) {
+				t.Fatalf("admin page missing hashed link %q", link)
+			}
+			u, err := base.Parse(link)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r := request(u.RequestURI()); r.Code != http.StatusOK || r.Header().Get("Cache-Control") != immutable {
+				t.Fatalf("versioned asset: %d cache %q", r.Code, r.Header().Get("Cache-Control"))
+			}
+		})
+	}
+	for _, target := range []string{"/missing", "/admin/missing"} {
+		if r := request(target); r.Code != http.StatusNotFound {
+			t.Errorf("%s: %d", target, r.Code)
+		}
+	}
+}
+
 func TestAPIResponsesCompressed(t *testing.T) {
 	srv, _ := newTestServer(t, 3)
 	r := rawGet(t, srv.URL+"/api/overview", "Accept-Encoding", "gzip")
@@ -633,9 +886,8 @@ func TestImageCacheHeaders(t *testing.T) {
 }
 
 func TestZoneAliasesNotCached(t *testing.T) {
-	st, _ := store.New(t.TempDir())
 	cfg := &config.Config{Admin: config.Admin{Username: "a", Password: "b", SessionTTL: time.Hour}}
-	s := New(cfg, st, fetcher.New(cfg.Magma, t.TempDir(), st), openNotices(t), fstest.MapFS{})
+	s, _, _ := newTestWebServer(t, cfg, true)
 	h := s.Handler()
 	for _, tz := range []string{"Europe/Paris", "Europe/./Paris", "Europe//Paris", "./Europe/Paris"} {
 		rec := httptest.NewRecorder()
@@ -733,26 +985,55 @@ func TestListDate(t *testing.T) {
 }
 
 func TestReadyz(t *testing.T) {
-	srv, _, st := newTestServerStore(t, 1)
-	m := decode(t, get(t, srv.URL+"/readyz", nil))
-	if m["ok"] != true || m["storage_writable"] != true {
-		t.Fatalf("healthy: %v", m)
+	s, _, rt := newTestWebServer(t, &config.Config{}, true)
+	handler := s.Handler()
+	probe := func(want int) string {
+		t.Helper()
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+		if w.Code != want {
+			t.Fatalf("readyz status = %d, want %d: %s", w.Code, want, w.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body["ok"] != (want == http.StatusOK) || body["storage_writable"] != body["ok"] || body["boards"] != float64(1) {
+			t.Fatalf("readyz body = %v", body)
+		}
+		return w.Body.String()
 	}
-	if os.Geteuid() == 0 {
-		t.Skip("root ignores directory permissions")
+	expire := func() {
+		s.ready.mu.Lock()
+		s.ready.expires = time.Now().Add(-time.Second)
+		s.ready.mu.Unlock()
 	}
-	tmp := filepath.Join(st.Dir(), ".state", "tmp")
-	if err := os.Chmod(tmp, 0o500); err != nil {
+	healthy := probe(http.StatusOK)
+	// A file in place of the temp directory makes any new storage probe fail,
+	// including when tests run as root.
+	tmp := filepath.Join(rt.Store.Dir(), ".state", "tmp")
+	if err := os.Rename(tmp, tmp+".saved"); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(tmp, 0o755) })
-	r := get(t, srv.URL+"/readyz", nil)
-	if r.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("read-only storage: %s", r.Status)
+	if err := os.WriteFile(tmp, []byte("blocked"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if m := decode(t, r); m["ok"] != false || m["storage_writable"] != false {
-		t.Fatalf("read-only storage: %v", m)
+	if got := probe(http.StatusOK); got != healthy {
+		t.Fatalf("cached healthy response changed: %s", got)
 	}
+	expire()
+	unhealthy := probe(http.StatusServiceUnavailable)
+	if err := os.Remove(tmp); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp+".saved", tmp); err != nil {
+		t.Fatal(err)
+	}
+	if got := probe(http.StatusServiceUnavailable); got != unhealthy {
+		t.Fatalf("cached unhealthy response changed: %s", got)
+	}
+	expire()
+	probe(http.StatusOK)
 }
 
 func TestSetCookie(t *testing.T) {
@@ -765,13 +1046,71 @@ func TestSetCookie(t *testing.T) {
 	if r.StatusCode != http.StatusOK {
 		t.Fatalf("valid cookie: %s", r.Status)
 	}
-	if ck, _ := decode(t, r)["cookie"].(map[string]any); ck["source"] != "page" {
+	if ck := decode(t, r); ck["source"] != "page" {
 		t.Fatalf("cookie info: %v", ck)
 	}
 	r = sendJSON(t, http.MethodPut, srv.URL+"/api/cookie", `{"cookie":"a\nb"}`, c)
 	if r.StatusCode != http.StatusBadRequest || decode(t, r)["code"] != "invalid_cookie" {
 		t.Fatalf("newline cookie: %s", r.Status)
 	}
+}
+
+func TestHandleFetchConflicts(t *testing.T) {
+	newServer := func(t *testing.T, magma config.Magma) (*Server, *fetcher.Fetcher) {
+		t.Helper()
+		cfg := &config.Config{Magma: magma}
+		s, _, rt := newTestWebServer(t, cfg, true)
+		return s, rt.Fetcher
+	}
+	check := func(t *testing.T, s *Server, code, message string) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		s.handleFetch(rec, httptest.NewRequest(http.MethodPost, "/api/fetch", nil))
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["code"] != code || body["error"] != message {
+			t.Fatalf("body = %v", body)
+		}
+	}
+
+	t.Run("no URL", func(t *testing.T) {
+		s, _ := newServer(t, config.Magma{Timeout: time.Second})
+		check(t, s, "no_url", "未设置画板地址")
+	})
+	t.Run("inactive", func(t *testing.T) {
+		s, f := newServer(t, config.Magma{Timeout: time.Second})
+		f.URL = func() string { return "http://example.invalid" }
+		f.Active = func() bool { return false }
+		check(t, s, "board_inactive", "画板当前不可抓取")
+	})
+	t.Run("busy", func(t *testing.T) {
+		s, f := newServer(t, config.Magma{Timeout: time.Second})
+		f.URL = func() string { return "http://example.invalid" }
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		var once sync.Once
+		f.Active = func() bool {
+			once.Do(func() {
+				close(entered)
+				<-release
+			})
+			return false
+		}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _ = f.Run(context.Background())
+		}()
+		<-entered
+		check(t, s, "board_busy", "正在抓取，请稍后再试")
+		close(release)
+		<-done
+	})
 }
 
 func postZip(t *testing.T, base, form string, c *http.Cookie) *http.Response {
@@ -860,12 +1199,8 @@ func TestNotifyTestSends(t *testing.T) {
 		got <- m
 	}))
 	defer hook.Close()
-	st, err := store.New(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
 	cfg := &config.Config{Admin: config.Admin{Username: "admin", Password: "pw", SessionTTL: time.Hour}}
-	s := New(cfg, st, fetcher.New(cfg.Magma, t.TempDir(), st), openNotices(t), fstest.MapFS{})
+	s, _, _ := newTestWebServer(t, cfg, true)
 	s.Notifier = notify.New(config.Notify{Webhook: hook.URL, Format: "json"})
 	srv := httptest.NewServer(s.Handler())
 	defer srv.Close()
@@ -892,7 +1227,7 @@ func TestStatusBody(t *testing.T) {
 	if _, ok := m["history"].([]any); !ok {
 		t.Fatalf("history: %v", m["history"])
 	}
-	if ck, _ := m["cookie"].(map[string]any); ck["source"] != "config" {
+	if ck, _ := m["cookie"].(map[string]any); ck["source"] != "none" {
 		t.Fatalf("cookie: %v", m["cookie"])
 	}
 	if m["notify"] != false {
@@ -922,5 +1257,40 @@ func TestZipFormPostGuards(t *testing.T) {
 	}
 	if got := send("f="+strings.Repeat("x", 2<<20), "same-origin"); got != http.StatusBadRequest {
 		t.Errorf("oversized form: %d", got)
+	}
+}
+
+func TestStatusUsesManagerSummary(t *testing.T) {
+	cfg := &config.Config{
+		Admin:    config.Admin{Username: "admin", Password: "pw", SessionTTL: time.Hour},
+		Schedule: "* * * * *",
+		Storage:  config.Storage{Dir: t.TempDir(), TempDir: t.TempDir()},
+	}
+	creds := fetcher.NewCredentials(filepath.Join(cfg.Storage.Dir, ".state", "cookie.json"))
+	now := time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC)
+	boards, err := board.NewManager(board.Options{
+		Root: cfg.Storage.Dir, TempDir: cfg.Storage.TempDir, Schedule: cfg.Schedule,
+		Shared: creds, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(boards.Stop)
+	b, err := boards.Create(board.Settings{
+		Name: "Window", URL: "http://example.invalid", SyncFrom: now.Add(-time.Hour), SyncUntil: now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := boards.SetPaused(b.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	s := New(cfg, boards, creds, openNotices(t), fstest.MapFS{})
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+	c := login(t, srv.URL)
+	body := decode(t, get(t, srv.URL+"/api/status?board="+b.ID, c))
+	if got := body["board"].(map[string]any)["state"]; got != "syncing" {
+		t.Fatalf("state = %v, want manager clock's syncing state", got)
 	}
 }
