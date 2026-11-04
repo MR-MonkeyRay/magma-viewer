@@ -504,6 +504,11 @@ const (
 
 var sizeEdge = map[Size]int{Small: 480, Preview: 1600}
 
+func previewIsOriginal(it Item) bool {
+	return strings.EqualFold(filepath.Ext(it.Name), ".gif") ||
+		(it.W > 0 && it.H > 0 && max(it.W, it.H) <= sizeEdge[Preview])
+}
+
 func (s *Store) cachePath(name string, size Size) string {
 	if size == Preview {
 		return filepath.Join(s.thumbDir, name+".m.jpg")
@@ -519,8 +524,7 @@ func (s *Store) Thumb(name string, size Size) (string, error) {
 		return "", ErrNotFound
 	}
 	src := filepath.Join(s.dir, name)
-	if size == Preview && (strings.EqualFold(filepath.Ext(name), ".gif") ||
-		(it.W > 0 && max(it.W, it.H) <= sizeEdge[Preview])) {
+	if size == Preview && previewIsOriginal(it) {
 		return src, nil
 	}
 	dst := s.cachePath(name, size)
@@ -537,7 +541,11 @@ func (s *Store) Thumb(name string, size Size) (string, error) {
 func (s *Store) Ensure(name string) error {
 	src := filepath.Join(s.dir, name)
 	small, preview := s.cachePath(name, Small), s.cachePath(name, Preview)
-	if fresh(small, src) && fresh(preview, src) {
+	if it, ok := s.Get(name); ok && previewIsOriginal(it) {
+		_ = os.Remove(preview) // best effort: remove renditions no longer used
+		preview = ""
+	}
+	if fresh(small, src) && (preview == "" || fresh(preview, src)) {
 		return nil
 	}
 	info, err := os.Stat(src)
@@ -560,7 +568,7 @@ func (s *Store) Ensure(name string) error {
 		// a request racing past this only repeats an idempotent render.
 		s.thumbLocks.CompareAndDelete(name, mu)
 	}()
-	if fresh(small, src) && fresh(preview, src) {
+	if fresh(small, src) && (preview == "" || fresh(preview, src)) {
 		return nil
 	}
 	if s.knownUndecodable(name, stamp) { // decided by whoever held the lock before us
@@ -639,7 +647,12 @@ func (s *Store) Warm(stop <-chan struct{}) {
 		default:
 		}
 		src := filepath.Join(s.dir, it.Name)
-		if fresh(s.cachePath(it.Name, Small), src) && fresh(s.cachePath(it.Name, Preview), src) {
+		preview := s.cachePath(it.Name, Preview)
+		original := previewIsOriginal(it)
+		if original {
+			_ = os.Remove(preview) // also clean up when the small thumbnail is fresh
+		}
+		if fresh(s.cachePath(it.Name, Small), src) && (original || fresh(preview, src)) {
 			continue
 		}
 		if err := s.Ensure(it.Name); err != nil {
@@ -794,12 +807,15 @@ func makeThumbs(src, previewDst, smallDst string) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", errUndecodable, err)
 	}
-	preview := scale(img, sizeEdge[Preview])
-	if err := writeJPEG(previewDst, preview, 85); err != nil {
-		return err
+	if previewDst != "" {
+		preview := scale(img, sizeEdge[Preview])
+		if err := writeJPEG(previewDst, preview, 85); err != nil {
+			return err
+		}
+		// Downscaling from the preview is much cheaper than from the original.
+		img = preview
 	}
-	// Downscaling from the preview is much cheaper than from the original.
-	return writeJPEG(smallDst, scale(preview, sizeEdge[Small]), 80)
+	return writeJPEG(smallDst, scale(img, sizeEdge[Small]), 80)
 }
 
 func writeJPEG(dst string, img image.Image, quality int) error {
