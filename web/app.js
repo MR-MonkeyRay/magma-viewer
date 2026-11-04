@@ -171,7 +171,10 @@
     el.currentBoard.textContent = board ? board.name : '';
     el.currentBoard.hidden = !board;
     document.title = board ? `${board.name} · ${t('app.title')}` : t('app.title');
-    $('#download-all').setAttribute('href', board ? boardURL('/download/all') : '#');
+    // Without a board there is nothing to archive; an href of "#" plus the download attribute would save the page itself.
+    const all = $('#download-all');
+    if (board) { all.setAttribute('href', boardURL('/download/all')); all.removeAttribute('aria-disabled'); }
+    else { all.removeAttribute('href'); all.setAttribute('aria-disabled', 'true'); }
     // Refreshing an open list should keep the keyboard on the same board.
     const focused = el.boardMenu.contains(document.activeElement) ? document.activeElement.dataset.board : '';
     const items = boards.items.slice().sort((a, b) => Number(b.id === boards.suggested) - Number(a.id === boards.suggested));
@@ -2058,7 +2061,7 @@
   }
 
   function menuKey(e) {
-    const items = [...menuBtn.nextElementSibling.querySelectorAll('button, a')];
+    const items = [...menuBtn.nextElementSibling.querySelectorAll('button:not(:disabled), a[href]')];
     const at = items.indexOf(document.activeElement);
     if (e.key === 'Escape' || e.key === 'Tab') closeMenu(e.key === 'Escape');
     else if (e.key === 'ArrowDown') items[(at + 1) % items.length].focus();

@@ -127,6 +127,75 @@ func TestOverviewCacheIsPerBoard(t *testing.T) {
 	}
 }
 
+func TestAdminOverviewCache(t *testing.T) {
+	s, boards, _ := newTestWebServer(t, &config.Config{
+		Admin: config.Admin{Username: "admin", Password: "pw", SessionTTL: time.Hour},
+	}, false)
+	b := createBoard(t, boards, "Original", false)
+	s.Version = "cached"
+	h := s.Handler()
+	token, _ := s.auth.newToken()
+	request := func(method, path, body string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s %s: %d %s", method, path, rec.Code, rec.Body.String())
+		}
+		return rec
+	}
+	overview := func() *httptest.ResponseRecorder {
+		return request(http.MethodGet, "/api/admin/overview", "")
+	}
+	first := overview().Body.String()
+	s.Version = "rebuilt"
+	if second := overview().Body.String(); second != first {
+		t.Fatalf("cache hit changed body:\n%s\n%s", first, second)
+	}
+	request(http.MethodPut, "/api/admin/boards/"+b.ID, `{"name":"Renamed","url":"http://example.invalid/updated"}`)
+	var got struct {
+		Boards  []board.Summary `json:"boards"`
+		Version string          `json:"version"`
+	}
+	readOverview := func() {
+		t.Helper()
+		if err := json.Unmarshal(overview().Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+	}
+	readOverview()
+	if len(got.Boards) != 1 || got.Boards[0].Name != "Renamed" || got.Version != "rebuilt" {
+		t.Fatalf("board update did not invalidate cache: %+v", got)
+	}
+	rt, _, err := boards.Resolve(b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.Store.Import(strings.NewReader("img"), "20260101-000000_"+strings.Repeat("a", 32)+".jpg"); err != nil {
+		t.Fatal(err)
+	}
+	readOverview()
+	if got.Boards[0].Count != 1 {
+		t.Fatalf("generation change did not refresh cache: %+v", got)
+	}
+	createBoard(t, boards, "Another", false)
+	readOverview()
+	if len(got.Boards) != 2 {
+		t.Fatalf("board set change did not refresh cache: %+v", got)
+	}
+	s.Version = "expired"
+	s.adminOverview.mu.Lock()
+	s.adminOverview.built = time.Now().Add(-31 * time.Second)
+	s.adminOverview.mu.Unlock()
+	readOverview()
+	if got.Version != "expired" {
+		t.Fatalf("expired cache was not rebuilt: %+v", got)
+	}
+}
+
 func TestBoardsVisibilityAndAdminCRUD(t *testing.T) {
 	cfg := &config.Config{Admin: config.Admin{Username: "admin", Password: "pw", SessionTTL: time.Hour}}
 	s, boards, _ := newTestWebServer(t, cfg, false)

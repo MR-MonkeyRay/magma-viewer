@@ -72,8 +72,12 @@
   $('#admin-confirm').addEventListener('cancel', (event) => { event.preventDefault(); finishConfirm(); });
   async function api(path, options = {}) {
     let res;
+    const writes = !!options.method && options.method !== 'GET';
+    if (writes) overviewCache = null;
     try { res = await fetch(path, { credentials: 'same-origin', ...options }); }
     catch (error) { throw new Error(t('admin.loadFailed')); }
+    // Drop again after the write lands, in case a read started meanwhile cached the old state.
+    finally { if (writes) overviewCache = null; }
     const body = await res.json().catch(() => ({}));
     if (!res.ok) {
       const code = body.code || body.error?.code;
@@ -135,8 +139,20 @@
     $('button', node).addEventListener('click', retry);
   }
   function busy(button, on) { button.disabled = on; button.classList.toggle('loading', on); }
-  const getOverview = () => api('/api/admin/overview');
+  // Pages share one overview for a short while instead of refetching on every navigation.
+  // Any write drops it (see api); polling passes fresh to see progress.
+  let overviewCache = null;
+  function getOverview(fresh = false) {
+    if (!fresh && overviewCache && Date.now() - overviewCache.at < 15000) return overviewCache.promise;
+    const entry = overviewCache = { at: Date.now(), promise: api('/api/admin/overview') };
+    entry.promise.catch(() => { if (overviewCache === entry) overviewCache = null; });
+    return entry.promise;
+  }
   const panel = (title, html) => `<section class="admin-panel"><h2>${esc(t(title))}</h2>${html}</section>`;
+  // A form row: label on the left, control on the right (stacked on narrow screens).
+  const field = (label, control, id = '') => `<div class="admin-field">${id ? `<label class="admin-field-label" for="${id}">` : '<span class="admin-field-label">'}${esc(label)}${id ? '</label>' : '</span>'}<div class="admin-field-control">${control}</div></div>`;
+  // Segmented control over plain radios, so form code keeps reading form.elements[name].value.
+  const seg = (name, options, label) => `<div class="admin-seg" role="radiogroup" aria-label="${esc(label)}">${options.map(([value, text]) => `<label><input type="radio" name="${name}" value="${esc(value)}"><span>${esc(text)}</span></label>`).join('')}</div>`;
   const stats = (html) => `<dl class="stats">${html}</dl>`;
   const stat = (key, value) => `<dt>${esc(t(key))}</dt><dd>${esc(value)}</dd>`;
   function boardState(board) {
@@ -144,7 +160,7 @@
     return `<span class="na-tag state-${value}${value === 'syncing' ? ' on' : ''}">${esc(t(`admin.${value}`))}</span>`;
   }
   async function renderOverview(container, route, context) {
-    const data = context.overview || await getOverview();
+    const data = context.overview || await getOverview(context.fresh);
     if (!context.isCurrent()) return;
     const boards = data.boards || [];
     const cards = [
@@ -162,7 +178,7 @@
       const label = (v) => t(`admin.operation.${v}`) !== `admin.operation.${v}` ? t(`admin.operation.${v}`) : t('admin.operation.working');
       container.insertAdjacentHTML('beforeend', panel('admin.maintenance', `<div class="admin-maintenance"><p>${esc(label(op.kind))} · ${esc(boards.find((b) => b.id === op.board_id)?.name || op.board_id)} · ${esc(label(op.phase))}</p>${meter(op.done, op.total, t('admin.maintenance'))}<p>${esc(t('admin.maintenanceProgress', { done: fmtNum(op.done), total: fmtNum(op.total) }))}</p>${op.error ? `<p class="form-error">${esc(op.error)}</p>` : ''}</div>`));
       // Follow the running operation, including one started from another tab; polling ends once it has finished.
-      const again = () => renderOverview(container, route, { ...context, overview: null }).catch(() => { if (context.isCurrent()) routeTimer(context, again, 1000); });
+      const again = () => renderOverview(container, route, { ...context, overview: null, fresh: true }).catch(() => { if (context.isCurrent()) routeTimer(context, again, 1000); });
       routeTimer(context, again, 1000);
     }
   }
@@ -177,9 +193,10 @@
   async function renderHistory(container, route, context) {
     const overview = await getOverview();
     if (!context.isCurrent()) return;
-    const select = el('select', { 'aria-label': t('admin.boardFilter') }, el('option', { value: '', textContent: t('admin.allBoards') }), ...(overview.boards || []).map((b) => el('option', { value: b.id, textContent: b.name })));
-    const list = el('div', { className: 'admin-panel' });
-    container.replaceChildren(el('label', { className: 'admin-filter' }, t('admin.boardFilter'), select), list);
+    const select = el('select', { className: 'admin-filter', 'aria-label': t('admin.boardFilter') }, el('option', { value: '', textContent: t('admin.allBoards') }), ...(overview.boards || []).map((b) => el('option', { value: b.id, textContent: b.name })));
+    const list = el('div');
+    context.actions.replaceChildren(select);
+    container.replaceChildren(list);
     let request = 0;
     async function loadRuns() {
       const seq = ++request;
@@ -196,7 +213,7 @@
   async function renderCookie(container, route, context) {
     let cookie = await api('/api/cookie');
     if (!context.isCurrent()) return;
-    container.innerHTML = `<section class="admin-panel"><p class="admin-hint">${esc(t('admin.cookieSharedHint'))}</p><dl class="stats" id="cookie-state"></dl><form class="admin-form" id="cookie-form"><label><span>${esc(t('cookie.field'))}</span><textarea class="admin-cookie" name="cookie" rows="5" maxlength="8192" spellcheck="false" autocomplete="off" required aria-describedby="cookie-error cookie-hint"></textarea></label><p class="admin-hint" id="cookie-hint">${esc(t('cookie.hint'))}</p><p class="form-error" id="cookie-error" role="alert" hidden></p><div class="modal-actions spread"><button type="button" class="btn ghost danger" id="cookie-clear">${esc(t('admin.cookieClear'))}</button><button class="btn primary" type="submit"><span class="spinner" aria-hidden="true"></span>${icon('i-check')}<span>${esc(t('cookie.save'))}</span></button></div></form></section>`;
+    container.innerHTML = `<section class="admin-panel"><form class="admin-form admin-fields" id="cookie-form">${field(t('admin.sharedCredentials'), `<dl class="stats" id="cookie-state"></dl>`)}${field(t('cookie.field'), `<textarea class="admin-cookie" id="shared-cookie" name="cookie" rows="5" maxlength="8192" spellcheck="false" autocomplete="off" required aria-describedby="cookie-error cookie-hint"></textarea><p class="admin-hint" id="cookie-hint">${esc(t('cookie.hint'))}</p><p class="form-error" id="cookie-error" role="alert" hidden></p>`, 'shared-cookie')}<div class="admin-form-foot"><button type="button" class="btn ghost danger" id="cookie-clear">${esc(t('admin.cookieClear'))}</button><button class="btn primary" type="submit"><span class="spinner" aria-hidden="true"></span>${icon('i-check')}<span>${esc(t('cookie.save'))}</span></button></div></form></section>`;
     const form = $('#cookie-form', container);
     const input = form.elements.cookie;
     const save = $('[type=submit]', form);
@@ -226,9 +243,11 @@
   async function renderSystem(container, route, context) {
     const data = await getOverview();
     if (!context.isCurrent()) return;
-    container.innerHTML = `<div class="admin-system"><section class="admin-panel"><h2 class="admin-title-row">${esc(t('admin.notify'))}<span class="na-tag${data.notify ? ' on' : ''}">${esc(t(data.notify ? 'admin.enabled' : 'admin.disabled'))}</span></h2><button type="button" class="btn ghost" id="notify-test" ${data.notify ? '' : 'disabled'}><span class="spinner" aria-hidden="true"></span>${icon('i-send')}<span>${esc(t('notify.test'))}</span></button><p class="form-error" id="notify-result" role="alert" hidden></p></section>`
-      + panel('admin.schedule', `<code class="admin-code">${esc(data.schedule)}</code><p class="admin-hint">${esc(t('admin.scheduleHint'))}</p>`)
-      + `<section class="admin-panel admin-wide"><h2>${esc(t('admin.storage'))}</h2>${stats(diskRow(data.disk) + stat('admin.version', data.version || t('status.none')))}</section></div>`;
+    container.innerHTML = `<section class="admin-panel admin-fields">`
+      + field(t('admin.notify'), `<div class="admin-inline"><span class="na-tag${data.notify ? ' on' : ''}">${esc(t(data.notify ? 'admin.enabled' : 'admin.disabled'))}</span><button type="button" class="btn ghost" id="notify-test" ${data.notify ? '' : 'disabled'}><span class="spinner" aria-hidden="true"></span>${icon('i-send')}<span>${esc(t('notify.test'))}</span></button></div><p class="form-error" id="notify-result" role="alert" hidden></p>`)
+      + field(t('admin.schedule'), `<div class="admin-inline"><code class="admin-code">${esc(data.schedule)}</code><span class="admin-hint">${esc(t('admin.scheduleHint'))}</span></div>`)
+      + field(t('admin.storage'), stats(diskRow(data.disk) + stat('admin.version', data.version || t('status.none'))))
+      + `</section>`;
     const button = $('#notify-test', container);
     button.addEventListener('click', async () => {
       busy(button, true);
@@ -265,7 +284,7 @@
       el('svg', { 'aria-hidden': 'true' }, el('use', { href: '#i-plus' })),
       el('span', { textContent: t('na.new') }));
     const list = el('ul', { className: 'na-list', 'aria-label': t('na.list') });
-    const side = el('div', { className: 'na-side' }, newButton, list);
+    const side = el('div', { className: 'na-side admin-split-side' }, newButton, list);
 
     const stateLine = el('p', { className: 'na-state' });
     const titleInput = el('input', {
@@ -281,7 +300,7 @@
     const publishText = el('span', { textContent: t('na.publish') });
     const publishButton = el('button', { type: 'submit', className: 'btn primary' },
       el('span', { className: 'spinner', 'aria-hidden': 'true' }), publishText);
-    const form = el('form', { className: 'na-edit', novalidate: '' },
+    const form = el('form', { className: 'na-edit admin-split-main', novalidate: '' },
       stateLine,
       el('label', {}, t('na.fieldTitle'), titleInput),
       el('label', {}, t('na.fieldBody'), bodyInput),
@@ -290,7 +309,7 @@
       el('div', { className: 'modal-actions spread' }, deleteButton,
         el('div', { className: 'row' }, draftButton, publishButton)));
 
-    container.replaceChildren(el('div', { className: 'admin-panel' }, el('div', { className: 'na' }, side, form)));
+    container.replaceChildren(el('div', { className: 'admin-split admin-notices' }, side, form));
 
     const dirty = () => titleInput.value !== state.base.title || bodyInput.value !== state.base.body;
     setUnsavedGuard(dirty);
@@ -465,19 +484,16 @@
   }
   function renderBoardSettings(container, board, overview, context, onSaved) {
     const isNew = !board;
-    container.innerHTML = `<section class="admin-panel"><form class="admin-form admin-board-settings" novalidate>
-      <label>${esc(t('admin.board.name'))}<input name="name" required maxlength="60" autocomplete="off" aria-describedby="board-name-error"></label><p class="form-error" id="board-name-error" role="alert" hidden></p>
-      <label>${esc(t('admin.board.url'))}<input name="url" type="url" required placeholder="https://magma.com/…" aria-describedby="board-url-error"></label><p class="form-error" id="board-url-error" role="alert" hidden></p>
-      <fieldset class="admin-group"><legend>${esc(t('admin.board.frequency'))}</legend>
-        <div class="admin-choices"><label class="admin-choice"><input type="radio" name="schedule_mode" value="global">${esc(t('admin.board.followGlobal', { schedule: overview.schedule || '—' }))}</label>
-        <label class="admin-choice"><input type="radio" name="schedule_mode" value="custom">${esc(t('admin.board.custom'))}</label></div>
-        <input name="schedule" id="board-schedule-custom" placeholder="*/10 * * * * / @every 5m" aria-label="${esc(t('schedule.plan'))}" aria-describedby="board-schedule-error"><p class="form-error" id="board-schedule-error" role="alert" hidden></p>
-      </fieldset>
-      <fieldset class="admin-group"><legend>${esc(t('admin.board.window'))}</legend><div class="admin-window">${['sync_from', 'sync_until'].map((name) => `<div><label class="admin-sublabel" for="board-${name}">${esc(t(name === 'sync_from' ? 'admin.board.start' : 'admin.board.end'))}</label><div class="admin-input-clear"><input id="board-${name}" name="${name}" type="datetime-local" step="1" aria-describedby="board-window-error board-window-hint"><button type="button" class="btn ghost" data-clear="${name}">${esc(t('admin.board.clear'))}</button></div></div>`).join('')}</div><p class="admin-hint" id="board-window-hint" aria-live="polite"></p><p class="form-error" id="board-window-error" role="alert" hidden></p></fieldset>
-      <div class="admin-group"><label class="admin-choice"><input name="visible" type="checkbox" aria-describedby="board-visible-hint">${esc(t('admin.board.visible'))}</label><p class="admin-hint" id="board-visible-hint">${esc(t('admin.board.hiddenHint'))}</p></div>
-      <div class="admin-group"><label for="board-sort">${esc(t('admin.board.sort'))}</label><div class="admin-inline"><input id="board-sort" name="sort" type="number" min="-100000" max="100000" step="1" required aria-describedby="board-sort-hint board-sort-error"><p class="admin-hint" id="board-sort-hint">${esc(t('admin.board.sortHint'))}</p></div><p class="form-error" id="board-sort-error" role="alert" hidden></p></div>
-      <p class="form-error" id="board-save-error" role="alert" hidden></p><div class="modal-actions"><button type="submit" class="btn primary"><span class="spinner" aria-hidden="true"></span>${icon(isNew ? 'i-plus' : 'i-check')}<span>${esc(t(isNew ? 'admin.board.create' : 'admin.board.save'))}</span></button></div>
-    </form></section>`;
+    const clearButton = (name) => `<button type="button" class="icon-btn" data-clear="${name}" title="${esc(t('admin.board.clear'))}" aria-label="${esc(t('admin.board.clear'))}">${icon('i-close')}</button>`;
+    container.innerHTML = `<form class="admin-form admin-fields admin-board-settings" novalidate>
+      ${field(t('admin.board.name'), `<input id="board-name" name="name" required maxlength="60" autocomplete="off" aria-describedby="board-name-error"><p class="form-error" id="board-name-error" role="alert" hidden></p>`, 'board-name')}
+      ${field(t('admin.board.url'), `<input id="board-url" name="url" type="url" required placeholder="https://magma.com/…" aria-describedby="board-url-error"><p class="form-error" id="board-url-error" role="alert" hidden></p>`, 'board-url')}
+      ${field(t('admin.board.frequency'), `${seg('schedule_mode', [['global', t('admin.board.followGlobal', { schedule: overview.schedule || '—' })], ['custom', t('admin.board.custom')]], t('admin.board.frequency'))}<input name="schedule" id="board-schedule-custom" placeholder="*/10 * * * * / @every 5m" aria-label="${esc(t('schedule.plan'))}" aria-describedby="board-schedule-error"><p class="form-error" id="board-schedule-error" role="alert" hidden></p>`)}
+      ${field(t('admin.board.window'), `<div class="admin-window">${['sync_from', 'sync_until'].map((name) => `<div class="admin-window-end"><label class="admin-sublabel" for="board-${name}">${esc(t(name === 'sync_from' ? 'admin.board.start' : 'admin.board.end'))}</label><div class="admin-input-clear"><input id="board-${name}" name="${name}" type="datetime-local" step="1" aria-describedby="board-window-error board-window-hint">${clearButton(name)}</div></div>`).join('')}</div><p class="admin-hint" id="board-window-hint" aria-live="polite"></p><p class="form-error" id="board-window-error" role="alert" hidden></p>`)}
+      ${field(t('admin.board.visible'), `<div class="admin-inline"><input id="board-visible" name="visible" type="checkbox" aria-describedby="board-visible-hint"><p class="admin-hint" id="board-visible-hint">${esc(t('admin.board.hiddenHint'))}</p></div>`, 'board-visible')}
+      ${field(t('admin.board.sort'), `<div class="admin-inline"><input id="board-sort" name="sort" type="number" min="-100000" max="100000" step="1" required aria-describedby="board-sort-hint board-sort-error"><p class="admin-hint" id="board-sort-hint">${esc(t('admin.board.sortHint'))}</p></div><p class="form-error" id="board-sort-error" role="alert" hidden></p>`, 'board-sort')}
+      <div class="admin-form-foot"><p class="form-error" id="board-save-error" role="alert" hidden></p><button type="submit" class="btn primary"><span class="spinner" aria-hidden="true"></span>${icon(isNew ? 'i-plus' : 'i-check')}<span>${esc(t(isNew ? 'admin.board.create' : 'admin.board.save'))}</span></button></div>
+    </form>`;
     const form = $('form', container), f = form.elements, save = $('[type=submit]', form);
     let saving = false;
     let savedWindow;
@@ -557,7 +573,10 @@
   }
   function renderBoardCookie(container, board, context) {
     let cookie = board.cookie || {}, token = board.token, saving = false;
-    container.innerHTML = `<section class="admin-panel admin-board-cookie"><h2>${esc(t('admin.cookie'))}</h2><dl class="stats" id="board-cookie-state"></dl><form class="admin-form" novalidate><fieldset class="admin-group"><legend>${esc(t('admin.board.cookieMode'))}</legend><div class="admin-choices"><label class="admin-choice"><input type="radio" name="cookie_mode" value="shared">${esc(t('admin.board.cookieShared'))}</label><label class="admin-choice"><input type="radio" name="cookie_mode" value="override">${esc(t('admin.board.cookieOverride'))}</label></div></fieldset><div id="board-cookie-entry"><label>${esc(t('cookie.field'))}<textarea name="cookie" class="admin-cookie" rows="4" maxlength="8192" autocomplete="off" spellcheck="false" aria-describedby="board-cookie-error"></textarea></label><p class="admin-hint">${esc(t('cookie.hint'))}</p><button type="submit" class="btn primary">${icon('i-check')}<span>${esc(t('admin.board.save'))}</span></button></div><p class="form-error" id="board-cookie-error" role="alert" hidden></p></form></section>`;
+    container.innerHTML = `<section class="admin-panel admin-board-cookie"><h2>${esc(t('admin.cookie'))}</h2><form class="admin-form admin-fields" novalidate>
+      ${field(t('admin.board.cookieMode'), `${seg('cookie_mode', [['shared', t('admin.board.cookieShared')], ['override', t('admin.board.cookieOverride')]], t('admin.board.cookieMode'))}<dl class="stats" id="board-cookie-state"></dl>`)}
+      <div id="board-cookie-entry">${field(t('cookie.field'), `<textarea id="board-cookie" name="cookie" class="admin-cookie" rows="4" maxlength="8192" autocomplete="off" spellcheck="false" aria-describedby="board-cookie-error board-cookie-hint"></textarea><p class="admin-hint" id="board-cookie-hint">${esc(t('cookie.hint'))}</p>`, 'board-cookie')}
+      <div class="admin-form-foot"><button type="submit" class="btn primary">${icon('i-check')}<span>${esc(t('admin.board.save'))}</span></button></div></div><p class="form-error" id="board-cookie-error" role="alert" hidden></p></form></section>`;
     const form = $('form', container), input = form.elements.cookie, mode = form.elements.cookie_mode, error = $('#board-cookie-error', container);
     const path = `/api/cookie?board=${encodeURIComponent(board.id)}`;
     const save = $('[type=submit]', form);
@@ -608,14 +627,14 @@
     }
     const isNew = route.id === 'new';
     let board = items.find((item) => item.id === route.id);
-    const side = el('aside', { className: 'admin-board-side', 'aria-label': t('admin.boards') });
-    const detail = el('div', { className: 'admin-board-detail' });
-    const layout = el('div', { className: `admin-boards${route.id ? ' has-detail' : ''}` }, side, detail);
+    const side = el('aside', { className: 'admin-split-side admin-board-side', 'aria-label': t('admin.boards') });
+    const detail = el('div', { className: 'admin-split-main admin-board-detail' });
+    const layout = el('div', { className: `admin-split admin-boards${route.id ? ' has-detail' : ''}` }, side, detail);
     container.replaceChildren(layout);
     function paintList() {
-      side.innerHTML = `<a class="btn primary" href="#boards/new">${icon('i-plus')}<span>${esc(t('admin.board.new'))}</span></a><ul class="admin-board-list">${items.map((item) => `<li><a class="admin-board-item" href="${boardURL(item.id)}" ${route.id === item.id ? 'aria-current="page"' : ''}><strong>${esc(item.name)}</strong>${boardState(item)}<span class="admin-board-meta">${esc(t('status.countValue', { n: item.count }))} · ${esc(relTime(item.latest))}${item.hidden ? ` · ${esc(t('board.hidden'))}` : ''}</span></a></li>`).join('')}</ul>${!items.length ? emptyHTML(t('admin.emptyBoards')) : ''}`;
+      side.innerHTML = `<a class="btn ghost" href="#boards/new"${route.id === 'new' ? ' aria-current="page"' : ''}>${icon('i-plus')}<span>${esc(t('admin.board.new'))}</span></a><ul class="admin-board-list">${items.map((item) => `<li><a class="admin-board-item" href="${boardURL(item.id)}" ${route.id === item.id ? 'aria-current="page"' : ''}><strong>${esc(item.name)}</strong><span class="admin-board-meta">${boardState(item)}${esc(t('status.countValue', { n: item.count }))} · ${esc(relTime(item.latest))}${item.hidden ? ` · ${esc(t('board.hidden'))}` : ''}</span></a></li>`).join('')}</ul>${!items.length ? `<p class="na-empty">${esc(t('admin.emptyBoards'))}</p>` : ''}`;
       const maintaining = others.filter((item) => ['archiving', 'deleting'].includes(item.lifecycle));
-      if (maintaining.length) side.insertAdjacentHTML('beforeend', `<section><h2>${esc(t('admin.board.maintenance'))}</h2>${maintaining.map((item) => `<div class="admin-panel"><strong>${esc(item.name)}</strong>${item.operation ? operationHTML(item.operation) : `<p>${esc(t('admin.operation.working'))}</p>`}</div>`).join('')}</section>`);
+      if (maintaining.length) side.insertAdjacentHTML('beforeend', `<section class="admin-board-maintaining"><h2>${esc(t('admin.board.maintenance'))}</h2>${maintaining.map((item) => `<div><strong>${esc(item.name)}</strong>${item.operation ? operationHTML(item.operation) : `<p>${esc(t('admin.operation.working'))}</p>`}</div>`).join('')}</section>`);
     }
     const back = () => el('a', { className: 'admin-board-back', href: '#boards', textContent: t('admin.board.back') });
     paintList();
@@ -624,7 +643,7 @@
     } else if (!isNew && !board) {
       detail.innerHTML = stateHTML('mascot-oops', t('admin.board.notFound'), `<a class="btn ghost" href="#boards">${esc(t('admin.board.back'))}</a>`);
     } else if (isNew) {
-      detail.append(back(), el('h2', { textContent: t('admin.board.new') }));
+      detail.append(back(), el('header', { className: 'admin-board-header' }, el('div', { className: 'admin-board-title' }, el('h2', { textContent: t('admin.board.new') }))));
       const form = el('div'); detail.append(form);
       const editor = renderBoardSettings(form, null, overview, context, async (result) => { setUnsavedGuard(); await navigate(boardURL(result.id, 'settings')); });
       setUnsavedGuard(editor.dirty);
@@ -644,13 +663,13 @@
         if (signature === headerSignature) return;
         headerSignature = signature;
         const focused = header.contains(document.activeElement) ? document.activeElement.id || '.switch' : '';
-        header.innerHTML = `<h2>${esc(board.name)} ${boardState(board)}</h2><div class="admin-board-actions"><div class="switch-row"><span class="switch-text"><strong>${esc(t('schedule.auto'))}</strong><span>${esc(t(board.paused ? 'admin.paused' : 'admin.enabled'))}</span></span><button type="button" class="switch" role="switch" aria-checked="${!board.paused}" aria-label="${esc(t('schedule.auto'))}" ${headerBusy ? 'disabled' : ''}></button></div><button type="button" class="btn ghost${headerBusy === 'fetch' ? ' loading' : ''}" id="board-fetch" ${headerBusy ? 'disabled' : ''}>${icon('i-refresh')}<span>${esc(t('status.fetchNow'))}</span></button><a href="/?board=${encodeURIComponent(board.id)}">${esc(t('admin.board.gallery'))}</a></div>`;
+        header.innerHTML = `<div class="admin-board-title"><h2>${esc(board.name)}</h2>${boardState(board)}</div><div class="admin-board-actions"><span class="admin-auto"><span aria-hidden="true">${esc(t('schedule.auto'))}</span><button type="button" class="switch" role="switch" aria-checked="${!board.paused}" aria-label="${esc(t('schedule.auto'))}" ${headerBusy ? 'disabled' : ''}></button></span><button type="button" class="btn ghost${headerBusy === 'fetch' ? ' loading' : ''}" id="board-fetch" ${headerBusy ? 'disabled' : ''}>${icon('i-refresh')}<span>${esc(t('status.fetchNow'))}</span></button><a class="icon-btn" href="/?board=${encodeURIComponent(board.id)}" title="${esc(t('admin.board.gallery'))}" aria-label="${esc(t('admin.board.gallery'))}">${icon('i-open')}</a></div>`;
         $('.switch', header).addEventListener('click', () => headerAction('schedule'));
         $('#board-fetch', header).addEventListener('click', () => headerAction('fetch'));
         if (focused) $(focused === '.switch' ? focused : `#${focused}`, header)?.focus({ preventScroll: true });
       }
       async function refresh() {
-        const result = await Promise.all([api('/api/admin/boards'), getOverview()]);
+        const result = await Promise.all([api('/api/admin/boards'), getOverview(true)]);
         if (!context.isCurrent()) return;
         [data, overview] = result; items = data.items || []; others = data.others || [];
         const current = items.find((item) => item.id === board.id);
@@ -684,12 +703,12 @@
       } else if (tab === 'history') {
         const load = async () => {
           loading(content);
-          try { const result = await api(`/api/admin/history?board=${encodeURIComponent(board.id)}`); if (context.isCurrent()) content.innerHTML = panel('admin.board.history', historyHTML(result.items || [], false)); }
+          try { const result = await api(`/api/admin/history?board=${encodeURIComponent(board.id)}`); if (context.isCurrent()) content.innerHTML = historyHTML(result.items || [], false); }
           catch (err) { if (context.isCurrent()) showError(content, err, load); }
         };
         await load();
       } else if (tab === 'data') {
-        content.innerHTML = panel('admin.board.data', stats(dataStats()) + `<a class="btn ghost" href="/download/all?board=${encodeURIComponent(board.id)}" download>${icon('i-download')}<span>${esc(t('admin.board.downloadAll'))}</span></a>`) + `<section class="admin-panel admin-danger"><h2>${esc(t('admin.board.danger'))}</h2><div class="admin-danger-row"><p class="admin-hint">${esc(t('admin.board.archiveHint'))}</p><button type="button" class="btn ghost danger" data-maintenance="archive">${esc(t('admin.board.archive'))}</button></div><div class="admin-danger-row"><p class="admin-hint">${esc(t('admin.board.deleteHint'))}</p><button type="button" class="btn ghost danger" data-maintenance="delete">${esc(t('admin.board.delete'))}</button></div><div id="board-operation" aria-live="polite"></div><p class="form-error" id="board-operation-error" role="alert" hidden></p></section>`;
+        content.innerHTML = `<section class="admin-panel">${stats(dataStats())}<a class="btn ghost" href="/download/all?board=${encodeURIComponent(board.id)}" download>${icon('i-download')}<span>${esc(t('admin.board.downloadAll'))}</span></a></section><section class="admin-panel admin-danger"><h2>${esc(t('admin.board.danger'))}</h2><div class="admin-danger-row"><p class="admin-hint">${esc(t('admin.board.archiveHint'))}</p><button type="button" class="btn ghost danger" data-maintenance="archive">${esc(t('admin.board.archive'))}</button></div><div class="admin-danger-row"><p class="admin-hint">${esc(t('admin.board.deleteHint'))}</p><button type="button" class="btn ghost danger" data-maintenance="delete">${esc(t('admin.board.delete'))}</button></div><div id="board-operation" aria-live="polite"></div><p class="form-error" id="board-operation-error" role="alert" hidden></p></section>`;
         $('.stats', content).id = 'board-data-stats';
         const progress = $('#board-operation', content), error = $('#board-operation-error', content);
         let operation = board.operation, polling = false, submitting = false;
@@ -757,7 +776,8 @@
     const data = await api('/api/admin/archives');
     if (!context.isCurrent()) return;
     const items = data.items || [];
-    container.innerHTML = items.length ? `<p class="admin-summary">${esc(t('admin.archive.total', { n: fmtNum(items.length), size: bytes(data.bytes) }))}</p><ul class="admin-panel admin-archive-list">${items.map((item) => `<li class="admin-archive-item"><div class="admin-archive-main"><strong>${esc(item.board_name)}</strong><span class="admin-board-meta">${esc([dateTime(item.created), t('status.countValue', { n: item.images }), bytes(item.size)].join(' · '))}</span></div><div class="admin-archive-actions"><a class="btn ghost" href="/api/admin/archives/${encodeURIComponent(item.id)}/download" download>${icon('i-download')}<span>${esc(t('common.download'))}</span></a><button type="button" class="btn ghost danger" data-archive="${esc(item.id)}"><span class="spinner" aria-hidden="true"></span><span>${esc(t('admin.archive.delete'))}</span></button></div></li>`).join('')}</ul>` : emptyHTML(t('admin.archive.empty'));
+    context.actions.replaceChildren(...(items.length ? [el('span', { className: 'admin-summary', textContent: t('admin.archive.total', { n: fmtNum(items.length), size: bytes(data.bytes) }) })] : []));
+    container.innerHTML = items.length ? `<ul class="admin-archive-list">${items.map((item) => `<li class="admin-archive-item"><div class="admin-archive-main"><strong>${esc(item.board_name)}</strong><span class="admin-board-meta">${esc([dateTime(item.created), t('status.countValue', { n: item.images }), bytes(item.size)].join(' · '))}</span></div><div class="admin-archive-actions"><a class="btn ghost" href="/api/admin/archives/${encodeURIComponent(item.id)}/download" download>${icon('i-download')}<span>${esc(t('common.download'))}</span></a><button type="button" class="btn ghost danger" data-archive="${esc(item.id)}"><span class="spinner" aria-hidden="true"></span><span>${esc(t('admin.archive.delete'))}</span></button></div></li>`).join('')}</ul>` : emptyHTML(t('admin.archive.empty'));
     let deleting = false;
     const deleteButtons = [...container.querySelectorAll('[data-archive]')];
     deleteButtons.forEach((button) => button.addEventListener('click', async () => {
@@ -807,11 +827,14 @@
     (state.cleanups || []).forEach((fn) => fn());
     const cleanups = state.cleanups = new Set();
     const generation = ++state.generation;
-    const context = { overview, focusHeading, onCleanup: (fn) => { cleanups.add(fn); return () => cleanups.delete(fn); }, isCurrent: () => state.admin && generation === state.generation };
+    // Every page is one sheet: the title and page-level actions head it, the sections follow.
+    const actions = el('div', { className: 'admin-sheet-actions' });
+    const context = { overview, focusHeading, actions, onCleanup: (fn) => { cleanups.add(fn); return () => cleanups.delete(fn); }, isCurrent: () => state.admin && generation === state.generation };
     renderNav(route.page);
     const root = $('#admin-content');
     const body = el('div', { className: 'admin-page' });
-    root.replaceChildren(el('h1', { tabindex: '-1', textContent: t(PAGES[route.page].title) }), body);
+    root.replaceChildren(el('section', { className: `admin-sheet admin-sheet-${route.page}` },
+      el('header', { className: 'admin-sheet-head' }, el('h1', { tabindex: '-1', textContent: t(PAGES[route.page].title) }), actions), body));
     root.setAttribute('aria-busy', 'true');
     document.body.classList.add('busy');
     loading(body);
