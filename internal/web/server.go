@@ -704,6 +704,9 @@ func (s *Server) handleZipSelected(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "guest_zip_limit", "访客一次最多打包下载 "+strconv.Itoa(GuestZipLimit)+" 张")
 		return
 	}
+	if !checkZipFiles(w, rt.Store, items) {
+		return
+	}
 	if checkOnly(w, r) {
 		return
 	}
@@ -720,10 +723,24 @@ func (s *Server) handleZipAll(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "no_images", "暂无图片")
 		return
 	}
+	if !checkZipFiles(w, rt.Store, items) {
+		return
+	}
 	if checkOnly(w, r) {
 		return
 	}
 	s.writeZip(w, r, rt.ID, rt.Store, "magma-"+rt.ID+"-all-"+time.Now().Format(store.TimeLayout)+".zip", items)
+}
+
+func checkZipFiles(w http.ResponseWriter, st *store.Store, items []store.Item) bool {
+	for _, it := range items {
+		info, err := os.Stat(filepath.Join(st.Dir(), it.Name))
+		if err != nil || !info.Mode().IsRegular() {
+			writeError(w, http.StatusNotFound, "image_not_found", "图片不存在: "+it.Name)
+			return false
+		}
+	}
+	return true
 }
 
 // checkOnly answers a ?check request once the archive would be served: the
@@ -755,9 +772,8 @@ func (s *Server) writeZip(w http.ResponseWriter, r *http.Request, boardID string
 			if _, _, resolveErr := s.boards.Resolve(boardID); resolveErr != nil {
 				panic(http.ErrAbortHandler)
 			}
-			// Deleted by hand since the last rescan: leave it out rather than fail the archive.
-			log.Printf("zip: skip %s: %v", it.Name, err)
-			continue
+			log.Printf("zip: open %s: %v", it.Name, err)
+			panic(http.ErrAbortHandler)
 		}
 		err = addToZip(zw, f, it)
 		f.Close()

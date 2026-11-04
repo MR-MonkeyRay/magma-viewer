@@ -421,20 +421,60 @@ func TestPasswordChangeEndsSessions(t *testing.T) {
 	}
 }
 
-func TestZipSkipsFileDeletedBehindIndex(t *testing.T) {
+func TestZipRejectsFileDeletedBehindIndex(t *testing.T) {
 	srv, all, st := newTestServerStore(t, 3)
 	gone := st.All()[0].Name
-	os.Remove(filepath.Join(st.Dir(), gone))
+	if err := os.Remove(filepath.Join(st.Dir(), gone)); err != nil {
+		t.Fatal(err)
+	}
 
 	c := login(t, srv.URL)
-	if r := get(t, srv.URL+"/download/zip?"+all, c); r.StatusCode != http.StatusOK || zipCount(t, r) != 2 {
-		t.Fatalf("zip without deleted file: %s", r.Status)
+	for _, path := range []string{
+		"/download/zip?" + all,
+		"/download/zip?check=1&" + all,
+		"/download/all",
+		"/download/all?check=1",
+	} {
+		r := get(t, srv.URL+path, c)
+		body := decode(t, r)
+		if r.StatusCode != http.StatusNotFound || body["code"] != "image_not_found" || body["error"] != "图片不存在: "+gone {
+			t.Fatalf("%s: %s, %v", path, r.Status, body)
+		}
+		if r.Header.Get("Content-Disposition") != "" {
+			t.Fatalf("%s: error offered as an attachment", path)
+		}
 	}
 	r := get(t, srv.URL+"/img/"+gone, nil)
 	r.Body.Close()
 	if r.StatusCode != http.StatusNotFound || r.Header.Get("Cache-Control") != "" {
 		t.Fatalf("deleted image: %s, Cache-Control %q", r.Status, r.Header.Get("Cache-Control"))
 	}
+}
+
+func TestZipAbortsWhenFileDisappearsAfterCheck(t *testing.T) {
+	s, _, rt := newTestWebServer(t, &config.Config{}, true)
+	first := rt.Store.All()[0]
+	if err := rt.Store.Import(strings.NewReader("img"), "later.png"); err != nil {
+		t.Fatal(err)
+	}
+	second, ok := rt.Store.Get("later.png")
+	if !ok {
+		t.Fatal("imported image missing from index")
+	}
+	items := []store.Item{first, second}
+	w := httptest.NewRecorder()
+	if !checkZipFiles(w, rt.Store, items) {
+		t.Fatal("existing files failed check")
+	}
+	if err := os.Remove(filepath.Join(rt.Store.Dir(), second.Name)); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if got := recover(); got != http.ErrAbortHandler {
+			t.Errorf("panic = %v, want http.ErrAbortHandler", got)
+		}
+	}()
+	s.writeZip(w, httptest.NewRequest(http.MethodGet, "/download/all", nil), rt.ID, rt.Store, "images.zip", items)
 }
 
 func TestCrossSiteRequestsRejected(t *testing.T) {
